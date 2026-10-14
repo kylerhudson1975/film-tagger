@@ -425,7 +425,8 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  ${bio?`<p id=ppbio class=ppbio>${esc(short)}${short!==bio?` <a href="#" onclick="$('ppbio').textContent=S.ppData.person.bio;return false">more</a>`:''}</p>`:''}
  ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
  <div class=ppctl>${p.tmdb_url?`<a href="${esc(p.tmdb_url)}" target=_blank rel=noopener>TMDB page ↗</a>`:''}
- <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button onclick="showPerson(${p.id},{refresh:true,keep:true,nohist:true})" title="Re-fetch from TMDB">↻ Refresh</button></div>
+ <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch from TMDB">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
+ <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched from TMDB yet)'}</div>
  </div></div>`;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
@@ -442,6 +443,15 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  c.innerHTML=h+'</div>'}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
+async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData;b.disabled=true;b.textContent='⟳ Refreshing…';
+ let d;try{d=await api('/api/person/'+pid+'?refresh=1')}catch(e){if(S.page==='person:'+pid){b.disabled=false;b.textContent='↻ Refresh'}toast("Couldn't reach Film Tagger: "+(e.message||e));return}
+ if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=d;renderPerson();$('content').scrollTop=st;
+ const fresh=d.person.fetched_at&&(!prev||d.person.fetched_at!==prev.person.fetched_at);
+ if(!fresh||d.status==='offline'){toast(d.status==='no_key'?'No TMDB API key set':d.status==='no_match'?'No matching person on TMDB':"Couldn't reach TMDB"+(d.message?' — '+d.message:''));return}
+ const ch=[];if(prev&&prev.total!==d.total)ch.push(`films ${prev.total} → ${d.total}`);if(prev&&prev.owned!==d.owned)ch.push(`in library ${prev.owned} → ${d.owned}`);
+ if(prev&&(prev.person.bio||'')!==(d.person.bio||''))ch.push('bio updated');
+ const m=$('ppRefMsg');if(m)m.textContent='✓ Updated just now';
+ toast(`Updated from TMDB — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
 async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
 renderMpaa();setLib('');setIn(localStorage.searchIn||'');$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();
 </script></body></html>
