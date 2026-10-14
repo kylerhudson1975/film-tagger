@@ -39,6 +39,10 @@ Tag search:
 
 ![Tag search](docs/screenshots/4-tag-search.png)
 
+Bulk edit (set the MPAA rating on selected films):
+
+![Bulk MPAA rating](docs/screenshots/5-bulk-mpaa.png)
+
 ## Install
 - **Windows (recommended):** download and run **`FilmTaggerSetup.exe`**. It installs per user into `%LOCALAPPDATA%\Film Tagger` with a bundled Python 3.12, so no admin rights are needed. It adds Start Menu and (optionally) Desktop and sign-in shortcuts and an entry in *Apps* for uninstalling. Your library (`films.db` + `posters/`) lives in `%LOCALAPPDATA%\Film Tagger\data` and survives upgrades. See [INSTALL.txt](INSTALL.txt).
   - Silent install: `FilmTaggerSetup.exe /S [/D=C:\path] [/NODESKTOP] [/STARTUP] [/PORT=5051]`. Silent uninstall (keeps the library): `uninstall.exe /S`.
