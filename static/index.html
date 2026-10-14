@@ -48,6 +48,18 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .tagcloud .tag{cursor:pointer}
 .plinks a,#personHdr a,a.clink{color:#d4d4d4;text-decoration:none;border-bottom:1px dotted #888}.plinks a:hover,#personHdr a:hover{color:#fff;border-bottom-color:#fff}
 .tlink{color:inherit;text-decoration:none}.tlink:hover{text-decoration:underline;color:#fff}
+.pp a{color:#8cf}.ppl{padding:10px 14px 0}.ppl h3{margin:4px 0 8px}.pcards{display:flex;flex-wrap:wrap;gap:8px}
+.pcard{display:flex;gap:10px;align-items:center;width:250px;padding:6px;border:1px solid #8884;border-radius:8px;cursor:pointer;background:#ffffff08}.pcard:hover{border-color:#fff}
+.pph{width:54px;height:54px;flex:none;border-radius:50%;overflow:hidden;background:#555;display:flex;align-items:center;justify-content:center;font-weight:bold}.pph img{width:100%;height:100%;object-fit:cover}
+.pp{padding:14px}.pphead{display:flex;gap:18px;align-items:flex-start}.ppimg{width:185px;flex:none;border-radius:8px;overflow:hidden;background:#555;min-height:120px;display:flex;align-items:center;justify-content:center;font-size:40px}.ppimg img{width:100%;display:block}
+.ppbio{max-width:900px;line-height:1.45;white-space:pre-line}.ppctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}.ppctl a{margin-right:10px}
+.ppbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:16px 0 4px;padding:8px 0;border-top:1px solid #8884;border-bottom:1px solid #8884}.ppbar a{color:inherit}
+.seg button{border-radius:0}.seg button.on{background:#2a6;color:#fff;border-color:#2a6}
+.ppdept{margin:16px 0 6px}.pplist{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
+.ppi{display:flex;gap:8px;padding:5px;border:2px solid #8883;border-radius:7px;color:inherit;text-decoration:none;position:relative}
+.ppi.own{border-color:#f5c518;background:#f5c51814;cursor:pointer}.ppi.own:hover{background:#f5c51830}.ppi.not{opacity:.45}.ppi.not:hover{opacity:.85}
+.ppt{width:46px;height:69px;flex:none;background:#4446;border-radius:3px;overflow:hidden}.ppt img{width:100%;height:100%;object-fit:cover}
+.ppx{min-width:0}.ppy{font-weight:bold}.ppn{overflow:hidden;text-overflow:ellipsis}.pplib{position:static;display:inline-block;margin-top:3px;background:#f5c518;color:#000}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger</div>
@@ -75,7 +87,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button>
   <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
   <div id="libPop" onclick="event.stopPropagation()"><input id="libSearch" placeholder="Filter folders…" autocomplete="off"><div id="libTree"></div></div></div>
-  <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="resolution">Search in: Resolution</option></select>
+  <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="people">Search in: People</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="resolution">Search in: Resolution</option></select>
   <input id="q" placeholder="Search everything…">
   <select id="sort" title="Sort order"><option value="title">Sort: Title</option><option value="year">Sort: Year</option><option value="rating">Sort: Rating</option><option value="runtime">Sort: Runtime</option><option value="added">Sort: Date added</option><option value="director">Sort: Director</option></select>
   <button id="ord" onclick="S.order=S.order=='asc'?'desc':'asc';this.textContent=S.order=='asc'?'↑':'↓';load()">↑</button>
@@ -110,7 +122,7 @@ async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON
  const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(!r.ok){toast(j.error||r.statusText);throw j}return j}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
 const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','decade','res'];
-const INPH={'':'Search everything…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',resolution:'Search resolutions (e.g. 1080p)…'};
+const INPH={'':'Search everything…',people:'Search people (actors, directors, writers…)…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',resolution:'Search resolutions (e.g. 1080p)…'};
 function setIn(v){$('f_in').value=v||'';localStorage.searchIn=$('f_in').value;$('q').placeholder=INPH[$('f_in').value]}
 const RESL=['SD','480p','576p','720p','1080p','1440p','4K'];
 const MPAA=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-MA','(none)'];
@@ -121,14 +133,15 @@ let lt;function debLoad(){clearTimeout(lt);lt=setTimeout(load,250)}
 function navState(){return {...query(),sort:$('sort').value,order:S.order}}
 function snap(){const c=history.state;if(c)history.replaceState({...c,scroll:$('content').scrollTop,n:S.films.length},'')}
 function histSave(){if(S.restoring)return;const st=navState(),cur=history.state;if(!cur){history.replaceState({...st,film:null},'');return}
- const base={...cur};delete base.film;delete base.scroll;delete base.n;if(JSON.stringify(st)==JSON.stringify(base)&&!cur.film)return;
- const onlyQ=!cur.film&&Object.keys(st).every(k=>k=='q'||st[k]==base[k]);if(onlyQ){history.replaceState({...st,film:null},'');return}
+ const base={...cur};delete base.film;delete base.scroll;delete base.n;delete base.page;if(JSON.stringify(st)==JSON.stringify(base)&&!cur.film&&!cur.page)return;
+ const onlyQ=!cur.film&&!cur.page&&Object.keys(st).every(k=>k=='q'||st[k]==base[k]);if(onlyQ){history.replaceState({...st,film:null},'');return}
  snap();history.pushState({...st,film:null},'')}
-function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id},'')}
+function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id,page:S.page||null},'')}
 window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.restoring=true;try{FK.forEach(k=>{if(k=='lib')setLib(q.lib||'');else if(k=='in')setIn(q.in||'');else $('f_'+k).value=q[k]||''});$('q').value=q.q||'';$('sort').value=q.sort||'title';S.order=q.order||'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';renderMpaa();
- const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;render();personHeader();$('content').scrollTop=q.scroll||0;
+ if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
+ else{S.page=null;const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;await searchPeople();render();personHeader();$('content').scrollTop=q.scroll||0}
  if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
-async function load(keep){keep=keep===true;if(!keep)histSave();const st=$('content').scrollTop;const j=await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
+async function load(keep){keep=keep===true;if(keep&&S.page)return showPerson(S.pageId,{keep:true,nohist:true});S.page=null;if(!keep)histSave();const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
 function reload(){return load(true)}
 const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['writer','Writers'],producer:['producer','Producers'],cinematographer:['cinematographer','Cinematography'],composer:['composer','Music']};
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
@@ -141,16 +154,16 @@ async function personHeader(){const h=$('personHdr'),name=$('f_person').value,ro
  const others=Object.entries(p.counts).filter(([r,c])=>c&&r!==role).map(([r,c])=>`<a href="#" onclick="filterPerson('${jsq(name)}','${r}');return false">${c} as ${ROLES[r][0]}</a>`);
  if(role)others.push(`<a href="#" onclick="filterPerson('${jsq(name)}','');return false">any role</a>`);
  h.innerHTML=`<b style="font-size:1.15em">${esc(p.name)}: ${n} ${fs} ${what}</b>${S.total!=n?` <span class=muted>(${S.total} shown with other filters)</span>`:''}${others.length?' <span class=muted>· also: '+others.join(' · ')+'</span>':''} <span style="margin-left:12px">Sort by <select onchange="$('sort').value=this.value;load()">${$('sort').innerHTML.replace(/Sort: /g,'').replace(`value="${$('sort').value}"`,`value="${$('sort').value}" selected`)}</select> <button onclick="S.order=S.order=='asc'?'desc':'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';load()" title="Reverse order">${S.order=='asc'?'↑':'↓'}</button></span> <button style="margin-left:8px" onclick="filterPerson('')" title="Clear person filter">× Clear</button>`;h.style.display='block'}
-function filterPerson(name,role=''){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';renderMpaa();S.sel.clear();
+function filterPerson(name,role=''){if(name)return openPersonByName(name);S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';renderMpaa();S.sel.clear();
  $('f_person').value=name||'';$('f_prole').value=name?role:'';load()}
 const MPAA_ALL=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'];
 function mpaaOpts(v){v=v||'';const l=['',...MPAA_ALL];if(v&&!l.includes(v))l.push(v);return l.map(m=>`<option value="${esc(m)}" ${m==v?'selected':''}>${m?esc(m):'—'}</option>`).join('')}
 function peopleField(f,k,role){const v=f[k]||'',names=v.split(',').map(s=>s.trim()).filter(Boolean);
  return `<div><label>${ROLES[role][1]} <a href="#" title="Edit names" style="text-decoration:none" onclick="togglePF('${k}');return false">✏️</a></label>
- <div id=pv_${k} class=plinks style="min-height:1.6em">${names.map(n=>`<a href="#" title="Show all films with ${esc(n)} as ${ROLES[role][0]}" onclick="filterPerson('${jsq(n)}','${role}');return false">${esc(n)}</a>`).join(', ')||'<span class=muted>—</span>'}</div>
+ <div id=pv_${k} class=plinks style="min-height:1.6em">${names.map(n=>`<a href="#" title="Open ${esc(n)}'s page" onclick="filterPerson('${jsq(n)}','${role}');return false">${esc(n)}</a>`).join(', ')||'<span class=muted>—</span>'}</div>
  <input id=e_${k} value="${esc(v)}" style="display:none" placeholder="Names, comma-separated"></div>`}
 function togglePF(k){const i=$('e_'+k),v=$('pv_'+k),edit=i.style.display=='none';i.style.display=edit?'':'none';v.style.display=edit?'none':'';if(edit)i.focus()}
-async function more(){if(S.busy||S.films.length>=S.total)return;S.busy=true;
+async function more(){if(S.page||S.busy||S.films.length>=S.total)return;S.busy=true;
  const j=await api('/api/films?'+params({limit:300,offset:S.films.length}));S.films.push(...j.films);S.busy=false;render(true)}
 $('content').addEventListener('scroll',e=>{const c=e.target;if(c.scrollTop+c.clientHeight>c.scrollHeight-800)more()});
 function setView(v){S.view=localStorage.view=v;render()}
@@ -158,7 +171,7 @@ function tagsHtml(f,rm){return [...f.tags].sort((x,y)=>x.name.localeCompare(y.na
 function render(){
  $('count').textContent=`${S.total.toLocaleString()} films`;
  const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';$('selAllBtn').textContent=$('selAllBar').textContent='Select all ('+S.total+')';$('selAllBtn').style.display=S.total?'':'none';if(!$('bulkMpaa').options.length)$('bulkMpaa').innerHTML=mpaaOpts('');if(!$('bulkRes').options.length)$('bulkRes').innerHTML=resOpts('');
- const c=$('content');
+ const c=$('content');if(S.page)return;
  if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}" data-id="${f.id}"><input type=checkbox class=cb title="Select" ${S.sel.has(f.id)?'checked':''}>
   <div class="po">${posterOf(f)?`<img loading="lazy" src="${esc(posterOf(f))}">`:esc(f.title)}</div>
   ${f.pending.length?`<span class="badge b-ai">AI ${f.pending.length}</span>`:''}${f.queued?'<span class="badge b-q">queued</span>':''}
@@ -167,6 +180,7 @@ function render(){
  else{const cols=[['title','Title'],['year','Year'],['director','Director'],['country','Country'],['resolution','Res'],['runtime','Min'],['rating','★'],['mpaa','MPAA'],['watched','Seen'],[null,'Tags']];
   c.innerHTML='<table><thead><tr><th><input type=checkbox onclick="event.stopPropagation();this.checked?selectAll():(S.sel.clear(),render())"></th>'+cols.map(([k,l])=>`<th ${k?`onclick="sortBy('${k}')"`:''}>${l}${$('sort').value==k?(S.order=='asc'?' ▲':' ▼'):''}</th>`).join('')+'</tr></thead><tbody>'+
   S.films.map(f=>`<tr data-id="${f.id}" class="${S.sel.has(f.id)?'sel':''}"><td><input type=checkbox ${S.sel.has(f.id)?'checked':''}></td><td>${esc(f.title)}${f.missing?' <span class="tag" style="color:var(--bad)">missing</span>':''}${f.pending.length?` <span class="tag ai">AI ${f.pending.length}</span>`:''}${f.queued?' <span class="tag">queued</span>':''}</td><td>${f.year||''}</td><td>${esc(f.director)}</td><td>${countryLinks(f.country)}</td><td>${resLink(f.resolution)}</td><td>${f.runtime||''}</td><td>${f.rating||''}</td><td>${esc(f.mpaa)}</td><td>${f.watched?'✓':''}</td><td>${tagsHtml(f)}</td></tr>`).join('')+'</tbody></table>'}
+ if(S.people.length||$('f_in').value=='people')c.insertAdjacentHTML('afterbegin',peopleSection())
 }
 function sortBy(k){if($('sort').value==k)S.order=S.order=='asc'?'desc':'asc';else{$('sort').value=k;S.order='asc'}$('ord').textContent=S.order=='asc'?'↑':'↓';load()}
 $('content').addEventListener('click',e=>{const el=e.target.closest('[data-id]');if(!el)return;const id=+el.dataset.id;
@@ -378,5 +392,56 @@ async function doScan(){const roots=$('s_roots').value.split('\n').map(s=>s.trim
  $('scanRes').textContent=`Found ${r.found} video files, ${r.added} new, ${r.missing_files} missing. ${r.errors.join('; ')}`;refreshMeta();load();loadLibs();pollJob()}
 async function doImport(){const f=$('s_file').files[0];if(!f)return;if(f.name.endsWith('.json')&&!confirm('This REPLACES your whole database. Continue?'))return;
  const fd=new FormData();fd.append('file',f);const r=await api('/api/import',{method:'POST',body:fd});toast('Imported: '+JSON.stringify(r));refreshMeta();load()}
+// ---------- person search + person pages ----------
+S.people=[];S.peopleTotal=0;S.page=null;S.ppOnly=localStorage.ppOnly=='1';S.ppDesc=localStorage.ppDesc=='1';
+const RLBL={director:'Director',cast:'Actor',writer:'Writer',producer:'Producer',cinematographer:'Cinematographer',composer:'Composer'};
+const initials=n=>esc(String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase());
+async function searchPeople(){const q=$('q').value.trim(),inn=$('f_in').value;
+ if(!q||!['','people','cast','director'].includes(inn)){S.people=[];S.peopleTotal=0;return}
+ try{const j=await api('/api/people/search?'+new URLSearchParams({q,limit:inn=='people'?120:12}));if($('q').value.trim()!==q)return;S.people=j.people;S.peopleTotal=j.total}catch(e){S.people=[];S.peopleTotal=0}}
+function peopleSection(){if(!S.people.length)return $('f_in').value=='people'&&$('q').value.trim()?'<div class=ppl><h3>People</h3><p class=muted>No people in your library match.</p></div>':'';
+ return `<div class=ppl><h3>People <span class=muted>(${S.peopleTotal}${S.peopleTotal>S.people.length?', showing '+S.people.length:''})</span>${$('f_in').value!='people'&&S.peopleTotal>S.people.length?` <a href="#" onclick="setIn('people');load();return false" style="font-size:.8em">show all people</a>`:''}</h3><div class=pcards>${S.people.map(p=>`<div class=pcard data-pname="${esc(p.name)}" title="Open ${esc(p.name)}'s page">
+ <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div><b>${esc(p.name)}</b><div class=muted>${esc(p.known_for||RLBL[p.role]||'')}</div><div class=muted>${p.n} film${p.n==1?'':'s'} in library</div></div></div>`).join('')}</div>${$('f_in').value!='people'&&S.films.length?'<h3 style="margin:10px 0 0">Films</h3>':''}</div>`}
+$('content').addEventListener('click',e=>{const el=e.target.closest('[data-pname]');if(!el)return;e.preventDefault();openPersonByName(el.dataset.pname)});
+async function openPersonByName(name){if(!name){S.page=null;return load()}S.keepFilm=true;closeM();S.keepFilm=false;
+ const r=await api('/api/person/lookup?'+new URLSearchParams({name}));return showPerson(r.id)}
+async function showPerson(pid,opt={}){
+ if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='person:'+pid&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'person:'+pid},'')}}
+ S.page='person:'+pid;S.pageId=pid;$('personHdr').style.display='none';
+ if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
+ let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
+ if(S.page!=='person:'+pid)return;S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
+function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
+function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
+ const bio=(p.bio||'').trim(),short=bio.length>420?bio.slice(0,420).replace(/\s+\S*$/,'')+'…':bio;
+ const roles=Object.entries(d.roles).sort((a,b)=>b[1]-a[1]).map(([r,n])=>`${n} as ${ROLES[r][0]}`).join(' · ');
+ let h=`<div class=pp><div class=pphead><div class=ppimg>${p.photo?`<img src="${esc(p.photo)}" alt="">`:`<span>${initials(p.name)}</span>`}</div><div style="flex:1;min-width:0">
+ <button style="float:right" onclick="history.back()" title="Back (Alt+←)">← Back</button>
+ <h2 style="margin:0 0 4px">${esc(p.name)}</h2>${p.aka.length?`<div class=muted>Also credited as ${p.aka.map(esc).join(', ')}</div>`:''}
+ <div class=muted>${p.known_for?`Known for: <b>${esc(p.known_for)}</b>`:''}${roles?` · In your library: ${roles}`:''}</div>
+ ${p.birthday?`<div>Born ${fmtDate(p.birthday)}${p.deathday?'':ageAt(p.birthday)}${p.place?' in '+esc(p.place):''}</div>`:p.place?`<div>Born in ${esc(p.place)}</div>`:''}
+ ${p.deathday?`<div>Died ${fmtDate(p.deathday)}${ageAt(p.birthday,p.deathday)}</div>`:''}
+ ${bio?`<p id=ppbio class=ppbio>${esc(short)}${short!==bio?` <a href="#" onclick="$('ppbio').textContent=S.ppData.person.bio;return false">more</a>`:''}</p>`:''}
+ ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
+ <div class=ppctl>${p.tmdb_url?`<a href="${esc(p.tmdb_url)}" target=_blank rel=noopener>TMDB page ↗</a>`:''}
+ <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button onclick="showPerson(${p.id},{refresh:true,keep:true,nohist:true})" title="Re-fetch from TMDB">↻ Refresh</button></div>
+ </div></div>`;
+ if(d.groups&&d.groups.length){
+  h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
+  <span>Sort: <button onclick="ppSort()" title="Toggle year order">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span>
+  <span class=muted>Jump to: ${d.groups.map((g,i)=>`<a href="#" onclick="document.getElementById('ppg${i}').scrollIntoView();return false">${esc(g.dept)}</a>`).join(' · ')}</span></div>`;
+  d.groups.forEach((g,i)=>{let l=g.credits.filter(x=>!S.ppOnly||x.film_id);if(S.ppDesc)l=[...l].reverse();const own=g.credits.filter(x=>x.film_id).length;
+   h+=`<h3 id=ppg${i} class=ppdept>${esc(g.dept)} <span class=muted>— you have ${own} of ${g.credits.length}</span></h3>`+(l.length?`<div class=pplist>${l.map(x=>{
+    const img=x.film_id&&x.poster?x.poster:x.thumb,inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${x.year||'—'}</div><div class=ppn>${esc(x.title)}</div>${x.role?`<div class=muted>${esc(x.role)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
+    return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title)}">${inner}</div>`:`<a class="ppi not" href="https://www.themoviedb.org/movie/${x.tmdb_id}" target=_blank rel=noopener title="Not in your library — open on TMDB">${inner}</a>`}).join('')}</div>`:'<p class=muted>None in your library.</p>')});
+ }else{
+  let l=[...d.library];if(S.ppDesc)l.reverse();
+  h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
+   return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
+ c.innerHTML=h+'</div>'}
+function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
+function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
+async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
 renderMpaa();setLib('');setIn(localStorage.searchIn||'');$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();
 </script></body></html>

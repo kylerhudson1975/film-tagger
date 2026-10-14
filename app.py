@@ -1119,6 +1119,10 @@ def import_backup():
         n += 1
     c.commit(); return ok(mode="merge", rows=n)
 
+# ---------- person pages (people.py) ----------
+import people as peoplemod
+peoplemod.init(app, tmdb, POSTERS_DIR)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
     print(f"Film Tagger running: open http://localhost:{port}   (database: {db.DB_PATH})")
