@@ -76,6 +76,8 @@ def connect():
     for col in PEOPLE_COLS:  # extra crew roles (nullable; existing rows untouched)
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     c.create_function("person_in", 2, person_in, deterministic=True)
+    if "country" not in cols: c.execute("ALTER TABLE films ADD COLUMN country TEXT")  # comma-separated country names
+    if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
                       [(n, i) for i, n in enumerate(DEFAULT_CATEGORIES)])
