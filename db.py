@@ -52,6 +52,11 @@ def title_match(title, original, alts, word):
     if not w: return 0
     return 1 if any(w in fold(x) for x in (title, original, alts) if x) else 0
 
+def fold_in(field, word):
+    """1 if `word` occurs (accent/case-insensitive) anywhere in `field`."""
+    w = fold(word)
+    return 1 if w and field and w in fold(field) else 0
+
 def person_in(field, name):
     """1 if `name` exactly equals (case/whitespace-insensitive) one comma-separated entry of `field`."""
     if not field or not name: return 0
@@ -76,8 +81,11 @@ def connect():
     for col in PEOPLE_COLS:  # extra crew roles (nullable; existing rows untouched)
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     c.create_function("person_in", 2, person_in, deterministic=True)
+    c.create_function("fold_in", 2, fold_in, deterministic=True)
     if "country" not in cols: c.execute("ALTER TABLE films ADD COLUMN country TEXT")  # comma-separated country names
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
+    if "studio" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio TEXT")  # comma-separated production company names
+    if "studio_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio_checked INTEGER")  # backfill tried
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():

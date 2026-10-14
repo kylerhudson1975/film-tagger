@@ -6,7 +6,7 @@ import resolution as resmod
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "resolution"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -49,14 +49,14 @@ def build_query(q):
         PATHQ = "f.id IN (SELECT film_id FROM files WHERE path LIKE ?)"
         TITLEQ = "title_match(f.title, f.original_title, COALESCE(f.alt_titles,'') || ' ; ' || COALESCE(f.user_akas,''), ?)"
         single = {"title": TITLEQ, "plot": "f.plot LIKE ?", "cast": "f.cast_ LIKE ?", "director": "f.director LIKE ?",
-                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "resolution": "f.resolution LIKE ?"}
+                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "studio": "fold_in(f.studio, ?)", "resolution": "f.resolution LIKE ?"}
         for w in text.split():
             like = f"%{w}%"
             if field in single:
-                where.append(single[field]); args.append(w if field == "title" else like)
+                where.append(single[field]); args.append(w if field in ("title", "studio") else like)
             else:
-                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR f.resolution LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
-                args += [w, like, like, like, like, like, like, w, like, like]
+                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
+                args += [w, like, like, like, like, like, w, like, w, like, like]
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
                          ("rating_max", "rating", "<="), ("runtime_min", "runtime", ">="), ("runtime_max", "runtime", "<=")]:
         v = q.get(key)
@@ -89,6 +89,8 @@ def build_query(q):
         for d in decs: args += [d, d + 10]
     for cn in split_list(q.get("country")):  # exact country name (one entry of the comma-separated list)
         where.append("person_in(f.country, ?)"); args.append(cn)
+    for st in split_list(q.get("studio")):  # exact studio name (one entry of the comma-separated list)
+        where.append("person_in(f.studio, ?)"); args.append(st)
     rs = split_list(q.get("res"))
     if rs:  # OR across resolutions; "(none)" = not set
         parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
@@ -98,7 +100,7 @@ def build_query(q):
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 SORTS = {"title": "f.title COLLATE NOCASE", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE NOCASE", "country": "f.country COLLATE NOCASE", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
+         "added": "f.added_at", "director": "f.director COLLATE NOCASE", "country": "f.country COLLATE NOCASE", "studio": "f.studio COLLATE NOCASE", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
 
 def attach(c, films, full=False):
     if not films: return films
@@ -133,6 +135,14 @@ def decades():
 def resolutions():
     n = dict(C().execute("SELECT COALESCE(resolution,''), COUNT(*) FROM films GROUP BY 1").fetchall())
     return jsonify([dict(name=r, n=n.get(r, 0)) for r in resmod.CHOICES] + [dict(name="(none)", n=n.get("", 0))])
+
+@app.get("/api/studios")
+def studios():
+    """Distinct studio (production company) names present in the library, with film counts."""
+    n = {}
+    for (v,) in C().execute("SELECT studio FROM films WHERE studio IS NOT NULL AND studio<>''"):
+        for x in split_list(v): n[x] = n.get(x, 0) + 1
+    return jsonify([dict(name=k, n=v) for k, v in sorted(n.items(), key=lambda kv: db.fold(kv[0]))])
 
 @app.get("/api/countries")
 def countries():
@@ -249,7 +259,7 @@ def clean(d):
                 v = int(v) if v not in (None, "") else None
                 if k == "rating" and v is not None: v = max(1, min(10, v))
             if k == "watched": v = 1 if v in (True, 1, "1", "true") else 0
-            if k == "country": v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
+            if k in ("country", "studio"): v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -597,6 +607,9 @@ def alt_titles_of(m):
 def countries_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_countries") or []) if (x.get("name") or "").strip()))
 
+def studios_of(m):
+    return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
+
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     crew = m.get("credits", {})
     def jobs(*js):
@@ -622,11 +635,16 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     if "production_countries" in m:
         if countries_of(m): upd["country"] = countries_of(m)
         upd["country_checked"] = 1
+    if "production_companies" in m:
+        if studios_of(m): upd["studio"] = studios_of(m)
+        upd["studio_checked"] = 1
     if respect_edits:
         ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"))
         upd = {k: v for k, v in upd.items() if k not in ed}
     elif "country" in upd and "country" in json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"):
         del upd["country"]  # a hand-edited country is never replaced by TMDB, even on an explicit fetch
+    if not respect_edits and "studio" in upd and "studio" in json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"):
+        del upd["studio"]  # a hand-edited studio is never replaced by TMDB, even on an explicit fetch
     upd = {k: v for k, v in upd.items() if k not in set(keep)}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
@@ -677,7 +695,7 @@ def run_poster_job(key, ids):
                 if not res and f["year"]: res = call("search/movie", query=f["title"]).get("results", [])
                 r = pick_confident(f["title"], f["year"], res)
                 if r:
-                    apply_movie(c, fid, call(f"movie/{r['id']}", append_to_response="credits,release_dates,alternative_titles"))
+                    apply_movie(c, fid, call(f"movie/{r['id']}", append_to_response="credits,release_dates,alternative_titles", include_adult="true"))
                     JOB["matched"] += 1
                 else:
                     c.execute("UPDATE films SET tmdb_status='needs_match' WHERE id=?", (fid,)); JOB["skipped"] += 1
@@ -814,6 +832,73 @@ def country_start():
         JOB.clear(); JOB.update(running=True, kind="country", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_country_job, args=(key, ids), daemon=True).start()
     return jsonify(JOB)
+
+def run_studio_job(key, ids):
+    """Backfill films.studio from TMDB production_companies. Never overwrites a hand-edited or existing value."""
+    rl = RateLimiter(8); c = C()
+    try:
+        for fid, tid in ids:
+            if JOB["cancel"]: break
+            try:
+                rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
+                st = studios_of(m)
+                cur = c.execute("UPDATE films SET studio=? WHERE id=? AND (studio IS NULL OR studio='') AND COALESCE(edited_fields,'') NOT LIKE '%\"studio\"%'", (st, fid)) if st else None
+                if cur is not None and cur.rowcount: JOB["matched"] += 1
+                else: JOB["skipped"] += 1
+                c.execute("UPDATE films SET studio_checked=1 WHERE id=?", (fid,)); c.commit()
+            except urllib.error.HTTPError as e:
+                if e.code == 401: JOB["error"] = "TMDB rejected the API key (401)"; break
+                if e.code == 429: time.sleep(5)
+                JOB["errors"] += 1
+            except Exception as e:
+                JOB["errors"] += 1; JOB["error"] = f"Network/TMDB error: {e}"
+                if JOB["errors"] >= 5 and JOB["matched"] == 0: JOB["error"] += " (stopped after repeated failures)"; break
+            JOB["done"] += 1
+    finally:
+        JOB["running"] = False; JOB["finished_at"] = time.time(); c.close()
+
+@app.post("/api/studio/start")
+def studio_start():
+    """Backfill studio for films with a tmdb_id and no studio. {retry_checked: true} also retries films TMDB had none for."""
+    c = C(); key = db.get_setting(c, "tmdb_key", "")
+    if not key: return jsonify(error="No TMDB API key set in Settings"), 400
+    with JOB_LOCK:
+        if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
+        retry = (request.json or {}).get("retry_checked", False) if request.is_json else False
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND (studio IS NULL OR studio='')"
+               + ("" if retry else " AND studio_checked IS NULL") + " AND COALESCE(edited_fields,'') NOT LIKE '%\"studio\"%' ORDER BY id")]
+        JOB.clear(); JOB.update(running=True, kind="studio", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
+        threading.Thread(target=run_studio_job, args=(key, ids), daemon=True).start()
+    return jsonify(JOB)
+
+@app.get("/api/studio/status")
+def studio_status():
+    c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
+    j = dict(JOB); eta = None
+    if j.get("kind") == "studio" and j.get("running") and j.get("done") and j.get("started_at"):
+        eta = round((time.time() - j["started_at"]) / j["done"] * (j["total"] - j["done"]))
+    return jsonify(job=j, eta_seconds=eta, with_studio=q("studio IS NOT NULL AND studio<>''"),
+                   remaining=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked IS NULL"),
+                   no_tmdb_studio=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked=1"))
+
+@app.post("/api/bulk/studio")
+def bulk_studio():
+    """{film_ids:[..], studio:"A, B"|""} - set/clear studio on many films (marked hand-edited)."""
+    d = request.json or {}
+    try: ids = [int(i) for i in d.get("film_ids", [])]
+    except (TypeError, ValueError): return jsonify(error="bad film_ids"), 400
+    v = ", ".join(dict.fromkeys(split_list(d.get("studio") or ""))) or None
+    c = C(); now = time.time(); n = 0
+    try:
+        for fid in ids:
+            r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+            if not r: continue
+            ed = set(json.loads(r[0] or "[]")); ed.add("studio")
+            c.execute("UPDATE films SET studio=?, edited_fields=?, updated_at=? WHERE id=?", (v, json.dumps(sorted(ed)), now, fid)); n += 1
+        c.commit()
+    except Exception as e:
+        c.rollback(); return jsonify(error=str(e)), 500
+    return ok(updated=n)
 
 @app.get("/api/country/status")
 def country_status():
@@ -1059,7 +1144,7 @@ def tmdb_apply(fid):
             res = tmdb("search/movie", key, **p)["results"]
             if not res: return jsonify(error="No TMDB match"), 404
             tid = res[0]["id"]
-        m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles")
+        m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
     except urllib.error.HTTPError as e:
         if e.code == 404: return jsonify(error=f"TMDB has no movie with id {tid}"), 404
         if e.code == 401: return jsonify(error="TMDB rejected the API key (401)"), 502
