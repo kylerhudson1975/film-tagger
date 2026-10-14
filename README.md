@@ -15,6 +15,7 @@ Point it at the folders where your video files live. It builds a searchable cata
 - **Poster grid and sortable table**, fast with 10,000+ films.
 - **Clickable people:** click any director, actor, writer, producer, cinematographer or composer to see all their films, with a role breakdown and sorting.
 - **Country and decade links:** country comes from TMDB (editable, never overwritten once you edit it) and is clickable to show all films from that country; a decade link next to Year does the same. *Fill missing countries* in Library & Settings backfills older records.
+- **Resolution:** auto-detected from your video files (ffprobe if installed, otherwise a built-in reader for MP4/MKV/AVI/MPEG, otherwise the filename). Editable, with filter chips, a bulk *Set resolution* action and a *Detect resolutions* scan.
 - **Your own poster art:** upload, drag-and-drop or paste an image URL. TMDB refreshes never replace it.
 - **Original and alternative titles:** search finds films by original, TMDB alternative or your own "also known as" titles, ignoring accents.
 - **Optional TMDB metadata:** with a free key it fetches posters, cast, plot, runtime, genres and production countries for one film or your whole library, and fills in MPAA ratings.
