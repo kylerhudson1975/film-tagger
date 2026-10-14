@@ -9,14 +9,15 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 ## Features
 - **Library scan:** recursively finds video files (mkv, mp4, avi, mov, wmv, m4v, mpg, ts, webm, vob, …) in any folders or drives and guesses the title and year from file or folder names. **Read-only:** your files are never moved, renamed or deleted. Rescans add new files and flag missing ones.
-- **Rich film records:** title, year, director, cast, runtime, plot, poster, MPAA rating, your 1–10 rating, watched flag, notes, storage location and file paths. Everything is editable.
+- **Rich film records:** title, year, country, director, cast, runtime, plot, poster, MPAA rating, your 1–10 rating, watched flag, notes, storage location and file paths. Everything is editable.
 - **Unlimited tags** with user-editable categories (Genre, Content, Themes, Mood, Setting, Era…), autocomplete and bulk add/remove.
-- **Powerful search:** tag logic (ALL / ANY / NOT), text search in any field, filters for year, rating, runtime, watched, MPAA and library folder. Searches can be saved.
+- **Powerful search:** tag logic (ALL / ANY / NOT), text search in any field, filters for year, decade (multi-select chips), country, rating, runtime, watched, MPAA and library folder. Searches can be saved, and Back/Forward history works for every filter.
 - **Poster grid and sortable table**, fast with 10,000+ films.
 - **Clickable people:** click any director, actor, writer, producer, cinematographer or composer to see all their films, with a role breakdown and sorting.
+- **Country and decade links:** country comes from TMDB (editable, never overwritten once you edit it) and is clickable to show all films from that country; a decade link next to Year does the same. *Fill missing countries* in Library & Settings backfills older records.
 - **Your own poster art:** upload, drag-and-drop or paste an image URL. TMDB refreshes never replace it.
 - **Original and alternative titles:** search finds films by original, TMDB alternative or your own "also known as" titles, ignoring accents.
-- **Optional TMDB metadata:** with a free key it fetches posters, cast, plot, runtime and genres for one film or your whole library, and fills in MPAA ratings.
+- **Optional TMDB metadata:** with a free key it fetches posters, cast, plot, runtime, genres and production countries for one film or your whole library, and fills in MPAA ratings.
 - **Smart tagging (AI):** queue films and let an AI suggest tags. Every suggestion waits for your approval. You can use it two ways:
   - **No key needed:** copy the ready-made prompt into any AI chatbot (ChatGPT, Grok, Claude, Gemini, …) and paste back its JSON reply.
   - **Bring your own key:** connect any OpenAI-compatible API (OpenAI, OpenRouter, xAI, or local Ollama / LM Studio) for one-click "Tag now".
