@@ -316,6 +316,25 @@ def bulk_update():
         if f: c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
     c.commit(); return ok()
 
+@app.post("/api/bulk/mpaa")
+def bulk_mpaa():
+    """{film_ids:[..], mpaa:"X"|""} - set/clear MPAA rating on many films in one transaction."""
+    d = request.json or {}
+    try: ids = [int(i) for i in d.get("film_ids", [])]
+    except (TypeError, ValueError): return jsonify(error="bad film_ids"), 400
+    v = (d.get("mpaa") or "").strip() or None
+    c = C(); now = time.time(); n = 0
+    try:
+        for fid in ids:
+            r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+            if not r: continue
+            ed = set(json.loads(r[0] or "[]")); ed.add("mpaa")
+            c.execute("UPDATE films SET mpaa=?, edited_fields=?, updated_at=? WHERE id=?", (v, json.dumps(sorted(ed)), now, fid)); n += 1
+        c.commit()
+    except Exception as e:
+        c.rollback(); return jsonify(error=str(e)), 500
+    return ok(updated=n)
+
 @app.post("/api/bulk/delete")
 def bulk_delete():
     c = C()

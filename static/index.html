@@ -16,7 +16,7 @@ button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:v
 #content{flex:1;overflow:auto;padding:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
 .card{background:var(--p);border:2px solid transparent;border-radius:8px;overflow:hidden;cursor:pointer;position:relative}
-.card.sel{border-color:var(--a)}.card .po{aspect-ratio:2/3;background:var(--p2);display:flex;align-items:center;justify-content:center;text-align:center;padding:8px;color:var(--m);font-size:15px}
+.card.sel{border-color:var(--a)}.card{position:relative}.card .cb{position:absolute;top:6px;left:6px;z-index:2;width:18px;height:18px;margin:0;cursor:pointer;opacity:.35}.card:hover .cb,.card.sel .cb{opacity:1}.card .po{aspect-ratio:2/3;background:var(--p2);display:flex;align-items:center;justify-content:center;text-align:center;padding:8px;color:var(--m);font-size:15px}
 .card img{width:100%;height:100%;object-fit:cover}.card .ti{padding:6px 8px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card .su{padding:0 8px 6px;font-size:11px;color:var(--m)}.badge{position:absolute;top:6px;font-size:10px;padding:2px 5px;border-radius:4px}
 .b-ai{right:6px;background:var(--ai);color:#000}.b-q{left:6px;background:#e0b341;color:#000}.b-miss{left:6px;top:26px;background:var(--bad)}
@@ -77,7 +77,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <select id="sort" title="Sort order"><option value="title">Sort: Title</option><option value="year">Sort: Year</option><option value="rating">Sort: Rating</option><option value="runtime">Sort: Runtime</option><option value="added">Sort: Date added</option><option value="director">Sort: Director</option></select>
   <button id="ord" onclick="S.order=S.order=='asc'?'desc':'asc';this.textContent=S.order=='asc'?'↑':'↓';load()">↑</button>
   <button onclick="setView('grid')">▦ Grid</button><button onclick="setView('table')">☰ Table</button>
-  <span id="count"></span><span id="jobBadge" class="tag" style="display:none;cursor:pointer" onclick="openSettings()"></span>
+  <button id="selAllBtn" onclick="selectAll()" title="Select every film in the current results (not just the ones loaded)">Select all</button><span id="count"></span><span id="jobBadge" class="tag" style="display:none;cursor:pointer" onclick="openSettings()"></span>
   <button onclick="openPending()" id="pendBtn">AI review</button>
   <button onclick="openQueue()" id="queueBtn">Queue</button>
   <button onclick="newFilm()">+ Film</button>
@@ -88,8 +88,9 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <input id="bulkTag" list="taglist" placeholder="tag name" style="width:160px"><select id="bulkCat"></select>
   <button onclick="bulkTag(true)">Add tag</button><button onclick="bulkTag(false)">Remove tag</button>
   <button onclick="queueFilms([...S.sel])">✨ Smart tagging (AI)</button><button onclick="startJob('/api/ai/start',{film_ids:[...S.sel]})">⚡ Tag now</button>
+  <select id="bulkMpaa" title="MPAA rating to apply (— clears it)"></select><button onclick="bulkMpaa()">Set MPAA rating</button>
   <button onclick="bulkWatched(1)">Mark watched</button><button onclick="bulkWatched(0)">Unwatched</button>
-  <button onclick="selectAll()">Select all results</button><button onclick="S.sel.clear();render()">Clear selection</button>
+  <button id="selAllBar" onclick="selectAll()">Select all results</button><button onclick="S.sel.clear();render()">Clear selection</button>
   <button onclick="bulkDelete()" style="color:var(--bad)">Remove from catalog</button>
  </div>
  <div id="personHdr" style="display:none;padding:8px 14px;border-bottom:1px solid #8884"></div>
@@ -137,7 +138,7 @@ async function personHeader(){const h=$('personHdr'),name=$('f_person').value,ro
  h.innerHTML=`<b style="font-size:1.15em">${esc(p.name)}: ${n} ${fs} ${what}</b>${S.total!=n?` <span class=muted>(${S.total} shown with other filters)</span>`:''}${others.length?' <span class=muted>· also: '+others.join(' · ')+'</span>':''} <span style="margin-left:12px">Sort by <select onchange="$('sort').value=this.value;load()">${$('sort').innerHTML.replace(/Sort: /g,'').replace(`value="${$('sort').value}"`,`value="${$('sort').value}" selected`)}</select> <button onclick="S.order=S.order=='asc'?'desc':'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';load()" title="Reverse order">${S.order=='asc'?'↑':'↓'}</button></span> <button style="margin-left:8px" onclick="filterPerson('')" title="Clear person filter">× Clear</button>`;h.style.display='block'}
 function filterPerson(name,role=''){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';renderMpaa();S.sel.clear();
  $('f_person').value=name||'';$('f_prole').value=name?role:'';load()}
-const MPAA_ALL=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-G','TV-PG','TV-14','TV-MA'];
+const MPAA_ALL=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'];
 function mpaaOpts(v){v=v||'';const l=['',...MPAA_ALL];if(v&&!l.includes(v))l.push(v);return l.map(m=>`<option value="${esc(m)}" ${m==v?'selected':''}>${m?esc(m):'—'}</option>`).join('')}
 function peopleField(f,k,role){const v=f[k]||'',names=v.split(',').map(s=>s.trim()).filter(Boolean);
  return `<div><label>${ROLES[role][1]} <a href="#" title="Edit names" style="text-decoration:none" onclick="togglePF('${k}');return false">✏️</a></label>
@@ -151,9 +152,9 @@ function setView(v){S.view=localStorage.view=v;render()}
 function tagsHtml(f,rm){return [...f.tags].sort((x,y)=>x.name.localeCompare(y.name,undefined,{sensitivity:'base'})).map(t=>`<span class="tag"><a class=tlink href="#" title="Show all films tagged ${esc(t.name)}" onclick="event.stopPropagation();filterTag('${jsq(t.name)}');return false">${esc(t.name)}</a>${t.category?`<span class=c style="margin:0 0 0 5px">${esc(t.category)}</span>`:''}${rm?`<x onclick="rmTag(${f.id},'${esc(t.name).replace(/'/g,"\\'")}')">×</x>`:''}</span>`).join('')}
 function render(){
  $('count').textContent=`${S.total.toLocaleString()} films`;
- const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';
+ const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';$('selAllBtn').textContent=$('selAllBar').textContent='Select all ('+S.total+')';$('selAllBtn').style.display=S.total?'':'none';if(!$('bulkMpaa').options.length)$('bulkMpaa').innerHTML=mpaaOpts('');
  const c=$('content');
- if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}" data-id="${f.id}">
+ if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}" data-id="${f.id}"><input type=checkbox class=cb title="Select" ${S.sel.has(f.id)?'checked':''}>
   <div class="po">${posterOf(f)?`<img loading="lazy" src="${esc(posterOf(f))}">`:esc(f.title)}</div>
   ${f.pending.length?`<span class="badge b-ai">AI ${f.pending.length}</span>`:''}${f.queued?'<span class="badge b-q">queued</span>':''}
   ${f.missing?'<span class="badge b-miss">missing</span>':''}${f.watched&&!f.pending.length?'<span class="badge b-w">✓</span>':''}
@@ -180,6 +181,10 @@ async function selectAll(){const j=await api('/api/films?'+params({ids_only:1}))
 async function bulkTag(add){const name=$('bulkTag').value.trim();if(!name)return;
  await api('/api/bulk/tags',{method:'POST',body:{film_ids:[...S.sel],add:add?[{name,category:$('bulkCat').value||null}]:[],remove:add?[]:[name]}});
  toast(`${add?'Added':'Removed'} "${name}" ${add?'to':'from'} ${S.sel.size} films`);refreshMeta();reload()}
+async function bulkMpaa(){const v=$('bulkMpaa').value,n=S.sel.size;if(!n)return;
+ if(!confirm(v?`Set the MPAA rating of ${n} film${n==1?'':'s'} to "${v}"?`:`Clear the MPAA rating of ${n} film${n==1?'':'s'}?`))return;
+ const j=await api('/api/bulk/mpaa',{method:'POST',body:{film_ids:[...S.sel],mpaa:v}});S.sel.clear();refreshMeta();
+ toast(v?`Set MPAA rating to ${v} on ${j.updated} films`:`Cleared MPAA rating on ${j.updated} films`);reload()}
 async function bulkWatched(v){await api('/api/bulk/update',{method:'POST',body:{film_ids:[...S.sel],fields:{watched:v}}});reload()}
 async function bulkDelete(){if(!confirm(`Remove ${S.sel.size} films from the catalog? (Video files on disk are NOT touched.)`))return;
  await api('/api/bulk/delete',{method:'POST',body:{film_ids:[...S.sel]}});S.sel.clear();refreshMeta();reload()}
