@@ -78,6 +78,8 @@ def connect():
     c.create_function("person_in", 2, person_in, deterministic=True)
     if "country" not in cols: c.execute("ALTER TABLE films ADD COLUMN country TEXT")  # comma-separated country names
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
+    for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
                       [(n, i) for i, n in enumerate(DEFAULT_CATEGORIES)])

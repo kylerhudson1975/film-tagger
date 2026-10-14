@@ -2,10 +2,11 @@
 import os, io, csv, json, time, urllib.request, urllib.parse, urllib.error
 from flask import Flask, request, jsonify, send_from_directory, Response
 import db
+import resolution as resmod
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country"]
+               "writers", "producers", "cinematographer", "composer", "country", "resolution"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -48,14 +49,14 @@ def build_query(q):
         PATHQ = "f.id IN (SELECT film_id FROM files WHERE path LIKE ?)"
         TITLEQ = "title_match(f.title, f.original_title, COALESCE(f.alt_titles,'') || ' ; ' || COALESCE(f.user_akas,''), ?)"
         single = {"title": TITLEQ, "plot": "f.plot LIKE ?", "cast": "f.cast_ LIKE ?", "director": "f.director LIKE ?",
-                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?"}
+                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "resolution": "f.resolution LIKE ?"}
         for w in text.split():
             like = f"%{w}%"
             if field in single:
                 where.append(single[field]); args.append(w if field == "title" else like)
             else:
-                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
-                args += [w, like, like, like, like, like, w, like, like]
+                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR f.resolution LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
+                args += [w, like, like, like, like, like, like, w, like, like]
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
                          ("rating_max", "rating", "<="), ("runtime_min", "runtime", ">="), ("runtime_max", "runtime", "<=")]:
         v = q.get(key)
@@ -88,11 +89,16 @@ def build_query(q):
         for d in decs: args += [d, d + 10]
     for cn in split_list(q.get("country")):  # exact country name (one entry of the comma-separated list)
         where.append("person_in(f.country, ?)"); args.append(cn)
+    rs = split_list(q.get("res"))
+    if rs:  # OR across resolutions; "(none)" = not set
+        parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
+        if "(none)" in rs: parts.append("COALESCE(f.resolution,'')=''")
+        where.append("(" + " OR ".join(parts) + ")"); args += [x for x in rs if x != "(none)"]
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 SORTS = {"title": "f.title COLLATE NOCASE", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE NOCASE", "country": "f.country COLLATE NOCASE", "watched": "f.watched", "id": "f.id"}
+         "added": "f.added_at", "director": "f.director COLLATE NOCASE", "country": "f.country COLLATE NOCASE", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
 
 def attach(c, films, full=False):
     if not films: return films
@@ -122,6 +128,11 @@ def list_films():
 def decades():
     return jsonify([dict(decade=r[0], n=r[1]) for r in C().execute(
         "SELECT (year/10)*10 d, COUNT(*) FROM films WHERE year IS NOT NULL AND year>0 GROUP BY d ORDER BY d")])
+
+@app.get("/api/resolutions")
+def resolutions():
+    n = dict(C().execute("SELECT COALESCE(resolution,''), COUNT(*) FROM films GROUP BY 1").fetchall())
+    return jsonify([dict(name=r, n=n.get(r, 0)) for r in resmod.CHOICES] + [dict(name="(none)", n=n.get("", 0))])
 
 @app.get("/api/countries")
 def countries():
@@ -239,6 +250,7 @@ def clean(d):
                 if k == "rating" and v is not None: v = max(1, min(10, v))
             if k == "watched": v = 1 if v in (True, 1, "1", "true") else 0
             if k == "country": v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
+            if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
                 seen = []
@@ -254,7 +266,9 @@ def create_film():
     f["added_at"] = f["updated_at"] = time.time()
     cur = c.execute(f"INSERT INTO films({','.join(f)}) VALUES({','.join('?'*len(f))})", list(f.values()))
     for p in split_list(d.get("paths")): c.execute("INSERT OR IGNORE INTO files(film_id,path) VALUES(?,?)", (cur.lastrowid, p))
-    c.commit(); return get_film(cur.lastrowid)
+    c.commit()
+    if split_list(d.get("paths")): start_res_job([cur.lastrowid])
+    return get_film(cur.lastrowid)
 
 @app.put("/api/films/<int:fid>")
 def update_film(fid):
@@ -269,7 +283,11 @@ def update_film(fid):
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
     if "paths" in d:  # manual edit of the catalogue's path list (does not touch disk)
         new = split_list(d["paths"]) if not isinstance(d["paths"], str) else [x.strip() for x in d["paths"].splitlines() if x.strip()]
+        before = {r[0] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fid,))}
         c.execute(f"DELETE FROM files WHERE film_id=? AND path NOT IN ({','.join('?'*len(new)) or 'NULL'})", [fid] + new)
+        if before != {r[0] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fid,))}:
+            c.execute("UPDATE films SET res_checked=NULL WHERE id=?", (fid,))  # paths changed: re-detect resolution
+            c.commit(); start_res_job([fid])
         for p in new:
             c.execute("INSERT OR IGNORE INTO files(film_id,path,missing) VALUES(?,?,?)", (fid, p, 0 if os.path.exists(p) else 1))
     if "tags" in d:  # full replace of approved tags: list of {name, category}
@@ -335,6 +353,24 @@ def bulk_update():
     for fid in d.get("film_ids", []):
         if f: c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
     c.commit(); return ok()
+
+@app.post("/api/bulk/resolution")
+def bulk_resolution():
+    """{film_ids:[..], resolution:"1080p"|""} - set/clear resolution on many films (marked hand-edited)."""
+    d = request.json or {}
+    try: ids = [int(i) for i in d.get("film_ids", [])]; v = resmod.normalize(d.get("resolution") or "")
+    except (TypeError, ValueError) as e: return jsonify(error=str(e) or "bad input"), 400
+    c = C(); now = time.time(); n = 0
+    try:
+        for fid in ids:
+            r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+            if not r: continue
+            ed = set(json.loads(r[0] or "[]")); ed.add("resolution")
+            c.execute("UPDATE films SET resolution=?, edited_fields=?, updated_at=? WHERE id=?", (v, json.dumps(sorted(ed)), now, fid)); n += 1
+        c.commit()
+    except Exception as e:
+        c.rollback(); return jsonify(error=str(e)), 500
+    return ok(updated=n)
 
 @app.post("/api/bulk/mpaa")
 def bulk_mpaa():
@@ -446,6 +482,8 @@ def scan():
         r = db.scan(c, roots, SCAN); SCAN.update(r); SCAN["cancelled"] = SCAN.get("cancel", False); return jsonify(r)
     finally:
         SCAN["running"] = False; SCAN["finished_at"] = time.time()
+        try: start_res_job()  # detect resolution of newly found films in the background
+        except Exception: pass
 
 SCAN = {"running": False, "kind": "scan"}
 
@@ -469,7 +507,7 @@ def libraries():
     return jsonify(out)
 
 @app.get("/api/jobs")
-def jobs(): return jsonify(job=JOB, scan=SCAN)
+def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES)
 
 @app.get("/api/searches")
 def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name")])
@@ -826,6 +864,70 @@ def posters_start():
 
 @app.get("/api/posters/status")
 def posters_status(): return jsonify(JOB)
+
+# ---------- resolution detection (local files; independent of the TMDB job so both can run at once) ----------
+RES = {"running": False, "kind": "resolution"}
+RES_LOCK = threading.Lock()
+
+def run_res_job(ids):
+    c = C()
+    try:
+        for fid in ids:
+            if RES["cancel"]: break
+            try:
+                paths = [r[0] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,))]
+                RES["current"] = paths[0] if paths else ""
+                r = resmod.detect(paths) if paths else dict(resolution=None, width=None, height=None, method="none")
+                if r is None: RES["offline"] += 1  # drive not mounted: leave unchecked so a later run retries
+                else:
+                    if r["width"]: c.execute("UPDATE films SET res_width=?, res_height=? WHERE id=?", (r["width"], r["height"], fid))
+                    cur = c.execute("UPDATE films SET resolution=? WHERE id=? AND COALESCE(edited_fields,'') NOT LIKE '%\"resolution\"%'",
+                                    (r["resolution"], fid)) if r["resolution"] else None
+                    if cur is not None and cur.rowcount: RES["matched"] += 1; RES["by_" + r["method"]] = RES.get("by_" + r["method"], 0) + 1
+                    else: RES["skipped"] += 1
+                    c.execute("UPDATE films SET res_checked=1 WHERE id=?", (fid,))
+                c.commit()
+            except Exception as e:
+                RES["errors"] += 1; RES["error"] = f"{type(e).__name__}: {e}"
+            RES["done"] += 1
+            el = time.time() - RES["started_at"]
+            RES["eta_s"] = int(el / RES["done"] * (RES["total"] - RES["done"])) if RES["done"] else None
+    finally:
+        RES["running"] = False; RES["finished_at"] = time.time(); RES["current"] = ""; c.close()
+
+def start_res_job(film_ids=None, recheck=False):
+    """Start detection for unchecked films (or the given ids). Returns False if one is already running."""
+    with RES_LOCK:
+        if RES.get("running"): return False
+        c = C()
+        if film_ids is not None: ids = [int(i) for i in film_ids]
+        else:
+            ids = [r[0] for r in c.execute("SELECT id FROM films WHERE COALESCE(edited_fields,'') NOT LIKE '%\"resolution\"%'"
+                   + ("" if recheck else " AND res_checked IS NULL") + " AND id IN (SELECT film_id FROM files) ORDER BY id")]
+        c.close()
+        RES.clear(); RES.update(running=True, kind="resolution", done=0, total=len(ids), matched=0, skipped=0, offline=0, errors=0,
+                                error=None, cancel=False, started_at=time.time(), eta_s=None, current="", method=resmod.method_name())
+        threading.Thread(target=run_res_job, args=(ids,), daemon=True).start()
+        return True
+
+@app.post("/api/resolution/start")
+def resolution_start():
+    """Detect resolution for films not yet checked. {recheck: true} re-checks all (hand-edited values are still kept)."""
+    d = (request.json or {}) if request.is_json else {}
+    if not start_res_job(d.get("film_ids"), bool(d.get("recheck"))): return jsonify(error="Resolution detection is already running"), 409
+    return jsonify(RES)
+
+@app.post("/api/resolution/cancel")
+def resolution_cancel(): RES["cancel"] = True; return jsonify(RES)
+
+@app.get("/api/resolution/status")
+def resolution_status():
+    c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
+    return jsonify(job=RES, method=resmod.method_name(), ffprobe=resmod.ffprobe_path() or None,
+                   with_resolution=q("resolution IS NOT NULL AND resolution<>''"),
+                   remaining=q("res_checked IS NULL AND id IN (SELECT film_id FROM files) AND COALESCE(edited_fields,'') NOT LIKE '%\"resolution\"%'"),
+                   unknown=q("res_checked=1 AND COALESCE(resolution,'')=''"),
+                   counts=dict(c.execute("SELECT COALESCE(resolution,'(none)'), COUNT(*) FROM films GROUP BY 1").fetchall()))
 
 @app.post("/api/posters/cancel")
 def posters_cancel(): JOB["cancel"] = True; return jsonify(JOB)

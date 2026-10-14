@@ -63,6 +63,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
  <label>Runtime (min)</label><div class="row"><input id="f_runtime_min" type="number" placeholder="min"><input id="f_runtime_max" type="number" placeholder="max"></div>
  <label>Country</label><input id="f_country" list="countrylist" placeholder="any country"><datalist id="countrylist"></datalist>
  <label>Rating (MPAA)</label><input type=hidden id="f_mpaa"><div id="mpaaChips"></div>
+ <label>Resolution</label><input type=hidden id="f_res"><div id="resChips"></div>
  <label>Watched</label><select id="f_watched"><option value="">Any</option><option value="1">Watched</option><option value="0">Unwatched</option></select>
  <label>Show only</label><select id="f_special"><option value="">All films</option><option value="pending">Pending AI tags</option><option value="queued">In smart-tag queue</option><option value="untagged">Untagged</option><option value="missing">Missing files</option><option value="needs_tmdb">Needs TMDB match</option><option value="nompaa">Matched, no MPAA rating</option></select>
  <div class="row" style="margin-top:8px"><button onclick="clearF()">Clear</button><button onclick="saveSearch()">Save search</button></div>
@@ -74,7 +75,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button>
   <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
   <div id="libPop" onclick="event.stopPropagation()"><input id="libSearch" placeholder="Filter folders…" autocomplete="off"><div id="libTree"></div></div></div>
-  <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option></select>
+  <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="resolution">Search in: Resolution</option></select>
   <input id="q" placeholder="Search everything…">
   <select id="sort" title="Sort order"><option value="title">Sort: Title</option><option value="year">Sort: Year</option><option value="rating">Sort: Rating</option><option value="runtime">Sort: Runtime</option><option value="added">Sort: Date added</option><option value="director">Sort: Director</option></select>
   <button id="ord" onclick="S.order=S.order=='asc'?'desc':'asc';this.textContent=S.order=='asc'?'↑':'↓';load()">↑</button>
@@ -91,6 +92,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button onclick="bulkTag(true)">Add tag</button><button onclick="bulkTag(false)">Remove tag</button>
   <button onclick="queueFilms([...S.sel])">✨ Smart tagging (AI)</button><button onclick="startJob('/api/ai/start',{film_ids:[...S.sel]})">⚡ Tag now</button>
   <select id="bulkMpaa" title="MPAA rating to apply (— clears it)"></select><button onclick="bulkMpaa()">Set MPAA rating</button>
+  <select id="bulkRes" title="Resolution to apply (— clears it)"></select><button onclick="bulkRes()">Set resolution</button>
   <button onclick="bulkWatched(1)">Mark watched</button><button onclick="bulkWatched(0)">Unwatched</button>
   <button id="selAllBar" onclick="selectAll()">Select all results</button><button onclick="S.sel.clear();render()">Clear selection</button>
   <button onclick="bulkDelete()" style="color:var(--bad)">Remove from catalog</button>
@@ -107,9 +109,10 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON.stringify(o.body);o.headers={'Content-Type':'application/json'}}
  const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(!r.ok){toast(j.error||r.statusText);throw j}return j}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
-const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','decade'];
-const INPH={'':'Search everything…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…'};
+const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','decade','res'];
+const INPH={'':'Search everything…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',resolution:'Search resolutions (e.g. 1080p)…'};
 function setIn(v){$('f_in').value=v||'';localStorage.searchIn=$('f_in').value;$('q').placeholder=INPH[$('f_in').value]}
+const RESL=['SD','480p','576p','720p','1080p','1440p','4K'];
 const MPAA=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-MA','(none)'];
 function query(){const q={q:$('q').value};FK.forEach(k=>q[k]=$('f_'+k).value);return q}
 function params(extra={}){const q=query(),p=new URLSearchParams();for(const k in q)if(q[k]&&k!='special')p.set(k,q[k]);if(q.special)p.set(q.special,1);
@@ -154,16 +157,16 @@ function setView(v){S.view=localStorage.view=v;render()}
 function tagsHtml(f,rm){return [...f.tags].sort((x,y)=>x.name.localeCompare(y.name,undefined,{sensitivity:'base'})).map(t=>`<span class="tag"><a class=tlink href="#" title="Show all films tagged ${esc(t.name)}" onclick="event.stopPropagation();filterTag('${jsq(t.name)}');return false">${esc(t.name)}</a>${t.category?`<span class=c style="margin:0 0 0 5px">${esc(t.category)}</span>`:''}${rm?`<x onclick="rmTag(${f.id},'${esc(t.name).replace(/'/g,"\\'")}')">×</x>`:''}</span>`).join('')}
 function render(){
  $('count').textContent=`${S.total.toLocaleString()} films`;
- const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';$('selAllBtn').textContent=$('selAllBar').textContent='Select all ('+S.total+')';$('selAllBtn').style.display=S.total?'':'none';if(!$('bulkMpaa').options.length)$('bulkMpaa').innerHTML=mpaaOpts('');
+ const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';$('selAllBtn').textContent=$('selAllBar').textContent='Select all ('+S.total+')';$('selAllBtn').style.display=S.total?'':'none';if(!$('bulkMpaa').options.length)$('bulkMpaa').innerHTML=mpaaOpts('');if(!$('bulkRes').options.length)$('bulkRes').innerHTML=resOpts('');
  const c=$('content');
  if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}" data-id="${f.id}"><input type=checkbox class=cb title="Select" ${S.sel.has(f.id)?'checked':''}>
   <div class="po">${posterOf(f)?`<img loading="lazy" src="${esc(posterOf(f))}">`:esc(f.title)}</div>
   ${f.pending.length?`<span class="badge b-ai">AI ${f.pending.length}</span>`:''}${f.queued?'<span class="badge b-q">queued</span>':''}
   ${f.missing?'<span class="badge b-miss">missing</span>':''}${f.watched&&!f.pending.length?'<span class="badge b-w">✓</span>':''}
   <div class="ti" title="${esc(f.title)}">${esc(f.title)}</div><div class="su">${f.year||''}${f.mpaa?`<span class=mp>${esc(f.mpaa)}</span>`:''} ${f.rating?'· ★'+f.rating:''} ${f.runtime?'· '+f.runtime+'m':''}</div></div>`).join('')+'</div>'}
- else{const cols=[['title','Title'],['year','Year'],['director','Director'],['country','Country'],['runtime','Min'],['rating','★'],['mpaa','MPAA'],['watched','Seen'],[null,'Tags']];
+ else{const cols=[['title','Title'],['year','Year'],['director','Director'],['country','Country'],['resolution','Res'],['runtime','Min'],['rating','★'],['mpaa','MPAA'],['watched','Seen'],[null,'Tags']];
   c.innerHTML='<table><thead><tr><th><input type=checkbox onclick="event.stopPropagation();this.checked?selectAll():(S.sel.clear(),render())"></th>'+cols.map(([k,l])=>`<th ${k?`onclick="sortBy('${k}')"`:''}>${l}${$('sort').value==k?(S.order=='asc'?' ▲':' ▼'):''}</th>`).join('')+'</tr></thead><tbody>'+
-  S.films.map(f=>`<tr data-id="${f.id}" class="${S.sel.has(f.id)?'sel':''}"><td><input type=checkbox ${S.sel.has(f.id)?'checked':''}></td><td>${esc(f.title)}${f.missing?' <span class="tag" style="color:var(--bad)">missing</span>':''}${f.pending.length?` <span class="tag ai">AI ${f.pending.length}</span>`:''}${f.queued?' <span class="tag">queued</span>':''}</td><td>${f.year||''}</td><td>${esc(f.director)}</td><td>${countryLinks(f.country)}</td><td>${f.runtime||''}</td><td>${f.rating||''}</td><td>${esc(f.mpaa)}</td><td>${f.watched?'✓':''}</td><td>${tagsHtml(f)}</td></tr>`).join('')+'</tbody></table>'}
+  S.films.map(f=>`<tr data-id="${f.id}" class="${S.sel.has(f.id)?'sel':''}"><td><input type=checkbox ${S.sel.has(f.id)?'checked':''}></td><td>${esc(f.title)}${f.missing?' <span class="tag" style="color:var(--bad)">missing</span>':''}${f.pending.length?` <span class="tag ai">AI ${f.pending.length}</span>`:''}${f.queued?' <span class="tag">queued</span>':''}</td><td>${f.year||''}</td><td>${esc(f.director)}</td><td>${countryLinks(f.country)}</td><td>${resLink(f.resolution)}</td><td>${f.runtime||''}</td><td>${f.rating||''}</td><td>${esc(f.mpaa)}</td><td>${f.watched?'✓':''}</td><td>${tagsHtml(f)}</td></tr>`).join('')+'</tbody></table>'}
 }
 function sortBy(k){if($('sort').value==k)S.order=S.order=='asc'?'desc':'asc';else{$('sort').value=k;S.order='asc'}$('ord').textContent=S.order=='asc'?'↑':'↓';load()}
 $('content').addEventListener('click',e=>{const el=e.target.closest('[data-id]');if(!el)return;const id=+el.dataset.id;
@@ -187,11 +190,15 @@ async function bulkMpaa(){const v=$('bulkMpaa').value,n=S.sel.size;if(!n)return;
  if(!confirm(v?`Set the MPAA rating of ${n} film${n==1?'':'s'} to "${v}"?`:`Clear the MPAA rating of ${n} film${n==1?'':'s'}?`))return;
  const j=await api('/api/bulk/mpaa',{method:'POST',body:{film_ids:[...S.sel],mpaa:v}});S.sel.clear();refreshMeta();
  toast(v?`Set MPAA rating to ${v} on ${j.updated} films`:`Cleared MPAA rating on ${j.updated} films`);reload()}
+async function bulkRes(){const v=$('bulkRes').value,n=S.sel.size;if(!n)return;
+ if(!confirm(v?`Set the resolution of ${n} film${n==1?'':'s'} to "${v}"?`:`Clear the resolution of ${n} film${n==1?'':'s'}?`))return;
+ const j=await api('/api/bulk/resolution',{method:'POST',body:{film_ids:[...S.sel],resolution:v}});S.sel.clear();refreshMeta();
+ toast(v?`Set resolution to ${v} on ${j.updated} films`:`Cleared resolution on ${j.updated} films`);reload()}
 async function bulkWatched(v){await api('/api/bulk/update',{method:'POST',body:{film_ids:[...S.sel],fields:{watched:v}}});reload()}
 async function bulkDelete(){if(!confirm(`Remove ${S.sel.size} films from the catalog? (Video files on disk are NOT touched.)`))return;
  await api('/api/bulk/delete',{method:'POST',body:{film_ids:[...S.sel]}});S.sel.clear();refreshMeta();reload()}
 async function rmTag(fid,name){await api('/api/bulk/tags',{method:'POST',body:{film_ids:[fid],remove:[name]}});openFilm(fid);refreshMeta()}
-async function refreshMeta(){loadCountries();loadDecades();
+async function refreshMeta(){loadCountries();loadDecades();loadRes();
  const [tags,cats,st,ss]=await Promise.all([api('/api/tags'),api('/api/categories'),api('/api/settings'),api('/api/searches')]);S.tags=tags;S.cats=cats;
  $('taglist').innerHTML=[...tags].sort((x,y)=>x.name.localeCompare(y.name,undefined,{sensitivity:'base'})).map(t=>`<option value="${esc(t.name)}"></option>`).join('');
  $('bulkCat').innerHTML='<option value="">(category)</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join('');
@@ -238,7 +245,8 @@ async function openFilm(id){histFilm(id);const f=await api('/api/films/'+id);S.e
   <button style="margin-top:8px;width:100%" onclick="tmdbFetch(${id})">Fetch from TMDB</button><button style="margin-top:6px;width:100%" onclick="queueFilms([${id}])">✨ Smart tagging (AI)</button><button style="margin-top:6px;width:100%" onclick="startJob('/api/ai/start',{film_ids:[${id}]})">⚡ Tag now with my AI</button>
   <button style="margin-top:6px;width:100%;color:var(--bad)" onclick="if(confirm('Remove from catalog? File on disk is not touched.'))api('/api/films/${id}',{method:'DELETE'}).then(()=>{closeM();load();refreshMeta()})">Remove from catalog</button></div><div>
   <div class=row><div style="flex:3"><label>Title</label><input id=e_title value="${esc(f.title)}"><label>Original title</label><input id=e_original_title value="${esc(f.original_title)}" placeholder="(same as title)"><label>Also known as <span class=muted style="font-size:.85em">(your own titles, one per line; kept across TMDB refreshes)</span></label><textarea id=e_user_akas rows=2 placeholder="e.g. a video-release or foreign title">${esc(f.user_akas)}</textarea>${f.alt_titles?`<div class=muted style="font-size:.8em;max-height:2.6em;overflow:hidden" title="${esc(f.alt_titles)}">From TMDB: ${esc(f.alt_titles)}</div>`:''}</div><div style="flex:2"><div class=row><div><label>Year${f.year?` <a class=clink href="#" title="Show all films from the ${Math.floor(f.year/10)*10}s" onclick="filterDecade(${Math.floor(f.year/10)*10});return false">${Math.floor(f.year/10)*10}s</a>`:''}</label><input id=e_year type=number value="${f.year??''}"></div><div><label>Runtime</label><input id=e_runtime type=number value="${f.runtime??''}"></div></div>
-  <label>Country</label><input id=e_country value="${esc(f.country)}" placeholder="e.g. France, West Germany"><div class=plinks style="font-size:.9em;margin-top:3px">${countryLinks(f.country)}</div></div></div>
+  <label>Country</label><input id=e_country value="${esc(f.country)}" placeholder="e.g. France, West Germany"><div class=plinks style="font-size:.9em;margin-top:3px">${countryLinks(f.country)}</div>
+  <label>Resolution ${f.resolution?resLink(f.resolution):''}${f.res_width?` <span class=muted style="font-size:.85em">${f.res_width}×${f.res_height}</span>`:''}</label><select id=e_resolution>${resOpts(f.resolution)}</select></div></div>
   <div class=row>${peopleField(f,'director','director')}<div><label>Rating (MPAA)</label><select id=e_mpaa>${mpaaOpts(f.mpaa)}</select></div><div><label>Rating 1-10</label><input id=e_rating type=number min=1 max=10 value="${f.rating??''}"></div><div><label>Watched</label><select id=e_watched><option value=0>No</option><option value=1 ${f.watched?'selected':''}>Yes</option></select></div></div>
   ${peopleField(f,'cast_','cast')}<div class=row>${peopleField(f,'writers','writer')}${peopleField(f,'producers','producer')}</div><div class=row>${peopleField(f,'cinematographer','cinematographer')}${peopleField(f,'composer','composer')}</div><label>Plot</label><textarea id=e_plot rows=3>${esc(f.plot)}</textarea>
   <label>Notes</label><textarea id=e_notes rows=2>${esc(f.notes)}</textarea><div class=row><div><label>Storage location</label><input id=e_storage value="${esc(f.storage)}"></div><div><label>TMDB id or URL</label><div class=row style="gap:4px"><input id=e_tmdb_id value="${f.tmdb_id??''}" placeholder="id or themoviedb.org/movie/… link" style="flex:1"><button style="flex:0" title="Load details from TMDB for this id" onclick="loadTmdbId(${id})">Load</button></div></div></div>
@@ -249,10 +257,10 @@ async function openFilm(id){histFilm(id);const f=await api('/api/films/'+id);S.e
   <div style="margin-top:14px;text-align:right"><button onclick="closeM()">Cancel</button> <button class=pri onclick="saveFilm(${id})">Save</button></div></div></div>`);
  $('e_tag').addEventListener('input',e=>{const t=S.tags.find(t=>t.name.toLowerCase()==e.target.value.toLowerCase());if(t&&t.category)$('e_cat').value=t.category});$('e_title').focus()}
 async function addOne(id){const n=$('e_tag').value.trim();if(!n)return;await api('/api/bulk/tags',{method:'POST',body:{film_ids:[id],add:[{name:n,category:$('e_cat').value||null}]}});refreshMeta();openFilm(id)}
-function formVals(){const d={};['title','original_title','user_akas','year','runtime','director','rating','mpaa','watched','cast_','writers','producers','cinematographer','composer','country','plot','notes','storage','tmdb_id','poster'].forEach(k=>d[k]=$('e_'+k).value);d.paths=$('e_paths').value.split('\n').map(s=>s.trim()).filter(Boolean);return d}
+function formVals(){const d={};['title','original_title','user_akas','year','runtime','director','rating','mpaa','watched','cast_','writers','producers','cinematographer','composer','country','resolution','plot','notes','storage','tmdb_id','poster'].forEach(k=>d[k]=$('e_'+k).value);d.paths=$('e_paths').value.split('\n').map(s=>s.trim()).filter(Boolean);return d}
 function tmdbIdOf(v){v=String(v||'').trim();const m=v.match(/themoviedb\.org\/(?:[a-z]{2}(?:-[A-Z]{2})?\/)?movie\/(\d+)/)||v.match(/^(\d+)$/);return m?m[1]:(v?null:'')}
 function changedFields(d){const o=S.editOrig||{},n=v=>v==null?'':String(v).trim();
- return ['title','original_title','user_akas','year','runtime','director','rating','mpaa','watched','cast_','writers','producers','cinematographer','composer','country','plot','notes','storage','poster'].filter(k=>n(d[k])!=n(k=='watched'?(o[k]?1:0):o[k]))}
+ return ['title','original_title','user_akas','year','runtime','director','rating','mpaa','watched','cast_','writers','producers','cinematographer','composer','country','resolution','plot','notes','storage','poster'].filter(k=>n(d[k])!=n(k=='watched'?(o[k]?1:0):o[k]))}
 async function saveWithTmdb(id,forceLoad){const d=formVals();const tid=tmdbIdOf(d.tmdb_id);
  if(tid===null){toast('That is not a TMDB id or themoviedb.org/movie/… link');return false}d.tmdb_id=tid;
  const newId=tid&&(forceLoad||String(tid)!=String(S.editOrig.tmdb_id??''));const keep=changedFields(d);
@@ -290,7 +298,7 @@ async function openSettings(){const s=await api('/api/settings');
  <button style="margin-top:6px" onclick="saveAI()">Save AI settings</button> <button onclick="testAI()">Test connection</button> <button onclick="startJob('/api/ai/start',{})">Process smart-tag queue</button> <span id=aiRes class=muted></span>
  <h3>TMDB (optional)</h3><p class=muted>Free API key from themoviedb.org → Settings → API. Leave blank to work offline.</p><input id=s_key style="width:100%" value="${esc(s.tmdb_key)}"> <button onclick="api('/api/settings',{method:'PUT',body:{tmdb_key:$('s_key').value}}).then(()=>toast('Saved'))">Save key</button>
  <h3>Fetch all posters</h3><p class=muted>Looks up every film without a poster/TMDB id and auto-accepts confident matches. Uncertain ones go to “Needs TMDB match” (Show only). Fields you edited by hand are never overwritten.</p>
- <button class=pri onclick="startJob('/api/posters/start',{retry_skipped:false})">Fetch all posters</button> <button onclick="startJob('/api/posters/start',{retry_skipped:true})">Retry “needs match” too</button> <button onclick="startJob('/api/mpaa/start')">Fill missing MPAA ratings</button> <button title="Fill Country from TMDB for films with a TMDB id and no country (hand-edited countries are kept)" onclick="startJob('/api/country/start')">Fill missing countries</button> <button title="Re-fetch credits from TMDB for films with a TMDB id that don't have writers/producers yet (your manual edits are kept)" onclick="startJob('/api/credits/start')">Refresh credits</button> <button title="Fetch original titles and alternative (foreign/AKA) titles from TMDB for films with a TMDB id, so they become searchable" onclick="startJob('/api/titles/start')">Fetch original titles</button> <button onclick="cancelJob()">Cancel</button> <div id=pjob class=muted></div>
+ <button class=pri onclick="startJob('/api/posters/start',{retry_skipped:false})">Fetch all posters</button> <button onclick="startJob('/api/posters/start',{retry_skipped:true})">Retry “needs match” too</button> <button onclick="startJob('/api/mpaa/start')">Fill missing MPAA ratings</button> <button title="Fill Country from TMDB for films with a TMDB id and no country (hand-edited countries are kept)" onclick="startJob('/api/country/start')">Fill missing countries</button> <button title="Read each film's video dimensions from its file(s) (files on unplugged drives are skipped and retried later; hand-edited resolutions are kept)" onclick="startJob('/api/resolution/start')">Detect resolutions</button> <button title="Re-check every film's resolution from its files (hand-edited values are still kept)" onclick="if(confirm('Re-detect resolution for all films?'))startJob('/api/resolution/start',{recheck:true})">Re-check all resolutions</button> <button title="Re-fetch credits from TMDB for films with a TMDB id that don't have writers/producers yet (your manual edits are kept)" onclick="startJob('/api/credits/start')">Refresh credits</button> <button title="Fetch original titles and alternative (foreign/AKA) titles from TMDB for films with a TMDB id, so they become searchable" onclick="startJob('/api/titles/start')">Fetch original titles</button> <button onclick="cancelJob()">Cancel</button> <div id=pjob class=muted></div>
  <h3>Tag categories</h3><textarea id=s_cats rows=5 style="width:100%">${esc(S.cats.join('\n'))}</textarea><button onclick="api('/api/categories',{method:'PUT',body:$('s_cats').value.split('\\n')}).then(()=>{refreshMeta();toast('Saved')})">Save categories</button>
  <h3>Manage tags</h3><div style="max-height:220px;overflow:auto">${S.tags.map(t=>`<div class=row style="margin:2px 0"><input value="${esc(t.name)}" onchange="api('/api/tags/${t.id}',{method:'PUT',body:{name:this.value}}).then(refreshMeta)"><select onchange="api('/api/tags/${t.id}',{method:'PUT',body:{category:this.value}}).then(refreshMeta)">${catOpts(t.category)}</select><button style="flex:0" onclick="if(confirm('Delete tag everywhere?'))api('/api/tags/${t.id}',{method:'DELETE'}).then(()=>{refreshMeta();openSettings()})">×</button></div>`).join('')}</div>
  <h3>Backup</h3><a href="/api/export.json"><button>Export JSON (full backup)</button></a> <a href="/api/export.csv"><button>Export CSV</button></a>
@@ -300,30 +308,38 @@ async function browseFolder(){const b=event.target;b.disabled=true;b.textContent
  try{const r=await api('/api/pick-folder',{method:'POST'});if(r.path){const t=$('s_roots');const l=t.value.split('\n').map(s=>s.trim()).filter(Boolean);if(!l.includes(r.path))l.push(r.path);t.value=l.join('\n')}else if(r.error)toast(r.error)}
  finally{b.disabled=false;b.textContent='Browse…'}}
 let pt,ptFast=false;
-function jobText(j){if(j.kind=='scan')return `${j.found||0} video files found · ${j.added||0} new${j.running?'':(' · '+(j.missing_files||0)+' missing')}${j.cancelled?' · cancelled':''}`;
+function jobText(j){if(j.kind=='resolution')return `${j.done}/${j.total} · ${j.matched} detected · ${j.skipped} unknown${j.offline?' · '+j.offline+' on unplugged drives':''}${j.errors?' · '+j.errors+' errors':''}${j.running?(j.cancel?' · cancelling…':(j.eta_s!=null?' · ~'+Math.ceil(j.eta_s/60)+' min left':'')):' · finished'}`;
+ if(j.kind=='scan')return `${j.found||0} video files found · ${j.added||0} new${j.running?'':(' · '+(j.missing_files||0)+' missing')}${j.cancelled?' · cancelled':''}`;
  const what=j.kind=='mpaa'?'rated':j.kind=='ai'?'films tagged':'matched',miss=j.kind=='mpaa'?'no US rating':j.kind=='ai'?'no reply':'need match';
  return `${j.done}/${j.total} · ${j.matched} ${what} · ${j.skipped} ${miss}${j.errors?' · '+j.errors+' errors':''}${j.error?' — '+j.error:''}${j.running?(j.cancel?' · cancelling…':''):' · finished'}`}
-function showJob(r){const j=r.scan&&r.scan.running?r.scan:r.job,sj=r.scan;
+function showJob(r){const j=r.scan&&r.scan.running?r.scan:(r.res&&r.res.running&&!r.job.running?r.res:r.job),sj=r.scan&&r.scan.running?r.scan:(r.res&&r.res.running?r.res:(r.res&&r.res.finished_at&&(!r.scan.finished_at||r.res.finished_at>r.scan.finished_at)?r.res:r.scan));
  const recent=x=>x&&x.finished_at&&(Date.now()/1000-x.finished_at<8);
  let cur=j.running?j:(sj&&recent(sj)&&(!r.job.finished_at||sj.finished_at>r.job.finished_at)?sj:(recent(r.job)?r.job:null));
  const el=$('pjob');if(el)el.textContent=r.job.total!=null?jobText(r.job):'';
  const bar=$('jobbar');if(!cur){bar.style.display='none';return}
  const key=cur.kind+(cur.finished_at||'run');if(S.jbHide==key){bar.style.display='none';return}S.jbKey=key;
  bar.style.display='flex';bar.className=cur.running?'':(cur.error?'err':'done');
- $('jbLabel').textContent={posters:'Posters',mpaa:'MPAA ratings',credits:'Credits',titles:'Original titles',country:'Countries',scan:'Scanning',ai:'AI tagging'}[cur.kind]+(cur.kind=='scan'?'':' '+cur.done+'/'+cur.total);
+ $('jbLabel').textContent={posters:'Posters',mpaa:'MPAA ratings',credits:'Credits',titles:'Original titles',country:'Countries',resolution:'Resolutions',scan:'Scanning',ai:'AI tagging'}[cur.kind]+(cur.kind=='scan'?'':' '+cur.done+'/'+cur.total);
  $('jbFill').style.width=cur.kind=='scan'?(cur.running?'100%':'100%'):(cur.total?Math.round(100*cur.done/cur.total):100)+'%';
  $('jbText').textContent=jobText(cur).replace(/^\d+\/\d+ · /,'');$('jbCancel').style.display=cur.running?'':'none';$('jbCancel').dataset.kind=cur.kind}
 async function pollJob(){clearTimeout(pt);let r;try{r=await api('/api/jobs')}catch(e){return}showJob(r);
- const running=r.job.running||r.scan.running;if(running){S.wasRunning=true;pt=setTimeout(pollJob,1000)}
- else{if(S.wasRunning){S.wasRunning=false;reload();refreshMeta();loadLibs()}pt=setTimeout(pollJob,(r.job.finished_at||r.scan.finished_at)&&Date.now()/1000-Math.max(r.job.finished_at||0,r.scan.finished_at||0)<9?1000:15000)}}
+ const rs=r.res||{};const running=r.job.running||r.scan.running||rs.running;if(running){S.wasRunning=true;pt=setTimeout(pollJob,1000)}
+ else{if(S.wasRunning){S.wasRunning=false;reload();refreshMeta();loadLibs()}pt=setTimeout(pollJob,(r.job.finished_at||r.scan.finished_at||rs.finished_at)&&Date.now()/1000-Math.max(r.job.finished_at||0,r.scan.finished_at||0,rs.finished_at||0)<9?1000:15000)}}
 async function startJob(url,body={}){try{await api(url,{method:'POST',body});S.jbHide=null;S.wasRunning=true;pollJob()}catch(e){}}
-async function cancelJob(){await api($('jbCancel').dataset.kind=='scan'?'/api/scan/cancel':'/api/posters/cancel',{method:'POST'});pollJob()}
+async function cancelJob(){const k=$('jbCancel').dataset.kind;await api(k=='scan'?'/api/scan/cancel':k=='resolution'?'/api/resolution/cancel':'/api/posters/cancel',{method:'POST'});pollJob()}
+function resOpts(v){return ['',...RESL].map(r=>`<option value="${r}" ${r==(v||'')?'selected':''}>${r||'—'}</option>`).join('')}
+function resLink(v){return v?`<a class=clink href="#" title="Show all ${esc(v)} films" onclick="event.stopPropagation();filterRes('${jsq(v)}');return false">${esc(v)}</a>`:''}
+function filterRes(v){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');S.sel.clear();$('f_res').value=v;renderMpaa();load()}
+function renderRes(){const on=new Set(($('f_res').value||'').split(',').filter(Boolean)),n={};(S.resCounts||[]).forEach(x=>n[x.name]=x.n);
+ $('resChips').innerHTML=[...RESL,'(none)'].map(r=>`<span class="chip ${on.has(r)?'on':''}" title="${n[r]??''} films" onclick="togRes('${r}')">${r}</span>`).join('')}
+function togRes(r){const on=new Set(($('f_res').value||'').split(',').filter(Boolean));on.has(r)?on.delete(r):on.add(r);$('f_res').value=[...RESL,'(none)'].filter(x=>on.has(x)).join(',');renderRes();load()}
+async function loadRes(){try{S.resCounts=await api('/api/resolutions');renderRes()}catch(e){}}
 function renderDecades(){const on=new Set(($('f_decade').value||'').split(',').filter(Boolean));
  $('decadeChips').innerHTML=(S.decades||[]).map(d=>`<span class="chip ${on.has(String(d.decade))?'on':''}" title="${d.n} films" onclick="togDecade('${d.decade}')">${d.decade}s</span>`).join('')}
 function togDecade(d){const on=new Set(($('f_decade').value||'').split(',').filter(Boolean));on.has(d)?on.delete(d):on.add(d);$('f_decade').value=[...on].sort().join(',');renderDecades();load()}
 function filterDecade(d){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');S.sel.clear();$('f_decade').value=String(d);renderMpaa();load()}
 async function loadDecades(){try{S.decades=await api('/api/decades');renderDecades()}catch(e){}}
-function renderMpaa(){renderDecades();const on=new Set(($('f_mpaa').value||'').split(',').filter(Boolean));
+function renderMpaa(){renderDecades();renderRes();const on=new Set(($('f_mpaa').value||'').split(',').filter(Boolean));
  $('mpaaChips').innerHTML=MPAA.map(m=>`<span class="chip ${on.has(m)?'on':''}" onclick="togMpaa('${m}')">${m}</span>`).join('')}
 function togMpaa(m){const on=new Set(($('f_mpaa').value||'').split(',').filter(Boolean));on.has(m)?on.delete(m):on.add(m);$('f_mpaa').value=[...on].join(',');renderMpaa();load()}
 S.libs=[];S.libOpen=new Set(JSON.parse(localStorage.libOpen||'[]'));
