@@ -38,6 +38,10 @@ Person filmography:
 
 ![Person filmography](docs/screenshots/3-person.png)
 
+Person pages: photo, bio, full filmography, films you own highlighted:
+
+![Person pages: photo, bio, full filmography, films you own highlighted](docs/screenshots/6-person-page.png)
+
 Tag search:
 
 ![Tag search](docs/screenshots/4-tag-search.png)
