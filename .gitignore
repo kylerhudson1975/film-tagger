@@ -1,0 +1,8 @@
+*.pyc
+.venv/
+__pycache__/
+data/
+dist/
+films.db*
+posters/
+smart_queue.json

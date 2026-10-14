@@ -1,0 +1,193 @@
+=====================================================================
+  FILM TAGGER - INSTALLATION GUIDE (Windows)
+=====================================================================
+
+Film Tagger is a free program for keeping a catalogue of the films
+on your computer and adding your own tags to them. It runs entirely
+on your computer and nothing is uploaded.
+Setup takes about 5 minutes. Just follow the steps in order.
+
+
+---------------------------------------------------------------------
+STEP 1 - Download the installer
+---------------------------------------------------------------------
+Download   FilmTaggerSetup.exe   from the Film Tagger releases page.
+You do NOT need to install Python or anything else first. Film
+Tagger brings its own private copy.
+
+
+---------------------------------------------------------------------
+STEP 2 - Double-click FilmTaggerSetup.exe
+---------------------------------------------------------------------
+  1. Double-click the downloaded FilmTaggerSetup.exe.
+     - If a blue box says "Windows protected your PC", click
+       "More info" and then "Run anyway". This appears for programs
+       that are new and not yet widely downloaded.
+     - You do NOT need an administrator password.
+  2. Click Next, read the licence (MIT, free software), click
+     "I Agree".
+  3. Choose the options you want:
+        [x] Desktop shortcut
+        [ ] Start Film Tagger when I sign in to Windows
+     (Both are optional. You can always start it from the Start menu.)
+  4. Keep the suggested folder and click Install. It takes a few
+     seconds and needs no internet.
+  5. Leave "Launch Film Tagger" ticked and click Finish.
+
+Film Tagger is installed in your own user folder
+(%LOCALAPPDATA%\Film Tagger). There is a "Film Tagger" icon in the
+Start menu, and on the Desktop if you chose it.
+To update later, just run a newer FilmTaggerSetup.exe. Your library is
+kept.
+
+
+---------------------------------------------------------------------
+STEP 3 - Every day: open Film Tagger
+---------------------------------------------------------------------
+Double-click the "Film Tagger" icon on your Desktop.
+It opens in its own window. If the window comes up blank or says it
+can't connect, wait 5 seconds and press F5.
+
+Film Tagger keeps running quietly in the background when you close
+the window, so it opens instantly next time. To stop it completely,
+go to Library & Settings and click "Quit Film Tagger" at the bottom.
+
+
+---------------------------------------------------------------------
+STEP 4 - Add your films (first scan)
+---------------------------------------------------------------------
+  1. Click "Library & Settings" (top right).
+  2. Under "Library folders", click "Browse..." and choose the folder
+     (or drive) where your films are, e.g.  E:\Movies
+     You can add several folders, one per line.
+  3. Click "Save & scan". A progress bar appears at the top.
+
+Film Tagger only READS your folders. It never moves, renames or
+deletes your video files.
+After you add new films, just click "Save & scan" again.
+
+
+---------------------------------------------------------------------
+OPTIONAL - Posters and film details (free TMDB key)
+---------------------------------------------------------------------
+TMDB (The Movie Database) is a free website that Film Tagger can use
+to download posters, cast, plot and so on.
+
+  1. Go to https://www.themoviedb.org/signup and create a free
+     account. Confirm the e-mail they send you.
+  2. Log in, click your profile picture (top right) > Settings > API
+     (or go to https://www.themoviedb.org/settings/api ).
+  3. Click "Create" / "Request an API Key" and choose "Developer".
+  4. Accept the terms and fill in the form:
+        Type of use:           Personal
+        Application name:      Film Tagger
+        Application URL:       http://localhost:5050
+        Application summary:   Personal app to catalogue my own film
+                               collection.
+     (Your name, address etc. as asked.)
+  5. After you submit, the API page shows two codes:
+        "API Key"                  <- a SHORT code (32 letters/numbers)
+        "API Read Access Token"    <- a very LONG code
+     Copy the SHORT "API Key".
+  6. In Film Tagger: Library & Settings > TMDB > paste it > "Save key".
+  7. Click "Fetch all posters". Films it isn't sure about are listed
+     under "Show only: Needs TMDB match" (left panel). Open those and
+     click "Fetch from TMDB" to pick the right one yourself.
+
+
+---------------------------------------------------------------------
+OPTIONAL - Smart tagging with AI
+---------------------------------------------------------------------
+AI can suggest tags (genre, mood, themes, setting...) for your films.
+Nothing is added until you approve it.
+
+First, choose films: right-click a film (or select several with
+Ctrl+click) and pick "Smart tagging (AI)". This puts them in the
+queue.
+
+Then EITHER:
+
+  A) Free, using any AI chatbot (no key needed)
+     1. Click "Queue" (top bar), then "Copy prompt for a chatbot".
+     2. Open ChatGPT, Grok, Claude, Gemini or similar, paste, and send.
+     3. Copy the AI's whole reply (the part starting with [ ).
+     4. Back in Film Tagger's Queue window, paste it in the box and
+        click "Import as pending".
+
+  B) Automatic, with your own AI key
+     1. Library & Settings > "Smart tagging with your own AI".
+     2. Fill in the Endpoint URL, Model name and API key from your AI
+        provider (examples are shown on screen), then "Save AI settings"
+        and "Test connection".
+     3. Click "Process smart-tag queue", or right-click any film and
+        choose "Tag now with my AI".
+     Note: AI providers may charge for use. Check their prices.
+
+Finally, click "AI review" (top bar) and approve or reject the
+suggested tags.
+
+
+---------------------------------------------------------------------
+TROUBLESHOOTING
+---------------------------------------------------------------------
+The window says "localhost refused to connect" / "can't reach this page"
+   - Wait 5 seconds and press F5. The first start can be slow.
+   - Still not working? Press Windows+R, paste this and press Enter:
+         cmd /k cd /d "%LOCALAPPDATA%\Film Tagger" && set "FILMTAGGER_DB=data\films.db" && python\python.exe app.py
+     Any error message appears in that window.
+   - Another program already uses port 5050? Put a different number
+     (e.g. 5051) in the file  %LOCALAPPDATA%\Film Tagger\data\port.txt
+     and start Film Tagger again.
+
+A Windows Firewall box appears
+   Film Tagger only talks to your own computer. Clicking "Cancel" or
+   "Allow" both work.
+
+Some films have the wrong title
+   Click the film and correct it, or use "Fetch from TMDB" to choose
+   the right match.
+
+The drive with my films is unplugged
+   Your catalogue is kept. Films show "missing" until the drive is
+   back and you scan again.
+
+Back up your catalogue
+   Library & Settings > Backup > "Export JSON". Keep that file safe.
+   (Or copy the folder  %LOCALAPPDATA%\Film Tagger\data  while the
+   app is stopped. It holds films.db and your custom posters.)
+
+
+---------------------------------------------------------------------
+STOP / UNINSTALL
+---------------------------------------------------------------------
+Stop:       Library & Settings > "Quit Film Tagger"
+            (or double-click "Stop Film Tagger.bat").
+Uninstall:  Windows Settings > Apps > Installed apps > Film Tagger >
+            Uninstall (or Start menu > Film Tagger > Uninstall).
+            It asks whether to delete your library (database and custom
+            posters). The answer "No" is the default: your library is kept
+            in %LOCALAPPDATA%\Film Tagger\data and is used again if you
+            reinstall. Your video files are never touched.
+
+
+---------------------------------------------------------------------
+ALTERNATIVE - manual install with your own Python
+---------------------------------------------------------------------
+If you prefer not to use the Setup program: install Python 3 from
+https://www.python.org/downloads/ (tick "Add python.exe to PATH"),
+unzip the Film Tagger source zip into a permanent folder and
+double-click  "Install Film Tagger.bat". In that setup your catalogue
+is the file films.db in that folder. "Stop Film Tagger.bat" and
+"Uninstall Film Tagger.bat" in the same folder stop it and remove its
+shortcuts.
+
+
+---------------------------------------------------------------------
+MAC / LINUX
+---------------------------------------------------------------------
+Install Python 3, then in a terminal inside the film-tagger folder:
+      python3 -m pip install -r requirements.txt
+      python3 app.py
+and open http://localhost:5050 in your browser.
+(The folder "Browse..." button needs tkinter. If it's missing, just
+type the folder path.)

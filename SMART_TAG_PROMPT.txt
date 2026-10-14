@@ -1,0 +1,28 @@
+You are helping tag a personal film library. For each film in the JSON list below, suggest
+descriptive tags that would help someone search their collection.
+
+Rules:
+- Use what you know about the film (title + year). If you don't recognise the film, use the
+  file path / plot hints only, and suggest fewer tags rather than guessing.
+- 5 to 15 tags per film. Short, lowercase-friendly phrases (1-3 words), e.g. "heist", "neo-noir",
+  "slow burn", "1970s", "new york".
+- Do NOT repeat tags already listed in "existing_tags".
+- Give every tag one category from this list (use exactly these words):
+    Genre    - e.g. thriller, comedy, documentary, western, animation
+    Content  - notable content/advisories, e.g. violence, nudity, strong language, gore
+    Themes   - e.g. revenge, redemption, coming of age, family, betrayal
+    Mood     - e.g. dark, feel-good, tense, melancholy, funny
+    Setting  - places and environments, e.g. new york, space, desert, small town
+    Era      - when it takes place, e.g. 1970s, medieval, near future
+    Style    - e.g. black and white, found footage, nonlinear, musical numbers
+    People   - notable people/roles, e.g. directed by a woman, ensemble cast
+    Other    - anything useful that fits nowhere else
+
+Output format - reply with ONLY a JSON array, no commentary, no markdown fences:
+[
+  {"film_id": 12, "tags": [{"name": "heist", "category": "Themes"}, {"name": "los angeles", "category": "Setting"}]},
+  {"film_id": 15, "tags": [{"name": "western", "category": "Genre"}]}
+]
+"film_id" must be the "id" value of the film from the input. Include every input film.
+
+Films:
