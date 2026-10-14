@@ -23,7 +23,21 @@ Point it at the folders where your video files live. It builds a searchable cata
 - **Backup / restore** as JSON or CSV.
 
 ## Screenshots
-_Screenshots coming soon._ <!-- Add images to a /docs folder and link them here. -->
+Library grid:
+
+![Library grid](docs/screenshots/1-grid.png)
+
+Film detail:
+
+![Film detail](docs/screenshots/2-detail.png)
+
+Person filmography:
+
+![Person filmography](docs/screenshots/3-person.png)
+
+Tag search:
+
+![Tag search](docs/screenshots/4-tag-search.png)
 
 ## Install
 - **Windows (recommended):** download and run **`FilmTaggerSetup.exe`**. It installs per user into `%LOCALAPPDATA%\Film Tagger` with a bundled Python 3.12, so no admin rights are needed. It adds Start Menu and (optionally) Desktop and sign-in shortcuts and an entry in *Apps* for uninstalling. Your library (`films.db` + `posters/`) lives in `%LOCALAPPDATA%\Film Tagger\data` and survives upgrades. See [INSTALL.txt](INSTALL.txt).

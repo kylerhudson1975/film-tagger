@@ -47,6 +47,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .pend{border:1px solid var(--ai);border-radius:8px;padding:8px;margin:8px 0}
 .tagcloud .tag{cursor:pointer}
 .plinks a,#personHdr a{color:#d4d4d4;text-decoration:none;border-bottom:1px dotted #888}.plinks a:hover,#personHdr a:hover{color:#fff;border-bottom-color:#fff}
+.tlink{color:inherit;text-decoration:none}.tlink:hover{text-decoration:underline;color:#fff}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger</div>
@@ -111,7 +112,17 @@ function query(){const q={q:$('q').value};FK.forEach(k=>q[k]=$('f_'+k).value);re
 function params(extra={}){const q=query(),p=new URLSearchParams();for(const k in q)if(q[k]&&k!='special')p.set(k,q[k]);if(q.special)p.set(q.special,1);
  p.set('sort',$('sort').value);p.set('order',S.order);for(const k in extra)p.set(k,extra[k]);return p}
 let lt;function debLoad(){clearTimeout(lt);lt=setTimeout(load,250)}
-async function load(keep){keep=keep===true;const st=$('content').scrollTop;const j=await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
+function navState(){return {...query(),sort:$('sort').value,order:S.order}}
+function snap(){const c=history.state;if(c)history.replaceState({...c,scroll:$('content').scrollTop,n:S.films.length},'')}
+function histSave(){if(S.restoring)return;const st=navState(),cur=history.state;if(!cur){history.replaceState({...st,film:null},'');return}
+ const base={...cur};delete base.film;delete base.scroll;delete base.n;if(JSON.stringify(st)==JSON.stringify(base)&&!cur.film)return;
+ const onlyQ=!cur.film&&Object.keys(st).every(k=>k=='q'||st[k]==base[k]);if(onlyQ){history.replaceState({...st,film:null},'');return}
+ snap();history.pushState({...st,film:null},'')}
+function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id},'')}
+window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.restoring=true;try{FK.forEach(k=>{if(k=='lib')setLib(q.lib||'');else if(k=='in')setIn(q.in||'');else $('f_'+k).value=q[k]||''});$('q').value=q.q||'';$('sort').value=q.sort||'title';S.order=q.order||'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';renderMpaa();
+ const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;render();personHeader();$('content').scrollTop=q.scroll||0;
+ if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
+async function load(keep){keep=keep===true;if(!keep)histSave();const st=$('content').scrollTop;const j=await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
 function reload(){return load(true)}
 const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['writer','Writers'],producer:['producer','Producers'],cinematographer:['cinematographer','Cinematography'],composer:['composer','Music']};
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
@@ -124,7 +135,7 @@ async function personHeader(){const h=$('personHdr'),name=$('f_person').value,ro
  const others=Object.entries(p.counts).filter(([r,c])=>c&&r!==role).map(([r,c])=>`<a href="#" onclick="filterPerson('${jsq(name)}','${r}');return false">${c} as ${ROLES[r][0]}</a>`);
  if(role)others.push(`<a href="#" onclick="filterPerson('${jsq(name)}','');return false">any role</a>`);
  h.innerHTML=`<b style="font-size:1.15em">${esc(p.name)}: ${n} ${fs} ${what}</b>${S.total!=n?` <span class=muted>(${S.total} shown with other filters)</span>`:''}${others.length?' <span class=muted>· also: '+others.join(' · ')+'</span>':''} <span style="margin-left:12px">Sort by <select onchange="$('sort').value=this.value;load()">${$('sort').innerHTML.replace(/Sort: /g,'').replace(`value="${$('sort').value}"`,`value="${$('sort').value}" selected`)}</select> <button onclick="S.order=S.order=='asc'?'desc':'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';load()" title="Reverse order">${S.order=='asc'?'↑':'↓'}</button></span> <button style="margin-left:8px" onclick="filterPerson('')" title="Clear person filter">× Clear</button>`;h.style.display='block'}
-function filterPerson(name,role=''){closeM();FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';renderMpaa();S.sel.clear();
+function filterPerson(name,role=''){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';renderMpaa();S.sel.clear();
  $('f_person').value=name||'';$('f_prole').value=name?role:'';load()}
 const MPAA_ALL=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-G','TV-PG','TV-14','TV-MA'];
 function mpaaOpts(v){v=v||'';const l=['',...MPAA_ALL];if(v&&!l.includes(v))l.push(v);return l.map(m=>`<option value="${esc(m)}" ${m==v?'selected':''}>${m?esc(m):'—'}</option>`).join('')}
@@ -137,7 +148,7 @@ async function more(){if(S.busy||S.films.length>=S.total)return;S.busy=true;
  const j=await api('/api/films?'+params({limit:300,offset:S.films.length}));S.films.push(...j.films);S.busy=false;render(true)}
 $('content').addEventListener('scroll',e=>{const c=e.target;if(c.scrollTop+c.clientHeight>c.scrollHeight-800)more()});
 function setView(v){S.view=localStorage.view=v;render()}
-function tagsHtml(f,rm){return f.tags.map(t=>`<span class="tag">${t.category?`<span class=c>${esc(t.category)}</span>`:''}${esc(t.name)}${rm?`<x onclick="rmTag(${f.id},'${esc(t.name).replace(/'/g,"\\'")}')">×</x>`:''}</span>`).join('')}
+function tagsHtml(f,rm){return [...f.tags].sort((x,y)=>x.name.localeCompare(y.name,undefined,{sensitivity:'base'})).map(t=>`<span class="tag"><a class=tlink href="#" title="Show all films tagged ${esc(t.name)}" onclick="event.stopPropagation();filterTag('${jsq(t.name)}');return false">${esc(t.name)}</a>${t.category?`<span class=c style="margin:0 0 0 5px">${esc(t.category)}</span>`:''}${rm?`<x onclick="rmTag(${f.id},'${esc(t.name).replace(/'/g,"\\'")}')">×</x>`:''}</span>`).join('')}
 function render(){
  $('count').textContent=`${S.total.toLocaleString()} films`;
  const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';
@@ -190,7 +201,8 @@ function clearF(){FK.forEach(k=>{if(k!='lib'&&k!='in')$('f_'+k).value=''});rende
 async function saveSearch(){const name=prompt('Name for this search?');if(!name)return;await api('/api/searches',{method:'POST',body:{name,query:{...query(),sort:$('sort').value,order:S.order}}});refreshMeta()}
 function applySearch(q){FK.forEach(k=>{if((k=='lib'||k=='in')&&!(k in q))return;if(k=='in'){setIn(q.in);return}if(k=='lib')setLib(q.lib||'');else $('f_'+k).value=q[k]||''});renderMpaa();$('q').value=q.q||'';if(q.sort)$('sort').value=q.sort;S.order=q.order||'asc';load()}
 ['q',...FK.map(k=>'f_'+k)].forEach(id=>$(id).addEventListener('input',debLoad));$('sort').onchange=load;
-function closeM(){$('modal').style.display='none'}
+function filterTag(n){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');renderMpaa();S.sel.clear();$('f_all').value=n;load()}
+function closeM(){if(!S.restoring&&!S.keepFilm&&history.state&&history.state.film)history.replaceState({...history.state,film:null},'');$('modal').style.display='none'}
 function openM(h){$('mbox').innerHTML='<button class=mclose title="Close (Esc)" onclick="closeM()">×</button>'+h;$('modal').style.display='flex'}
 const catOpts=sel=>'<option value="">(no category)</option>'+S.cats.map(c=>`<option ${c==sel?'selected':''}>${esc(c)}</option>`).join('');
 function pendHtml(f){return f.pending.length?`<div class=pend><b style="color:var(--ai)">Pending AI tags</b> <button onclick="review(${f.id},null,'approve')">Approve all</button> <button onclick="review(${f.id},null,'reject')">Reject all</button><br>`+
@@ -211,7 +223,7 @@ async function removePoster(id){if(!confirm('Remove the custom poster and go bac
 function posterDrop(e,id){e.preventDefault();e.currentTarget.style.outline='';const fl=e.dataTransfer.files;
  if(fl&&fl.length)return uploadPoster(id,fl[0]);const u=e.dataTransfer.getData('text/uri-list')||e.dataTransfer.getData('text/plain');
  if(/^https?:/i.test(u||''))api(`/api/films/${id}/poster`,{method:'POST',body:{url:u.split('\n')[0].trim()}}).then(f=>{posterShow(f);toast('Custom poster '+f.poster_note)}).catch(()=>{})}
-async function openFilm(id){const f=await api('/api/films/'+id);S.editOrig=f;
+async function openFilm(id){histFilm(id);const f=await api('/api/films/'+id);S.editOrig=f;
  openM(`<div class=fg><div><div id=posterBox ondragover="event.preventDefault();this.style.outline='2px dashed #aaa'" ondragleave="this.style.outline=''" ondrop="posterDrop(event,${id})">${posterBoxHtml(f)}</div><input type=file id=posterFile accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadPoster(${id},this.files[0]);this.value=''"><label>TMDB poster URL</label><input id=e_poster value="${esc(f.poster)}">
   <button style="margin-top:8px;width:100%" onclick="tmdbFetch(${id})">Fetch from TMDB</button><button style="margin-top:6px;width:100%" onclick="queueFilms([${id}])">✨ Smart tagging (AI)</button><button style="margin-top:6px;width:100%" onclick="startJob('/api/ai/start',{film_ids:[${id}]})">⚡ Tag now with my AI</button>
   <button style="margin-top:6px;width:100%;color:var(--bad)" onclick="if(confirm('Remove from catalog? File on disk is not touched.'))api('/api/films/${id}',{method:'DELETE'}).then(()=>{closeM();load();refreshMeta()})">Remove from catalog</button></div><div>
