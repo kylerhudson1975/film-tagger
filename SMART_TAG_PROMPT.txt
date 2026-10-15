@@ -20,6 +20,10 @@ Rules:
     Themes   - e.g. revenge, redemption, coming of age, family, betrayal
     Mood     - e.g. dark, feel-good, tense, melancholy, funny
     Setting  - places and environments, e.g. new york, space, desert, small town
+               If the film is set at a boarding or residential school (pensionnat, internat, girls'
+               boarding school, finishing school, convent school where pupils live in), add BOTH
+               "Boarding school film" (Genre) and "Boarding school" (Setting). Not for ordinary day
+               schools, schoolgirl-report episodes, or characters who merely attended one.
     Era      - when it takes place, e.g. 1970s, medieval, near future
     Style    - e.g. black and white, found footage, nonlinear, musical numbers
     People   - notable people/roles, e.g. directed by a woman, ensemble cast
