@@ -34,18 +34,18 @@ def split_list(v):
 
 def build_query(q):
     where, args = [], []
-    T = "SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND t.name=?"
+    T = "SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND tag_norm(t.name)=tag_norm(?)"
     for name in split_list(q.get("all")):          # AND
         where.append(f"f.id IN ({T})"); args.append(name)
     anyl = split_list(q.get("any"))                 # OR
     if anyl:
-        where.append(f"f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND t.name IN ({','.join('?'*len(anyl))}))"); args += anyl
+        where.append(f"f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND tag_norm(t.name) IN ({','.join('tag_norm(?)' for _ in anyl)}))"); args += anyl
     for name in split_list(q.get("none")):         # NOT
         where.append(f"f.id NOT IN ({T})"); args.append(name)
     text = (q.get("q") or "").strip()
     if text:
         field = q.get("in") or "all"
-        TAGQ = "f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND t.name LIKE ?)"
+        TAGQ = "f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND (t.name LIKE ? OR tag_norm(t.name) LIKE '%' || tag_norm(?) || '%'))"
         PATHQ = "f.id IN (SELECT film_id FROM files WHERE path LIKE ?)"
         TITLEQ = "title_match(f.title, f.original_title, COALESCE(f.alt_titles,'') || ' ; ' || COALESCE(f.user_akas,''), ?)"
         single = {"title": TITLEQ, "plot": "f.plot LIKE ?", "cast": "f.cast_ LIKE ?", "director": "f.director LIKE ?",
@@ -54,9 +54,10 @@ def build_query(q):
             like = f"%{w}%"
             if field in single:
                 where.append(single[field]); args.append(w if field in ("title", "studio") else like)
+                if field == "tags": args.append(w)
             else:
                 where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
-                args += [w, like, like, like, like, like, w, like, w, like, like]
+                args += [w, like, like, like, like, like, w, like, w, like, like, w]
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
                          ("rating_max", "rating", "<="), ("runtime_min", "runtime", ">="), ("runtime_max", "runtime", "<=")]:
         v = q.get(key)

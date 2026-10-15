@@ -63,6 +63,13 @@ def person_in(field, name):
     n = norm_person(name)
     return 1 if any(norm_person(x) == n for x in field.split(",")) else 0
 
+def tag_norm(s):
+    """Spelling-tolerant tag key: casefold, strip accents, drop spaces/hyphens/underscores, and drop one trailing
+    's' when at least 4 chars remain. 'Cum play' == 'cumplay' == 'Cum-Play'; 'Cumshots' == 'Cumshot';
+    'Ass' stays 'ass'. Other punctuation is kept, so 'Cum (Kink)' != 'Cum'."""
+    k = re.sub(r"[\s\-_]+", "", fold(s or ""))
+    return k[:-1] if k.endswith("s") and len(k) - 1 >= 4 else k
+
 def fold_key(s):
     """Sort key: strip diacritics (NFKD) and casefold, so 'Élan' sorts with E, not after Z."""
     s = unicodedata.normalize("NFKD", s or "")
@@ -76,6 +83,7 @@ def connect():
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     c.create_collation("FOLD", fold_collate)
+    c.create_function("tag_norm", 1, tag_norm, deterministic=True)
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
