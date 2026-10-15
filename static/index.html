@@ -307,7 +307,9 @@ function changedFields(d){const o=S.editOrig||{},n=v=>v==null?'':String(v).trim(
 async function saveWithTmdb(id,forceLoad){const d=formVals();const tid=tmdbIdOf(d.tmdb_id);
  if(tid===null){toast('That is not a TMDB id or themoviedb.org/movie/… link');return false}d.tmdb_id=tid;
  const newId=tid&&(forceLoad||String(tid)!=String(S.editOrig.tmdb_id??''));const keep=changedFields(d);
- await api('/api/films/'+id,{method:'PUT',body:d});
+ const sv=await api('/api/films/'+id,{method:'PUT',body:d});
+ if(sv.tmdb_loaded){toast('Loaded details from TMDB'+(keep.length?' (kept your edits: '+keep.join(', ')+')':''));S.editOrig=sv;return true}
+ if(sv.tmdb_error){toast('Saved, but TMDB: '+sv.tmdb_error);return true}
  if(newId){try{await api(`/api/films/${id}/tmdb`,{method:'POST',body:{tmdb_id:tid,keep}});toast('Loaded details from TMDB'+(keep.length?' (kept your edits: '+keep.join(', ')+')':''))}
   catch(e){openFilm(id);return false}}
  return true}

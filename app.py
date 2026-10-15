@@ -298,6 +298,7 @@ def create_film():
     for p in split_list(d.get("paths")): c.execute("INSERT OR IGNORE INTO files(film_id,path) VALUES(?,?)", (cur.lastrowid, p))
     c.commit()
     if split_list(d.get("paths")): start_res_job([cur.lastrowid])
+    if f.get("tmdb_id"): fetch_and_apply(c, cur.lastrowid, f["tmdb_id"], keep=[k for k, v in f.items() if v not in (None, "") and k != "title"])
     return get_film(cur.lastrowid)
 
 @app.put("/api/films/<int:fid>")
@@ -308,7 +309,8 @@ def update_film(fid):
     old = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not old: return jsonify(error="not found"), 404
     ed = set(json.loads(old["edited_fields"] or "[]"))
-    ed |= {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}
+    changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}; ed |= changed
+    new_tid = f.get("tmdb_id") if "tmdb_id" in f and f.get("tmdb_id") and f.get("tmdb_id") != old["tmdb_id"] else None
     f["edited_fields"] = json.dumps(sorted(ed)); f["updated_at"] = time.time()
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
     if "paths" in d:  # manual edit of the catalogue's path list (does not touch disk)
@@ -325,7 +327,13 @@ def update_film(fid):
         for t in d["tags"]:
             t = {"name": t} if isinstance(t, str) else t
             db.add_tag(c, fid, t.get("name"), t.get("category"))
-    c.commit(); return get_film(fid)
+    c.commit()
+    if new_tid:  # new/changed TMDB id on Save: load its details now (hand edits + this save's changes are kept; tags only added)
+        err = fetch_and_apply(c, fid, new_tid, keep=changed)
+        r = get_film(fid); j = r.get_json(); j["tmdb_loaded"] = not err
+        if err: j["tmdb_error"] = err
+        return jsonify(j)
+    return get_film(fid)
 
 @app.delete("/api/films/<int:fid>")
 def delete_film(fid):  # removes catalogue entry only; never touches files
@@ -1199,6 +1207,17 @@ def tmdb_search():
     return jsonify([dict(id=r["id"], title=r["title"], year=(r.get("release_date") or "")[:4],
                          poster=r.get("poster_path") and "https://image.tmdb.org/t/p/w185" + r["poster_path"],
                          overview=r.get("overview")) for r in res])
+
+def fetch_and_apply(c, fid, tid, keep=(), genres=True):
+    """Fetch TMDB movie `tid` and apply it to film `fid`. Returns an error string, or None on success."""
+    key = db.get_setting(c, "tmdb_key", "")
+    if not key: return "No TMDB API key set in Settings"
+    try: m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
+    except urllib.error.HTTPError as e:
+        return f"TMDB has no movie with id {tid}" if e.code == 404 else "TMDB rejected the API key (401)" if e.code == 401 else f"TMDB error {e.code}"
+    except Exception as e: return f"Could not reach TMDB: {e}"
+    apply_movie(c, fid, m, respect_edits=True, genres=genres, keep=[k for k in keep if k in FILM_FIELDS])
+    c.commit(); return None
 
 @app.post("/api/films/<int:fid>/tmdb")
 def tmdb_apply(fid):
