@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS film_tags(
   PRIMARY KEY(film_id, tag_id));
 CREATE INDEX IF NOT EXISTS ix_ft_tag ON film_tags(tag_id, status);
 CREATE TABLE IF NOT EXISTS smart_queue(film_id INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE, added_at REAL);
+CREATE TABLE IF NOT EXISTS aznude_queue(film_id INTEGER PRIMARY KEY REFERENCES films(id) ON DELETE CASCADE, added_at REAL);
 CREATE TABLE IF NOT EXISTS saved_searches(id INTEGER PRIMARY KEY, name TEXT, query TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS ix_films_title ON films(title COLLATE NOCASE);
@@ -107,6 +108,8 @@ def connect():
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
     if "primary_genre" not in cols: c.execute("ALTER TABLE films ADD COLUMN primary_genre TEXT")  # single main genre; hand edits protected
+    for col, typ in (("aznude_status", "TEXT"), ("aznude_checked", "REAL"), ("aznude_url", "TEXT"), ("aznude_note", "TEXT")):
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # AZNude Status; NULL status = Unchecked
     if "tmdb_genres" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_genres TEXT")  # JSON list of TMDB genre names, in TMDB order
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
@@ -312,6 +315,69 @@ def backfill_primary_genre(c):
             if r["tmdb_id"]: out["no_cache_with_tmdb_id"] += 1
     c.commit()
     return out
+
+# ---------- AZNude Status (never touches primary_genre or tags) ----------
+AZNUDE_STATUSES = ("Hardcore", "Softcore", "Not found")
+
+def norm_aznude_status(v):
+    """'hardcore' -> 'Hardcore', 'not found'/'notfound'/'not_found' -> 'Not found'; ''/None/'unchecked' -> None.
+    Anything else raises ValueError."""
+    if v is None: return None
+    k = re.sub(r"[\s_\-]+", "", str(v)).casefold()
+    if k in ("", "unchecked", "none", "null"): return None
+    for s in AZNUDE_STATUSES:
+        if k == s.replace(" ", "").casefold(): return s
+    raise ValueError(f"AZNude status must be one of {', '.join(AZNUDE_STATUSES)} or Unchecked, not {v!r}")
+
+def _lines(v, sep=None):
+    if not v: return []
+    parts = v.split(sep) if sep else v.splitlines()
+    return [x for x in (" ".join(p.split()) for p in parts) if x]
+
+def export_aznude_queue(c):
+    out = []
+    for r in c.execute("SELECT f.* FROM aznude_queue q JOIN films f ON f.id=q.film_id ORDER BY q.added_at, f.id").fetchall():
+        paths = [x[0] for x in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (r["id"],))]
+        out.append(dict(id=r["id"], title=r["title"], original_title=r["original_title"],
+                        alt_titles=_lines(r["alt_titles"], ";"),
+                        akas=_lines(r["user_akas"]), year=r["year"], director=r["director"], cast=_lines(r["cast_"], ","),
+                        path=paths[0] if paths else None, paths=paths,
+                        current_status=r["aznude_status"], current_url=r["aznude_url"]))
+    return out
+
+def set_aznude(c, fid, status, url=None, note=None, manual=False, force=False, now=None):
+    """Write AZNude fields for one film. Returns 'set', 'protected' (status hand-edited: status kept, url/note
+    still filled when given) or 'missing'. manual=True marks aznude_status as hand-edited. Never touches
+    primary_genre or tags. Raises ValueError for an unknown status."""
+    st = norm_aznude_status(status); now = now or time.time()
+    r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    if not r: return "missing"
+    ed = set(json.loads(r[0] or "[]"))
+    url = (url or "").strip() or None; note = (note or "").strip() or None
+    if "aznude_status" in ed and not manual and not force:
+        if url or note:
+            c.execute("UPDATE films SET aznude_url=COALESCE(?,aznude_url), aznude_note=COALESCE(?,aznude_note), updated_at=? WHERE id=?", (url, note, now, fid))
+        return "protected"
+    if manual: ed.add("aznude_status")
+    c.execute("UPDATE films SET aznude_status=?, aznude_checked=?, aznude_url=?, aznude_note=?, edited_fields=?, updated_at=? WHERE id=?",
+              (st, now, url, note, json.dumps(sorted(ed)), now, fid))
+    return "set"
+
+def import_aznude(c, items, dequeue=True):
+    """items: [{film_id, status, url, note}]. Hand-edited statuses are kept. Imported films leave the AZNude queue."""
+    res = {"set": 0, "protected": [], "skipped_film_ids": [], "errors": []}
+    for it in items:
+        fid = it.get("film_id", it.get("id"))
+        try: fid = int(fid)
+        except (TypeError, ValueError): res["errors"].append(f"bad film_id {fid!r}"); continue
+        try: r = set_aznude(c, fid, it.get("status", it.get("aznude_status")), it.get("url"), it.get("note"))
+        except ValueError as e: res["errors"].append(f"film {fid}: {e}"); continue
+        if r == "missing": res["skipped_film_ids"].append(fid); continue
+        if r == "set": res["set"] += 1
+        else: res["protected"].append(fid)
+        if dequeue: c.execute("DELETE FROM aznude_queue WHERE film_id=?", (fid,))
+    c.commit()
+    return res
 
 def export_queue(c, film_ids=None):
     out = []

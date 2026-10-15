@@ -6,7 +6,7 @@ import resolution as resmod
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -67,6 +67,18 @@ def build_query(q):
     if q.get("missing") in ("1", 1): where.append("f.missing=1")
     if q.get("pending") in ("1", 1): where.append("f.id IN (SELECT film_id FROM film_tags WHERE status='pending')")
     if q.get("queued") in ("1", 1): where.append("f.id IN (SELECT film_id FROM smart_queue)")
+    if q.get("aznude_queued") in ("1", 1): where.append("f.id IN (SELECT film_id FROM aznude_queue)")
+    azs = split_list(q.get("aznude"))
+    if azs:  # OR across AZNude statuses; "(none)"/"Unchecked" = not checked yet
+        vals = []
+        for x in azs:
+            try: vals.append(db.norm_aznude_status("" if x == "(none)" else x))
+            except ValueError: pass
+        named = [v for v in vals if v]
+        parts = [f"f.aznude_status IN ({','.join('?' * len(named))})"] if named else []
+        if None in vals: parts.append("f.aznude_status IS NULL")
+        if not parts: parts = ["0"]
+        where.append("(" + " OR ".join(parts) + ")"); args += named
     mp = split_list(q.get("mpaa"))
     if mp:
         parts = ["UPPER(COALESCE(f.mpaa,'')) IN (" + ",".join("?" * len(mp)) + ")"]
@@ -106,7 +118,7 @@ def build_query(q):
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD"}
+         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
 
 def attach(c, films, full=False):
     if not films: return films
@@ -118,6 +130,8 @@ def attach(c, films, full=False):
         m[r[0]]["files"].append(dict(path=r["path"], size=r["size"], missing=r["missing"]))
     qs = {r[0] for r in c.execute(f"SELECT film_id FROM smart_queue WHERE film_id IN ({ph})", ids)}
     for f in films: f["queued"] = f["id"] in qs
+    aq = {r[0] for r in c.execute(f"SELECT film_id FROM aznude_queue WHERE film_id IN ({ph})", ids)}
+    for f in films: f["aznude_queued"] = f["id"] in aq
     return films
 
 @app.get("/api/films")
@@ -280,6 +294,7 @@ def clean(d):
             if k == "watched": v = 1 if v in (True, 1, "1", "true") else 0
             if k in ("country", "studio"): v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
             if k == "primary_genre": v = " ".join((v or "").split()) or None
+            if k == "aznude_status": v = db.norm_aznude_status(v)
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -310,6 +325,7 @@ def update_film(fid):
     if not old: return jsonify(error="not found"), 404
     ed = set(json.loads(old["edited_fields"] or "[]"))
     changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}; ed |= changed
+    if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports
     new_tid = f.get("tmdb_id") if "tmdb_id" in f and f.get("tmdb_id") and f.get("tmdb_id") != old["tmdb_id"] else None
     f["edited_fields"] = json.dumps(sorted(ed)); f["updated_at"] = time.time()
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
@@ -461,6 +477,45 @@ def queue_remove():
     else:
         for fid in ids: c.execute("DELETE FROM smart_queue WHERE film_id=?", (fid,))
     c.commit(); return ok()
+
+# ---------- AZNude Status queue (checked outside the app; never changes primary_genre or tags) ----------
+def aznude_count(c): return c.execute("SELECT COUNT(*) FROM aznude_queue").fetchone()[0]
+
+@app.post("/api/aznude/queue")
+def aznude_queue_add():
+    c = C()
+    for fid in (request.json or {}).get("film_ids", []):
+        c.execute("INSERT OR IGNORE INTO aznude_queue SELECT id, ? FROM films WHERE id=?", (time.time(), fid))
+    c.commit(); return ok(count=aznude_count(c))
+
+@app.delete("/api/aznude/queue")
+def aznude_queue_remove():
+    c = C(); ids = (request.json or {}).get("film_ids") if request.is_json else None
+    if ids is None: c.execute("DELETE FROM aznude_queue")
+    else:
+        for fid in ids: c.execute("DELETE FROM aznude_queue WHERE film_id=?", (fid,))
+    c.commit(); return ok(count=aznude_count(c))
+
+@app.get("/api/aznude/queue")
+def aznude_queue_export(): return jsonify(db.export_aznude_queue(C()))
+
+@app.post("/api/aznude/import")
+def aznude_import():
+    d = request.json
+    if isinstance(d, dict): d = d.get("items", d.get("results", [d]))
+    return jsonify(db.import_aznude(C(), d or []))
+
+@app.post("/api/films/<int:fid>/aznude")
+def aznude_set(fid):
+    """Set one film's AZNude Status. Body: {status: "Hardcore"|"Softcore"|"Not found"|null, url?, note?,
+    manual?: true marks it hand-edited, force?: true overrides a hand edit}. Removes the film from the AZNude queue."""
+    c = C(); d = request.json or {}
+    try: r = db.set_aznude(c, fid, d.get("status"), d.get("url"), d.get("note"), manual=bool(d.get("manual")), force=bool(d.get("force")))
+    except ValueError as e: return jsonify(error=str(e)), 400
+    if r == "missing": return jsonify(error="not found"), 404
+    c.execute("DELETE FROM aznude_queue WHERE film_id=?", (fid,)); c.commit()
+    j = get_film(fid).get_json(); j["aznude_result"] = r
+    return jsonify(j)
 
 @app.get("/api/queue/export")
 def queue_export(): return jsonify(db.export_queue(C()))
@@ -639,7 +694,8 @@ def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
 # Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
-TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "edited_fields"}
+TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "edited_fields",
+              "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     """Apply TMDB details to a film. Never removes or alters existing tags (approved or pending): genres are only
@@ -1251,7 +1307,7 @@ def tmdb_apply(fid):
     c.commit(); return get_film(fid)
 
 # ---------- backup ----------
-TABLES = ["films", "files", "categories", "tags", "film_tags", "smart_queue", "saved_searches", "settings"]
+TABLES = ["films", "files", "categories", "tags", "film_tags", "smart_queue", "aznude_queue", "saved_searches", "settings"]
 
 @app.get("/api/export.json")
 def export_json():

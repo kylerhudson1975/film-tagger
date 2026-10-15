@@ -79,3 +79,20 @@ Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no bui
 
 ## License
 [MIT](LICENSE) © 2026 Kyle R. Hudson & Grok Bot
+
+## AZNude Status
+
+Each film has an **AZNude Status**: Hardcore, Softcore, Not found, or Unchecked (blank). It is shown in the Edit
+window under Primary genre (with the date checked and a link to the AZNude page if known) and can be set by hand;
+a hand-set value is never overwritten by imports. It can be filtered in the sidebar and shown as an optional list
+column. It **never** changes Primary genre or tags.
+
+The **✨ AZNude Status** button (Edit window, or right-click a film) adds the film to a separate AZNude queue.
+The check itself happens outside the app:
+
+    python smarttag.py export-aznude-queue aznude_queue.json
+    python smarttag.py import-aznude results.json
+
+`results.json` is a list of `{"film_id": 12, "status": "Hardcore" | "Softcore" | "Not found" | null, "url": "...", "note": "..."}`.
+Imported films are removed from the AZNude queue. API: `POST /api/films/<id>/aznude` with
+`{"status", "url", "note", "manual": false, "force": false}`.

@@ -8,6 +8,13 @@ save its JSON reply to a file, then import it.
   python smarttag.py status                       show queue / pending counts
   python smarttag.py clear-queue                  empty the queue
   python smarttag.py backfill-primary-genre       fill empty primary genres from stored TMDB data (no network)
+  python smarttag.py export-aznude-queue [out.json]  write the AZNude Status queue (default: aznude_queue.json)
+  python smarttag.py import-aznude results.json   write AZNude Status results and clear those films from the AZNude queue
+
+export-aznude-queue format: [{"id", "title", "original_title", "alt_titles": [...], "akas": [...], "year", "director",
+  "cast": [...], "path", "paths": [...], "current_status", "current_url"}, ...]
+import-aznude format: [{"film_id": 12, "status": "Hardcore"|"Softcore"|"Not found"|null, "url": "...", "note": "..."}, ...]
+  A hand-set AZNude Status is never overwritten (url/note are still filled). Never changes Primary genre or tags.
 
 import-tags format: [{"film_id": 12, "primary_genre": "Thriller", "tags": [{"name": "heist", "category": "Themes"}, ...]}, ...]
 Imported tags get source='ai', status='pending' until approved in the UI. Films are removed from the
@@ -34,9 +41,25 @@ def main(a):
         print(f"Primary genre filled for {r['filled']} film(s) ({r['from_tmdb_genres']} from saved TMDB genres, {r['from_tmdb_tags']} from TMDB genre tags).",
               f"Left blank (no stored TMDB genres): {r['no_cache']} ({r['no_cache_with_tmdb_id']} have a TMDB id - use Fetch from TMDB to fill).",
               f"Already set: {r['already_set']}. Hand-edited (untouched): {r['user_edited']}.")
+    elif cmd == "export-aznude-queue":
+        out = a[1] if len(a) > 1 else "aznude_queue.json"
+        q = db.export_aznude_queue(c)
+        with open(out, "w", encoding="utf-8") as f: json.dump(q, f, indent=2, ensure_ascii=False)
+        print(f"Exported {len(q)} AZNude-queued film(s) to {out}")
+    elif cmd == "import-aznude":
+        if len(a) < 2: print("usage: smarttag.py import-aznude results.json"); return 2
+        with open(a[1], encoding="utf-8-sig") as f: data = json.load(f)
+        if isinstance(data, dict): data = data.get("items", data.get("results", [data]))
+        r = db.import_aznude(c, data, dequeue="--keep-queue" not in a)
+        print(f"AZNude Status set for {r['set']} film(s).",
+              f"Hand-edited (status kept): {r['protected']}." if r["protected"] else "",
+              f"Unknown film ids skipped: {r['skipped_film_ids']}." if r["skipped_film_ids"] else "",
+              ("Errors: " + "; ".join(r["errors"])) if r["errors"] else "")
+        if r["errors"]: return 1
     elif cmd == "status":
         print("queue:", c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
-              "| films with pending AI tags:", c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0])
+              "| films with pending AI tags:", c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0],
+              "| AZNude queue:", c.execute("SELECT COUNT(*) FROM aznude_queue").fetchone()[0])
     elif cmd == "clear-queue":
         c.execute("DELETE FROM smart_queue"); c.commit(); print("Queue cleared.")
     else: print(__doc__); return 2
