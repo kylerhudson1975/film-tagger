@@ -9,6 +9,10 @@ Rules:
 - Do NOT repeat tags already listed in "existing_tags".
 - Give every tag one category from this list (use exactly these words):
     Genre    - e.g. thriller, comedy, documentary, western, animation
+               Any film that shows toplessness or nudity to be cheeky, sexy or saucy (hardcore and
+               softcore porn, sexploitation, sex comedies, saucy farces, erotic dramas/thrillers, 70s/80s
+               horror with titillating nudity) ALSO gets the Genre tag "Exploitation". Not for nudity
+               that is purely clinical, tragic or non-sexual (war atrocity, medical scene, birth, slavery).
     Content  - notable content/advisories, e.g. violence, nudity, strong language, gore
                For hardcore porn (not softcore or mainstream) always also add "Cum" and "Semen";
                cumshots are near-universal in hardcore features. Add "Creampie" only with evidence
