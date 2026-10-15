@@ -17,6 +17,15 @@ Rules:
     Style    - e.g. black and white, found footage, nonlinear, musical numbers
     People   - notable people/roles, e.g. directed by a woman, ensemble cast
     Other    - anything useful that fits nowhere else
+    Kink     - adult sexual dynamics/practices, e.g. voyeurism, cuckold, hotwife, swinging, open marriage
+               Use these exact Kink tags ONLY when the film clearly shows that dynamic (never as a guess):
+                 Cuckquean  - a wife/first woman who WANTS to watch her husband have sex with another
+                              woman, and joins in (incl. wife-led threesomes she instigates)
+                 Hothusband - the husband in a Cuckquean dynamic
+                 Cuckcake   - the other woman in a Cuckquean dynamic
+                 Compersion - joy in a partner's pleasure with others (any gender)
+               A wife who is hurt/forlorn about her husband's affair is NOT Cuckquean or Compersion.
+    Fetish   - specific fetishes, e.g. feet, latex, spanking
 
 Output format - reply with ONLY a JSON array, no commentary, no markdown fences:
 [
