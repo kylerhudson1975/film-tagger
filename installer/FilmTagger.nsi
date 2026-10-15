@@ -7,7 +7,7 @@ Unicode true
 !include "Sections.nsh"
 
 !define APPNAME "Film Tagger"
-!define APPVER "1.0.11"
+!define APPVER "1.0.12"
 !define PUBLISHER "Kyle R. Hudson & Grok Bot"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\FilmTagger"
 !define REGKEY "Software\FilmTagger"
