@@ -6,7 +6,7 @@ import resolution as resmod
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -97,11 +97,16 @@ def build_query(q):
         parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
         if "(none)" in rs: parts.append("COALESCE(f.resolution,'')=''")
         where.append("(" + " OR ".join(parts) + ")"); args += [x for x in rs if x != "(none)"]
+    pgs = split_list(q.get("pgenre"))
+    if pgs:  # OR across primary genres (accent/case-insensitive); "(none)" = not set
+        parts = [f"tag_norm(f.primary_genre) IN ({','.join('tag_norm(?)' for x in pgs if x != '(none)')})"] if [x for x in pgs if x != "(none)"] else []
+        if "(none)" in pgs: parts.append("COALESCE(f.primary_genre,'')=''")
+        where.append("(" + " OR ".join(parts) + ")"); args += [x for x in pgs if x != "(none)"]
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
+         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD"}
 
 def attach(c, films, full=False):
     if not films: return films
@@ -144,6 +149,19 @@ def studios():
     for (v,) in C().execute("SELECT studio FROM films WHERE studio IS NOT NULL AND studio<>''"):
         for x in split_list(v): n[x] = n.get(x, 0) + 1
     return jsonify([dict(name=k, n=v) for k, v in sorted(n.items(), key=lambda kv: db.fold(kv[0]))])
+
+@app.get("/api/primary-genres")
+def primary_genres():
+    """Primary genres in use (with counts) plus all Genre-category tag names, both accent-folded alphabetical."""
+    c = C()
+    used = [dict(name=r[0], n=r[1]) for r in c.execute("SELECT primary_genre, COUNT(*) FROM films WHERE COALESCE(primary_genre,'')<>'' GROUP BY primary_genre")]
+    tags = [r[0] for r in c.execute("SELECT name FROM tags WHERE category='Genre' COLLATE NOCASE")]
+    return jsonify(used=sorted(used, key=lambda x: db.fold(x["name"])), genre_tags=sorted(tags, key=lambda x: (db.fold(x), x)))
+
+@app.post("/api/primary-genre/backfill")
+def primary_genre_backfill():
+    """Fill empty primary genres from stored TMDB data only (never calls TMDB)."""
+    return jsonify(db.backfill_primary_genre(C()))
 
 @app.get("/api/countries")
 def countries():
@@ -261,6 +279,7 @@ def clean(d):
                 if k == "rating" and v is not None: v = max(1, min(10, v))
             if k == "watched": v = 1 if v in (True, 1, "1", "true") else 0
             if k in ("country", "studio"): v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
+            if k == "primary_genre": v = " ".join((v or "").split()) or None
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -648,9 +667,13 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
     upd = {k: v for k, v in upd.items() if k not in ed and k not in TMDB_NEVER and k not in set(keep)}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
+    gnames = [g.get("name") for g in m.get("genres", []) if g.get("name")]
+    if "genres" in m: upd["tmdb_genres"] = json.dumps(gnames, ensure_ascii=False)
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     if genres:
         for g in m.get("genres", []): db.add_tag_if_absent(c, fid, g.get("name"), "Genre", source="tmdb")
+    if gnames and "primary_genre" not in ed and "primary_genre" not in set(keep):  # only fills an empty value
+        db.set_primary_genre(c, fid, gnames[0], only_if_empty=True)
 
 # ---------- bulk poster/metadata job ----------
 import threading, re as _re, unicodedata

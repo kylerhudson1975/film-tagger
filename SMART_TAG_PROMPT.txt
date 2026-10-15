@@ -42,11 +42,17 @@ Rules:
                A wife who is hurt/forlorn about her husband's affair is NOT Cuckquean or Compersion.
     Fetish   - specific fetishes, e.g. feet, latex, spanking
 
+Primary genre - for every film also give exactly ONE "Primary genre: X" (the "primary_genre" field
+  in the JSON below): the film's single main genre, chosen from its Genre tags (existing or the ones
+  you suggest). Use the plain genre name, e.g. "Thriller", "Comedy", "Horror", "Western".
+  For porn use "Hardcore", "Softcore" or "Pink film" as appropriate (and make sure that Genre tag is
+  given too). "Exploitation" may be the primary genre ONLY for non-porn films.
+
 Output format - reply with ONLY a JSON array, no commentary, no markdown fences:
 [
-  {"film_id": 12, "tags": [{"name": "heist", "category": "Themes"}, {"name": "los angeles", "category": "Setting"}]},
-  {"film_id": 15, "tags": [{"name": "western", "category": "Genre"}]}
+  {"film_id": 12, "primary_genre": "Thriller", "tags": [{"name": "heist", "category": "Themes"}, {"name": "los angeles", "category": "Setting"}]},
+  {"film_id": 15, "primary_genre": "Western", "tags": [{"name": "western", "category": "Genre"}]}
 ]
-"film_id" must be the "id" value of the film from the input. Include every input film.
+"film_id" must be the "id" value of the film from the input. Include every input film, each with its "primary_genre".
 
 Films:

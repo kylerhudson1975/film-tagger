@@ -106,6 +106,8 @@ def connect():
     if "studio_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio_checked INTEGER")  # backfill tried
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
+    if "primary_genre" not in cols: c.execute("ALTER TABLE films ADD COLUMN primary_genre TEXT")  # single main genre; hand edits protected
+    if "tmdb_genres" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_genres TEXT")  # JSON list of TMDB genre names, in TMDB order
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
                       [(n, i) for i, n in enumerate(DEFAULT_CATEGORIES)])
@@ -223,6 +225,74 @@ def add_tag(c, film_id, name, category=None, source="user"):
         return
     c.execute("INSERT INTO film_tags VALUES(?,?,?,?,?)", (film_id, tid, source, status, time.time()))
 
+# ---------- primary genre ----------
+PG_RE = re.compile(r"^\s*primary[\s_-]*genre\s*[:=]\s*(.+?)\s*$", re.I | re.M)
+
+def genre_tag_name(c, name):
+    """Map a genre name to an existing Genre-category tag (case/accent-insensitive); else return the name as given."""
+    name = re.sub(r"\s+", " ", (name or "")).strip().strip('"').strip()
+    if not name: return None
+    k = fold(name)
+    for (t,) in c.execute("SELECT name FROM tags WHERE category='Genre' COLLATE NOCASE"):
+        if fold(t) == k: return t
+    return name
+
+def pg_user_edited(c, fid):
+    r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    return bool(r) and "primary_genre" in set(json.loads(r[0] or "[]"))
+
+def set_primary_genre(c, fid, name, only_if_empty=True):
+    """Set films.primary_genre unless the user hand-edited it (and, if only_if_empty, unless it is already set).
+    Returns True if the value changed."""
+    name = genre_tag_name(c, name)
+    if not name or pg_user_edited(c, fid): return False
+    cond = " AND COALESCE(primary_genre,'')=''" if only_if_empty else " AND COALESCE(primary_genre,'')<>?"
+    args = [name, fid] + ([] if only_if_empty else [name])
+    return c.execute("UPDATE films SET primary_genre=? WHERE id=?" + cond, args).rowcount > 0
+
+def primary_genre_of_item(it):
+    """Primary genre from one smart-tag reply item: {"primary_genre": X}, {"Primary genre": X}, a "Primary genre: X"
+    line, or a tag/string "Primary genre: X". Returns (genre or None, tags without the primary-genre pseudo-tag)."""
+    pg = None
+    for k, v in it.items():
+        if isinstance(v, str) and re.sub(r"[\s_-]+", "", k).lower() == "primarygenre" and v.strip(): pg = v
+    tags = []
+    for t in it.get("tags", []) or []:
+        nm = t if isinstance(t, str) else (t.get("name") if isinstance(t, dict) else None)
+        m = PG_RE.match(nm or "")
+        if m: pg = pg or m.group(1); continue
+        tags.append(t)
+    for k in ("text", "notes", "comment"):
+        m = isinstance(it.get(k), str) and PG_RE.search(it[k])
+        if m and not pg: pg = m.group(1)
+    if isinstance(pg, str): pg = PG_RE.sub(r"\1", pg).strip() or None
+    return pg, tags
+
+def backfill_primary_genre(c):
+    """Fill empty, non-hand-edited primary_genre from stored TMDB data only (no network):
+    1) films.tmdb_genres (TMDB genre list saved by fetches since v1.0.18), else
+    2) the film's TMDB-sourced Genre tags in the order TMDB gave them.
+    Films with neither are left blank and counted as no_cache."""
+    out = dict(filled=0, from_tmdb_genres=0, from_tmdb_tags=0, no_cache=0, no_cache_with_tmdb_id=0, already_set=0, user_edited=0)
+    for r in c.execute("SELECT id, tmdb_id, primary_genre, edited_fields, tmdb_genres FROM films ORDER BY id").fetchall():
+        if "primary_genre" in set(json.loads(r["edited_fields"] or "[]")): out["user_edited"] += 1; continue
+        if (r["primary_genre"] or "").strip(): out["already_set"] += 1; continue
+        g, src = None, None
+        try: gl = json.loads(r["tmdb_genres"] or "[]")
+        except ValueError: gl = []
+        if gl: g, src = gl[0], "from_tmdb_genres"
+        else:
+            t = c.execute("SELECT t.name FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=? AND ft.source='tmdb'"
+                          " AND t.category='Genre' COLLATE NOCASE ORDER BY ft.added_at, ft.rowid LIMIT 1", (r["id"],)).fetchone()
+            if t: g, src = t[0], "from_tmdb_tags"
+        if g and set_primary_genre(c, r["id"], g):
+            out["filled"] += 1; out[src] += 1
+        else:
+            out["no_cache"] += 1
+            if r["tmdb_id"]: out["no_cache_with_tmdb_id"] += 1
+    c.commit()
+    return out
+
 def export_queue(c, film_ids=None):
     out = []
     if film_ids is None: rows = c.execute("SELECT f.* FROM smart_queue q JOIN films f ON f.id=q.film_id ORDER BY q.added_at").fetchall()
@@ -236,16 +306,18 @@ def export_queue(c, film_ids=None):
     return out
 
 def import_ai_tags(c, items, dequeue=True):
-    n = 0; skipped = []
+    n = 0; skipped = []; pg_set = 0
     for it in items:
         fid = it.get("film_id", it.get("id"))
         if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone():
             skipped.append(fid); continue
-        for t in it.get("tags", []):
+        pg, tags = primary_genre_of_item(it)
+        if pg and set_primary_genre(c, fid, pg, only_if_empty=False): pg_set += 1
+        for t in tags:
             if isinstance(t, str): t = {"name": t}
             before = c.total_changes
             add_tag(c, fid, t.get("name"), t.get("category"), source="ai")
             n += c.total_changes > before
         if dequeue: c.execute("DELETE FROM smart_queue WHERE film_id=?", (fid,))
     c.commit()
-    return {"tags_added": n, "skipped_film_ids": skipped}
+    return {"tags_added": n, "skipped_film_ids": skipped, "primary_genres_set": pg_set}

@@ -7,8 +7,9 @@ save its JSON reply to a file, then import it.
   python smarttag.py import-tags file.json        import AI tags -> pending approval in the app
   python smarttag.py status                       show queue / pending counts
   python smarttag.py clear-queue                  empty the queue
+  python smarttag.py backfill-primary-genre       fill empty primary genres from stored TMDB data (no network)
 
-import-tags format: [{"film_id": 12, "tags": [{"name": "heist", "category": "Themes"}, ...]}, ...]
+import-tags format: [{"film_id": 12, "primary_genre": "Thriller", "tags": [{"name": "heist", "category": "Themes"}, ...]}, ...]
 Imported tags get source='ai', status='pending' until approved in the UI. Films are removed from the
 queue once their tags are imported (use --keep-queue to keep them).
 """
@@ -28,6 +29,11 @@ def main(a):
         if isinstance(data, dict): data = data.get("items", [data])
         r = db.import_ai_tags(c, data, dequeue="--keep-queue" not in a)
         print(f"Imported {r['tags_added']} pending AI tag(s).", f"Unknown film ids skipped: {r['skipped_film_ids']}" if r["skipped_film_ids"] else "")
+    elif cmd == "backfill-primary-genre":
+        r = db.backfill_primary_genre(c)
+        print(f"Primary genre filled for {r['filled']} film(s) ({r['from_tmdb_genres']} from saved TMDB genres, {r['from_tmdb_tags']} from TMDB genre tags).",
+              f"Left blank (no stored TMDB genres): {r['no_cache']} ({r['no_cache_with_tmdb_id']} have a TMDB id - use Fetch from TMDB to fill).",
+              f"Already set: {r['already_set']}. Hand-edited (untouched): {r['user_edited']}.")
     elif cmd == "status":
         print("queue:", c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
               "| films with pending AI tags:", c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0])
