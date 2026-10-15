@@ -1,5 +1,5 @@
 """Shared database layer for Film Tagger (used by app.py and smarttag.py)."""
-import os, re, sqlite3, json, time
+import os, re, sqlite3, json, time, unicodedata
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("FILMTAGGER_DB", os.path.join(BASE, "films.db"))
@@ -63,9 +63,19 @@ def person_in(field, name):
     n = norm_person(name)
     return 1 if any(norm_person(x) == n for x in field.split(",")) else 0
 
+def fold_key(s):
+    """Sort key: strip diacritics (NFKD) and casefold, so 'Élan' sorts with E, not after Z."""
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(ch for ch in s if not unicodedata.combining(ch)).casefold()
+
+def fold_collate(a, b):
+    ka, kb = fold_key(a), fold_key(b)
+    return (ka > kb) - (ka < kb) or (a > b) - (a < b)
+
 def connect():
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
+    c.create_collation("FOLD", fold_collate)
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)

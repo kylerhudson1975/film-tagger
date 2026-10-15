@@ -99,14 +99,14 @@ def build_query(q):
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
-SORTS = {"title": "f.title COLLATE NOCASE", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE NOCASE", "country": "f.country COLLATE NOCASE", "studio": "f.studio COLLATE NOCASE", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
+SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
+         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id"}
 
 def attach(c, films, full=False):
     if not films: return films
     ids = [f["id"] for f in films]; ph = ",".join("?" * len(ids)); m = {f["id"]: f for f in films}
     for f in films: f["tags"] = []; f["pending"] = []; f["files"] = []
-    for r in c.execute(f"SELECT ft.film_id, t.id, t.name, t.category, ft.status, ft.source FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id IN ({ph}) ORDER BY t.category, t.name", ids):
+    for r in c.execute(f"SELECT ft.film_id, t.id, t.name, t.category, ft.status, ft.source FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id IN ({ph}) ORDER BY t.category, t.name COLLATE FOLD", ids):
         m[r[0]]["pending" if r["status"] == "pending" else "tags"].append(dict(id=r["id"], name=r["name"], category=r["category"], source=r["source"]))
     for r in c.execute(f"SELECT film_id, path, size, missing FROM files WHERE film_id IN ({ph})", ids):
         m[r[0]]["files"].append(dict(path=r["path"], size=r["size"], missing=r["missing"]))
@@ -163,7 +163,7 @@ def people():
     for r, col in db.PEOPLE_ROLES.items():
         counts[r] = c.execute(f"SELECT COUNT(*) FROM films WHERE person_in({col}, ?)", (name,)).fetchone()[0]
     where, args = build_query({"person": name, "prole": role})
-    rows = c.execute(f"SELECT f.id, f.title, f.year FROM films f {where} ORDER BY f.year IS NULL, f.year, f.title", args).fetchall()
+    rows = c.execute(f"SELECT f.id, f.title, f.year FROM films f {where} ORDER BY f.year IS NULL, f.year, f.title COLLATE FOLD", args).fetchall()
     return jsonify(name=name, role=role or None, total=len(rows), counts=counts,
                    films=[dict(id=r["id"], title=r["title"], year=r["year"]) for r in rows])
 
@@ -324,7 +324,7 @@ def merge_films():
 @app.get("/api/tags")
 def list_tags():
     c = C()
-    rows = c.execute("SELECT t.id, t.name, t.category, (SELECT COUNT(*) FROM film_tags ft WHERE ft.tag_id=t.id AND ft.status='approved') n FROM tags t ORDER BY t.category IS NULL, t.category, t.name COLLATE NOCASE")
+    rows = c.execute("SELECT t.id, t.name, t.category, (SELECT COUNT(*) FROM film_tags ft WHERE ft.tag_id=t.id AND ft.status='approved') n FROM tags t ORDER BY t.category IS NULL, t.category, t.name COLLATE FOLD")
     return jsonify([dict(r) for r in rows])
 
 @app.put("/api/tags/<int:tid>")
@@ -409,7 +409,7 @@ def bulk_delete():
 
 @app.get("/api/categories")
 def cats():
-    return jsonify([r[0] for r in C().execute("SELECT name FROM categories ORDER BY sort, name")])
+    return jsonify([r[0] for r in C().execute("SELECT name FROM categories ORDER BY sort, name COLLATE FOLD")])
 
 @app.put("/api/categories")
 def set_cats():
@@ -445,7 +445,7 @@ def queue_import():
 
 @app.get("/api/pending")
 def pending():
-    c = C(); rows = [dict(r) for r in c.execute("SELECT DISTINCT f.* FROM films f JOIN film_tags ft ON ft.film_id=f.id WHERE ft.status='pending' ORDER BY f.title")]
+    c = C(); rows = [dict(r) for r in c.execute("SELECT DISTINCT f.* FROM films f JOIN film_tags ft ON ft.film_id=f.id WHERE ft.status='pending' ORDER BY f.title COLLATE FOLD")]
     return jsonify(attach(c, rows))
 
 @app.post("/api/pending/review")
@@ -520,7 +520,7 @@ def libraries():
 def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES)
 
 @app.get("/api/searches")
-def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name")])
+def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name COLLATE FOLD")])
 
 @app.post("/api/searches")
 def save_search():
@@ -1168,7 +1168,7 @@ def export_json():
 def export_csv():
     c = C(); buf = io.StringIO(); w = csv.writer(buf)
     cols = ["id"] + FILM_FIELDS + ["paths", "tags", "pending_tags"]; w.writerow(cols)
-    films = attach(c, [dict(r) for r in c.execute("SELECT * FROM films ORDER BY title")])
+    films = attach(c, [dict(r) for r in c.execute("SELECT * FROM films ORDER BY title COLLATE FOLD")])
     for f in films:
         fmt = lambda ts: "; ".join((t["category"] + ":" if t["category"] else "") + t["name"] for t in ts)
         w.writerow([f["id"]] + [f[k] for k in FILM_FIELDS] + [" | ".join(x["path"] for x in f["files"]), fmt(f["tags"]), fmt(f["pending"])])

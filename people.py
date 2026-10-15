@@ -166,7 +166,7 @@ def init(app, tmdb, posters_dir):
             except Exception as ex:
                 status, msg = "offline", f"Could not reach TMDB ({type(ex).__name__}); showing cached/library data."
             if row["tmdb_person_id"] == NO_MATCH: status, msg = "no_match", "No matching person found on TMDB. You can set the TMDB person id manually."
-        lib = [dict(r) for r in c.execute(f"SELECT id, title, year, poster, custom_poster, tmdb_id FROM films WHERE id IN ({','.join('?'*len(lib_ids))}) ORDER BY year IS NULL, year, title", lib_ids)] if lib_ids else []
+        lib = [dict(r) for r in c.execute(f"SELECT id, title, year, poster, custom_poster, tmdb_id FROM films WHERE id IN ({','.join('?'*len(lib_ids))}) ORDER BY year IS NULL, year, title COLLATE FOLD", lib_ids)] if lib_ids else []
         for f in lib: f["roles"] = [ro for ro, s in e["roles"].items() if f["id"] in s]
         groups = filmography(c, json.loads(row["credits_json"])) if row["credits_json"] and (row["tmdb_person_id"] or 0) > 0 else None
         total = owned = 0
