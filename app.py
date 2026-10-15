@@ -300,7 +300,7 @@ def update_film(fid):
             c.commit(); start_res_job([fid])
         for p in new:
             c.execute("INSERT OR IGNORE INTO files(film_id,path,missing) VALUES(?,?,?)", (fid, p, 0 if os.path.exists(p) else 1))
-    if "tags" in d:  # full replace of approved tags: list of {name, category}
+    if d.get("replace_tags") is True and isinstance(d.get("tags"), list):  # explicit full replace of approved tags: list of {name, category}
         c.execute("DELETE FROM film_tags WHERE film_id=? AND status='approved'", (fid,))
         for t in d["tags"]:
             t = {"name": t} if isinstance(t, str) else t
@@ -610,7 +610,13 @@ def countries_of(m):
 def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
+# Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
+TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "edited_fields"}
+
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
+    """Apply TMDB details to a film. Never removes or alters existing tags (approved or pending): genres are only
+    added when the film does not already have that tag. Hand-edited fields (edited_fields) are never replaced,
+    even on an explicit fetch; `respect_edits` is kept for API compatibility and cannot turn that off."""
     crew = m.get("credits", {})
     def jobs(*js):
         seen = []
@@ -638,18 +644,12 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     if "production_companies" in m:
         if studios_of(m): upd["studio"] = studios_of(m)
         upd["studio_checked"] = 1
-    if respect_edits:
-        ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"))
-        upd = {k: v for k, v in upd.items() if k not in ed}
-    elif "country" in upd and "country" in json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"):
-        del upd["country"]  # a hand-edited country is never replaced by TMDB, even on an explicit fetch
-    if not respect_edits and "studio" in upd and "studio" in json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"):
-        del upd["studio"]  # a hand-edited studio is never replaced by TMDB, even on an explicit fetch
-    upd = {k: v for k, v in upd.items() if k not in set(keep)}
+    ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
+    upd = {k: v for k, v in upd.items() if k not in ed and k not in TMDB_NEVER and k not in set(keep)}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     if genres:
-        for g in m.get("genres", []): db.add_tag(c, fid, g["name"], "Genre")
+        for g in m.get("genres", []): db.add_tag_if_absent(c, fid, g.get("name"), "Genre", source="tmdb")
 
 # ---------- bulk poster/metadata job ----------
 import threading, re as _re, unicodedata
@@ -1151,7 +1151,7 @@ def tmdb_apply(fid):
         return jsonify(error=f"TMDB error {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not reach TMDB: {e}"), 502
     keep = [k for k in d.get("keep", []) if k in FILM_FIELDS]  # fields the user changed in this edit win
-    apply_movie(c, fid, m, respect_edits=False, genres=d.get("genres", True), keep=keep)
+    apply_movie(c, fid, m, respect_edits=True, genres=d.get("genres", True), keep=keep)
     c.commit(); return get_film(fid)
 
 # ---------- backup ----------

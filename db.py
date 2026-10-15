@@ -184,6 +184,16 @@ def get_tag_id(c, name, category=None):
     if category: c.execute("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,99)", (category,))
     return c.execute("INSERT INTO tags(name,category) VALUES(?,?)", (name, category or None)).lastrowid
 
+def add_tag_if_absent(c, film_id, name, category=None, source="tmdb"):
+    """Add an approved tag only if the film doesn't have it yet. Never promotes/removes a pending tag and never
+    changes an existing tag's category (used by TMDB genre import)."""
+    name = re.sub(r"\s+", " ", (name or "")).strip()
+    if not name: return
+    r = c.execute("SELECT id FROM tags WHERE name=?", (name,)).fetchone()
+    tid = r[0] if r else get_tag_id(c, name, category)
+    if c.execute("SELECT 1 FROM film_tags WHERE film_id=? AND tag_id=?", (film_id, tid)).fetchone(): return
+    c.execute("INSERT INTO film_tags VALUES(?,?,?,?,?)", (film_id, tid, source, "approved", time.time()))
+
 def add_tag(c, film_id, name, category=None, source="user"):
     tid = get_tag_id(c, name, category)
     if not tid: return

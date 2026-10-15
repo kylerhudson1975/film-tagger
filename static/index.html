@@ -297,9 +297,11 @@ async function loadTmdbId(id){if(!tmdbIdOf($('e_tmdb_id').value)){toast('Enter a
 async function saveFilm(id){const d=formVals();if(id){if(!await saveWithTmdb(id,false))return}else await api('/api/films',{method:'POST',body:d});closeM();reload();refreshMeta()}
 function newFilm(){openM(`<h3>New film</h3>`+['title','year','runtime','director','rating','mpaa','cast_','plot','notes','storage','tmdb_id','poster'].map(k=>`<label>${k.replace('_','')}</label><input id=e_${k}>`).join('')+
  `<input type=hidden id=e_watched value=0><label>File path(s), one per line</label><textarea id=e_paths></textarea><div style="text-align:right;margin-top:10px"><button class=pri onclick="saveFilm(0)">Create</button></div>`)}
-async function tmdbFetch(id){const t=$('e_title').value,y=$('e_year').value;const r=await api(`/api/tmdb/search?q=${encodeURIComponent(t)}&year=${y}`);
+async function tmdbFetch(id){const t=$('e_title').value,y=$('e_year').value;const fd=formVals(),ch=changedFields(fd);S.tmdbEdits={id,keep:ch,d:Object.fromEntries(ch.map(k=>[k,fd[k]]))};const r=await api(`/api/tmdb/search?q=${encodeURIComponent(t)}&year=${y}`);
  if(!r.length)return toast('No TMDB results');openM('<h3>Pick the right match</h3>'+r.map(m=>`<div style="display:flex;gap:10px;margin:8px 0;cursor:pointer" onclick="applyTmdb(${id},${m.id})">${m.poster?`<img src="${m.poster}" width=60>`:''}<div><b>${esc(m.title)}</b> (${m.year})<div class=muted>${esc((m.overview||'').slice(0,200))}</div></div></div>`).join('')+`<button onclick="openFilm(${id})">Back</button>`)}
-async function applyTmdb(id,tid){await api(`/api/films/${id}/tmdb`,{method:'POST',body:{tmdb_id:tid}});toast('Metadata updated');reload();refreshMeta();openFilm(id)}
+async function applyTmdb(id,tid){const pe=S.tmdbEdits&&S.tmdbEdits.id==id?S.tmdbEdits:{keep:[],d:{}};S.tmdbEdits=null;
+ if(pe.keep.length)await api('/api/films/'+id,{method:'PUT',body:pe.d});  // never sends tags; unsaved edits survive the fetch
+ await api(`/api/films/${id}/tmdb`,{method:'POST',body:{tmdb_id:tid,keep:pe.keep}});toast('Metadata updated');reload();refreshMeta();openFilm(id)}
 async function openPending(){const fs=await api('/api/pending');
  openM(`<h3>AI tag review — ${fs.length} film(s)</h3>${fs.length?`<button class=pri onclick="if(confirm('Approve every pending AI tag?'))review(null,null,'approve')">Approve ALL</button> <button onclick="if(confirm('Reject every pending AI tag?'))review(null,null,'reject')">Reject ALL</button>`:'<p class=muted>Nothing pending.</p>'}
   <div id=pendList>${fs.map(f=>`<div style="margin-top:12px"><b>${esc(f.title)}</b> ${f.year||''} <a style="color:var(--a);cursor:pointer" onclick="openFilm(${f.id})">edit</a><div class=muted>${tagsHtml(f)}</div>${pendHtml(f)}</div>`).join('')}</div>`)}
