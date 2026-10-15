@@ -10,10 +10,13 @@ Rules:
 - Give every tag one category from this list (use exactly these words):
     Genre    - e.g. thriller, comedy, documentary, western, animation
     Content  - notable content/advisories, e.g. violence, nudity, strong language, gore
-               For hardcore porn (not softcore or mainstream) always also add "Cum" and "Semen"
-               (Content); cumshots are near-universal in hardcore features. Add "Creampie" (Content)
-               only with evidence (internal cumshots, title/plot, or known for it) and "Cumplay" (Kink)
-               only for cum play, swallowing, snowballing, bukkake or cum-swapping. Don't guess these two.
+               For hardcore porn (not softcore or mainstream) always also add "Cum" and "Semen";
+               cumshots are near-universal in hardcore features. Add "Creampie" only with evidence
+               (internal cumshots, title/plot, or known for it) and "Cumplay" only for cum play,
+               swallowing, snowballing, bukkake or cum-swapping. Don't guess these two.
+               Each goes in BOTH Content and Kink. Tag names are unique, so use these exact pairs:
+                 Content: "Cum", "Semen", "Creampie", "Cumplay (Content)"
+                 Kink:    "Cum (Kink)", "Semen (Kink)", "Creampie (Kink)", "Cumplay"
     Themes   - e.g. revenge, redemption, coming of age, family, betrayal
     Mood     - e.g. dark, feel-good, tense, melancholy, funny
     Setting  - places and environments, e.g. new york, space, desert, small town
