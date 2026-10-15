@@ -51,6 +51,14 @@ Bulk edit (set the MPAA rating on selected films):
 
 ![Bulk MPAA rating](docs/screenshots/5-bulk-mpaa.png)
 
+Primary genre and AZNude Status columns in list view:
+
+![Primary genre and AZNude Status](docs/screenshots/7-primary-genre-aznude.png)
+
+Library & Settings, including Fill missing Primary Genres:
+
+![Library and Settings](docs/screenshots/8-library-settings.png)
+
 ## Install
 - **Windows (recommended):** download and run **`FilmTaggerSetup.exe`**. It installs per user into `%LOCALAPPDATA%\Film Tagger` with a bundled Python 3.12, so no admin rights are needed. It adds Start Menu and (optionally) Desktop and sign-in shortcuts and an entry in *Apps* for uninstalling. Your library (`films.db` + `posters/`) lives in `%LOCALAPPDATA%\Film Tagger\data` and survives upgrades. See [INSTALL.txt](INSTALL.txt).
   - Silent install: `FilmTaggerSetup.exe /S [/D=C:\path] [/NODESKTOP] [/STARTUP] [/PORT=5051]`. Silent uninstall (keeps the library): `uninstall.exe /S`.
