@@ -241,9 +241,29 @@ def pg_user_edited(c, fid):
     r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
     return bool(r) and "primary_genre" in set(json.loads(r[0] or "[]"))
 
+CLASSIC_PORN_SQL = "lower(replace(path,'/','\\')) LIKE '%classic porn%'"
+PORN_PRIMARY = ("Hardcore", "Softcore")
+SOFTCORE_TAGS = {"softcore", "softcore sex", "pink film", "not hardcore porn"}
+
+def is_classic_porn(c, fid):
+    """True if any of the film's files lives under a 'Classic Porn' folder (e.g. D:\\Classic Porn\\)."""
+    return c.execute("SELECT 1 FROM files WHERE film_id=? AND " + CLASSIC_PORN_SQL + " LIMIT 1", (fid,)).fetchone() is not None
+
+def porn_primary_genre(c, fid):
+    """'Softcore' if the film has a Softcore / Softcore sex / Pink film / Not hardcore porn tag, else 'Hardcore'."""
+    names = {(r[0] or "").strip().lower() for r in c.execute(
+        "SELECT t.name FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=?", (fid,))}
+    return "Softcore" if names & SOFTCORE_TAGS else "Hardcore"
+
+def set_porn_primary_genre(c, fid):
+    """Fill an empty, non-hand-edited primary genre of a Classic Porn film with Hardcore/Softcore from its tags."""
+    return set_primary_genre(c, fid, porn_primary_genre(c, fid), only_if_empty=True)
+
 def set_primary_genre(c, fid, name, only_if_empty=True):
     """Set films.primary_genre unless the user hand-edited it (and, if only_if_empty, unless it is already set).
     Returns True if the value changed."""
+    if name and is_classic_porn(c, fid) and (name or "").strip().lower() not in ("hardcore", "softcore"):
+        name = porn_primary_genre(c, fid)  # Classic Porn films: primary genre is only ever Hardcore or Softcore
     name = genre_tag_name(c, name)
     if not name or pg_user_edited(c, fid): return False
     cond = " AND COALESCE(primary_genre,'')=''" if only_if_empty else " AND COALESCE(primary_genre,'')<>?"

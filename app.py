@@ -680,8 +680,9 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     if genres:
         for g in m.get("genres", []): db.add_tag_if_absent(c, fid, g.get("name"), "Genre", source="tmdb")
-    if gnames and "primary_genre" not in ed and "primary_genre" not in set(keep):  # only fills an empty value
-        db.set_primary_genre(c, fid, gnames[0], only_if_empty=True)
+    if "primary_genre" not in ed and "primary_genre" not in set(keep):  # only fills an empty value
+        if db.is_classic_porn(c, fid): db.set_porn_primary_genre(c, fid)  # never a TMDB genre for Classic Porn
+        elif gnames: db.set_primary_genre(c, fid, gnames[0], only_if_empty=True)
 
 # ---------- bulk poster/metadata job ----------
 import threading, re as _re, unicodedata
@@ -913,7 +914,9 @@ def studio_status():
                    remaining=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked IS NULL"),
                    no_tmdb_studio=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked=1"))
 
-PG_WHERE = ("tmdb_id IS NOT NULL AND COALESCE(primary_genre,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"primary_genre\"%'")
+PG_BLANK = "COALESCE(primary_genre,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"primary_genre\"%'"
+PG_CLASSIC = "id IN (SELECT film_id FROM files WHERE " + db.CLASSIC_PORN_SQL + ")"
+PG_WHERE = "tmdb_id IS NOT NULL AND " + PG_BLANK + " AND NOT " + PG_CLASSIC  # Classic Porn never gets TMDB genres
 
 def run_pgenre_job(key, ids):
     """Fill empty, non-hand-edited primary_genre from TMDB's genre list. Only writes tmdb_genres and primary_genre:
@@ -949,6 +952,9 @@ def pgenre_start():
     if not key: return jsonify(error="No TMDB API key set in Settings"), 400
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
+        for (pid,) in c.execute("SELECT id FROM films WHERE " + PG_BLANK + " AND " + PG_CLASSIC).fetchall():
+            db.set_porn_primary_genre(c, pid)  # Classic Porn: Hardcore/Softcore from tags, no TMDB
+        c.commit()
         ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE " + PG_WHERE + " ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="pgenre", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
         threading.Thread(target=run_pgenre_job, args=(key, ids), daemon=True).start()
