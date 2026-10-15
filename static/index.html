@@ -250,7 +250,7 @@ function renderTagCloud(){const g=S.tagGroups||{},col=tcCollapsed(),sel=tcSelect
   +vis.map(t=>`<span class=tag${sel.has(t.name.toLowerCase())?' style="outline:1px solid var(--a)"':''} onclick="addF(event,'${esc(t.name).replace(/'/g,"\\'")}')">${esc(t.name)} <span class=c>${t.n}</span></span>`).join('')}).join('')}
 function addF(e,name){const el=$(e.shiftKey?'f_none':'f_all');const l=el.value.split(',').map(s=>s.trim()).filter(Boolean);if(!l.includes(name))l.push(name);el.value=l.join(', ');renderTagCloud();load()}
 function goHome(){closeM();$('libPop').classList.remove('open');$('ctx').style.display='none';
- FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');renderMpaa();S.sel.clear();$('content').scrollTop=0;load()}
+ FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');setIn('');$('sort').value='title';S.order='asc';$('ord').textContent='↑';renderMpaa();S.sel.clear();$('content').scrollTop=0;load()}
 document.addEventListener('keydown',e=>{if(e.altKey&&!e.ctrlKey&&!e.metaKey&&(e.key=='h'||e.key=='H'||e.code=='KeyH')){e.preventDefault();goHome()}});
 function clearF(){FK.forEach(k=>{if(k!='lib'&&k!='in')$('f_'+k).value=''});renderMpaa();$('q').value='';load()}
 async function saveSearch(){const name=prompt('Name for this search?');if(!name)return;await api('/api/searches',{method:'POST',body:{name,query:{...query(),sort:$('sort').value,order:S.order}}});refreshMeta()}
