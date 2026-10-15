@@ -905,6 +905,53 @@ def studio_status():
                    remaining=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked IS NULL"),
                    no_tmdb_studio=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked=1"))
 
+PG_WHERE = ("tmdb_id IS NOT NULL AND COALESCE(primary_genre,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"primary_genre\"%'")
+
+def run_pgenre_job(key, ids):
+    """Fill empty, non-hand-edited primary_genre from TMDB's genre list. Only writes tmdb_genres and primary_genre:
+    never adds/removes/changes tags or any other metadata. ~4 requests/s, backs off and retries on 429."""
+    rl = RateLimiter(4); c = C()
+    try:
+        for fid, tid in ids:
+            if JOB["cancel"]: break
+            for attempt in range(4):
+                try:
+                    rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
+                    names = [g.get("name") for g in m.get("genres", []) if g.get("name")]
+                    c.execute("UPDATE films SET tmdb_genres=? WHERE id=?", (json.dumps(names, ensure_ascii=False), fid))
+                    if names and db.set_primary_genre(c, fid, names[0], only_if_empty=True): JOB["matched"] += 1
+                    else: JOB["skipped"] += 1
+                    c.commit(); break
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt < 3:
+                        time.sleep(float(e.headers.get("Retry-After") or 0) or 2 * (attempt + 1)); continue
+                    if e.code == 401: JOB["error"] = "TMDB rejected the API key (401)"; JOB["cancel"] = True
+                    JOB["errors"] += 1; break
+                except Exception as e:
+                    JOB["errors"] += 1; JOB["error"] = f"Network/TMDB error: {e}"; break
+            if JOB["errors"] >= 10 and JOB["matched"] == 0: JOB["error"] = (JOB["error"] or "") + " (stopped after repeated failures)"; break
+            JOB["done"] += 1
+    finally:
+        JOB["running"] = False; JOB["finished_at"] = time.time(); c.close()
+
+@app.post("/api/pgenre/start")
+def pgenre_start():
+    """Fill missing primary genres from TMDB for films with a tmdb_id, empty primary_genre and no hand edit."""
+    c = C(); key = db.get_setting(c, "tmdb_key", "")
+    if not key: return jsonify(error="No TMDB API key set in Settings"), 400
+    with JOB_LOCK:
+        if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE " + PG_WHERE + " ORDER BY id")]
+        JOB.clear(); JOB.update(running=True, kind="pgenre", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
+        threading.Thread(target=run_pgenre_job, args=(key, ids), daemon=True).start()
+    return jsonify(JOB)
+
+@app.get("/api/pgenre/status")
+def pgenre_status():
+    c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
+    return jsonify(job=dict(JOB), with_primary_genre=q("COALESCE(primary_genre,'')<>''"), blank=q("COALESCE(primary_genre,'')=''"),
+                   remaining=q(PG_WHERE), no_tmdb_id=q("tmdb_id IS NULL AND COALESCE(primary_genre,'')=''"))
+
 @app.post("/api/bulk/studio")
 def bulk_studio():
     """{film_ids:[..], studio:"A, B"|""} - set/clear studio on many films (marked hand-edited)."""
