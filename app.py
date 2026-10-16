@@ -4,10 +4,11 @@ from flask import Flask, request, jsonify, send_from_directory, Response
 import db
 import resolution as resmod
 import subtitles as submod
+import tpdb
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -123,6 +124,8 @@ def build_query(q):
         parts = [f"tag_norm(f.primary_genre) IN ({','.join('tag_norm(?)' for x in pgs if x != '(none)')})"] if [x for x in pgs if x != "(none)"] else []
         if "(none)" in pgs: parts.append("COALESCE(f.primary_genre,'')=''")
         where.append("(" + " OR ".join(parts) + ")"); args += [x for x in pgs if x != "(none)"]
+    if q.get("scenes") in ("1", 1): where.append("f.kind='scene'")
+    if q.get("films_only") in ("1", 1): where.append("COALESCE(f.kind,'')<>'scene'")
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
@@ -305,6 +308,10 @@ def clean(d):
             if k == "primary_genre": v = " ".join((v or "").split()) or None
             if k == "aznude_status": v = db.norm_aznude_status(v)
             if k == "subtitles": v = " ".join((v or "").split()) or None
+            if k == "tpdb_id": v = tpdb.parse_id(v if isinstance(v, str) else str(v or ""))
+            if k == "release_date":
+                v = (v or "").strip() or None
+                if v and not _re.fullmatch(r"(19|20)\d\d-\d\d-\d\d", v): raise ValueError(f"Release date must be YYYY-MM-DD, not {v}")
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -563,7 +570,8 @@ def settings_get():
     ak = db.get_setting(c, "ai_key", "")
     return jsonify(roots=db.get_setting(c, "roots", []), tmdb_key=db.get_setting(c, "tmdb_key", ""),
                    ai_url=db.get_setting(c, "ai_url", ""), ai_model=db.get_setting(c, "ai_model", ""),
-                   ai_key_set=bool(ak), ai_key_hint=("…" + ak[-4:]) if len(ak) > 8 else ("set" if ak else ""),
+                   ai_key_set=bool(ak), scene_roots=db.get_setting(c, "scene_roots", []),
+                   tpdb_key_set=bool(db.get_setting(c, "tpdb_key", "")), ai_key_hint=("…" + ak[-4:]) if len(ak) > 8 else ("set" if ak else ""),
                    queue=c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
                    pending=c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0],
                    films=c.execute("SELECT COUNT(*) FROM films").fetchone()[0], db_path=db.DB_PATH)
@@ -574,6 +582,9 @@ def settings_put():
     if "roots" in d: db.set_setting(c, "roots", [r.strip() for r in d["roots"] if r.strip()])
     if "tmdb_key" in d: db.set_setting(c, "tmdb_key", d["tmdb_key"].strip().strip('"').strip("'").strip())
     if "ai_url" in d: db.set_setting(c, "ai_url", d["ai_url"].strip())
+    if "scene_roots" in d: db.set_setting(c, "scene_roots", [r.strip().rstrip("\\/") for r in d["scene_roots"] if r.strip()])
+    if d.get("tpdb_key") is not None and d.get("tpdb_key") != "":  # blank = keep existing; "-" = clear
+        db.set_setting(c, "tpdb_key", "" if d["tpdb_key"].strip() == "-" else d["tpdb_key"].strip().strip('"').strip("'"))
     if "ai_model" in d: db.set_setting(c, "ai_model", d["ai_model"].strip())
     if d.get("ai_key") is not None and d.get("ai_key") != "":  # blank = keep existing; "-" = clear
         db.set_setting(c, "ai_key", "" if d["ai_key"].strip() == "-" else d["ai_key"].strip().strip('"').strip("'"))
@@ -589,6 +600,8 @@ def scan():
     finally:
         SCAN["running"] = False; SCAN["finished_at"] = time.time()
         try: start_res_job()  # detect resolution of newly found films in the background
+        except Exception: pass
+        try: start_tpdb_job()  # look up new scenes on ThePornDB (only if a token is set)
         except Exception: pass
         try: start_subs_job(recheck=True)  # refresh subtitles for every non-overridden film (cached probes: fast)
         except Exception: pass
@@ -709,7 +722,7 @@ def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
 # Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
-TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
+TMDB_NEVER = {"kind", "release_date", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
@@ -1097,7 +1110,7 @@ def posters_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         retry = (request.json or {}).get("retry_skipped", False)
-        cond = "(poster IS NULL OR poster='') AND tmdb_id IS NULL" + ("" if retry else " AND COALESCE(tmdb_status,'')<>'needs_match'")
+        cond = "(poster IS NULL OR poster='') AND tmdb_id IS NULL AND COALESCE(kind,'')<>'scene'" + ("" if retry else " AND COALESCE(tmdb_status,'')<>'needs_match'")
         ids = [r[0] for r in c.execute(f"SELECT id FROM films WHERE {cond} ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="posters", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_poster_job, args=(key, ids), daemon=True).start()
@@ -1287,6 +1300,7 @@ def tmdb_search():
 
 def fetch_and_apply(c, fid, tid, keep=(), genres=True):
     """Fetch TMDB movie `tid` and apply it to film `fid`. Returns an error string, or None on success."""
+    if is_scene(c, fid): return "Scenes use ThePornDB, not TMDB"
     key = db.get_setting(c, "tmdb_key", "")
     if not key: return "No TMDB API key set in Settings"
     try: m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
@@ -1298,7 +1312,9 @@ def fetch_and_apply(c, fid, tid, keep=(), genres=True):
 
 @app.post("/api/films/<int:fid>/tmdb")
 def tmdb_apply(fid):
-    c = C(); key = db.get_setting(c, "tmdb_key", "")
+    c = C()
+    if is_scene(c, fid): return jsonify(error="Scenes use ThePornDB, not TMDB"), 400
+    key = db.get_setting(c, "tmdb_key", "")
     if not key: return jsonify(error="No TMDB API key set in Settings"), 400
     d = request.json or {}
     try: tid = parse_tmdb_id(d.get("tmdb_id"))
@@ -1475,6 +1491,100 @@ def subtitles_redetect(fid):
     j = get_film(fid).get_json(); j["subs_offline"] = v is None
     return jsonify(j)
 
+
+# ---------- scenes (ThePornDB; TMDB is never used for kind='scene') ----------
+def is_scene(c, fid):
+    r = c.execute("SELECT kind FROM films WHERE id=?", (fid,)).fetchone()
+    return bool(r) and r[0] == "scene"
+
+def apply_scene(c, fid, s, keep=()):
+    """Apply a ThePornDB scene to a film. Hand-edited fields (edited_fields) and `keep` are never replaced; tags are only added."""
+    f = tpdb.scene_fields(s)
+    ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]")) | set(keep)
+    upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
+    upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
+    c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
+    for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
+    db.set_primary_genre(c, fid, "Hardcore", only_if_empty=True)
+
+def tpdb_err(e):
+    if isinstance(e, urllib.error.HTTPError):
+        return {401: "ThePornDB rejected the API token (401)", 404: "ThePornDB has no such scene"}.get(e.code, f"ThePornDB error {e.code}")
+    return f"Could not reach ThePornDB: {e}"
+
+@app.post("/api/films/<int:fid>/tpdb")
+def tpdb_apply(fid):
+    """{tpdb_id: id/URL or blank (= look up from the filename), keep: [fields changed in the edit window]}"""
+    c = C(); token = db.get_setting(c, "tpdb_key", "")
+    if not token: return jsonify(error="No ThePornDB API token set in Settings (free at theporndb.net)"), 400
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    d = request.json or {}
+    try: sid = tpdb.parse_id(d.get("tpdb_id") or "")
+    except ValueError as e: return jsonify(error=str(e)), 400
+    try:
+        if sid: s = tpdb.get_scene(token, sid)
+        else:
+            p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+            s = tpdb.lookup(token, p[0]) if p else None
+            if s: s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
+        if not s: return jsonify(error="No ThePornDB match"), 404
+    except Exception as e: return jsonify(error=tpdb_err(e)), 502
+    apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS]); c.commit()
+    return get_film(fid)
+
+TP = {"running": False, "kind": "tpdb"}
+TP_LOCK = threading.Lock()
+
+def run_tpdb_job(token, ids):
+    c = C(); rl = RateLimiter(2)
+    try:
+        for fid in ids:
+            if TP["cancel"]: break
+            try:
+                p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+                rl.wait(); s = tpdb.lookup(token, p[0]) if p else None
+                if s:
+                    rl.wait(); s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
+                    apply_scene(c, fid, s); TP["matched"] += 1
+                else:
+                    c.execute("UPDATE films SET tpdb_checked=? WHERE id=?", (time.time(), fid)); TP["skipped"] += 1
+                c.commit()
+            except urllib.error.HTTPError as e:
+                TP["errors"] += 1; TP["error"] = tpdb_err(e)
+                if e.code == 401: break
+            except Exception as e:
+                TP["errors"] += 1; TP["error"] = tpdb_err(e)
+            TP["done"] += 1
+    finally:
+        TP["running"] = False; TP["finished_at"] = time.time(); c.close()
+
+def start_tpdb_job(film_ids=None, retry=False, wait=False):
+    """Look up scenes without a ThePornDB id. No token -> does nothing (returns None)."""
+    c = C(); token = db.get_setting(c, "tpdb_key", "")
+    if not token: c.close(); return None
+    with TP_LOCK:
+        if TP.get("running"): c.close(); return False
+        ids = [int(i) for i in film_ids] if film_ids is not None else [r[0] for r in c.execute(
+            "SELECT id FROM films WHERE kind='scene' AND tpdb_id IS NULL" + ("" if retry else " AND tpdb_checked IS NULL") + " ORDER BY id")]
+        c.close()
+        TP.clear(); TP.update(running=True, kind="tpdb", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
+        t = threading.Thread(target=run_tpdb_job, args=(token, ids), daemon=True); t.start()
+    if wait: t.join()
+    return True
+
+@app.post("/api/tpdb/start")
+def tpdb_start():
+    d = (request.json or {}) if request.is_json else {}
+    r = start_tpdb_job(d.get("film_ids"), bool(d.get("retry")), bool(d.get("wait")))
+    if r is None: return jsonify(error="No ThePornDB API token set in Settings (free at theporndb.net)"), 400
+    if r is False: return jsonify(error="ThePornDB lookup is already running"), 409
+    return jsonify(TP)
+
+@app.get("/api/tpdb/status")
+def tpdb_status():
+    c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
+    return jsonify(job=TP, token_set=bool(db.get_setting(c, "tpdb_key", "")), scenes=q("kind='scene'"),
+                   matched=q("kind='scene' AND tpdb_id IS NOT NULL"), unmatched=q("kind='scene' AND tpdb_id IS NULL"))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))

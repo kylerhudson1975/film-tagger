@@ -115,6 +115,10 @@ def connect():
     # Subtitles: text summary, manual-override flag (scans never overwrite while set), last-detected marker
     for col, typ in (("subtitles", "TEXT"), ("subs_manual", "INTEGER DEFAULT 0"), ("subs_checked", "REAL")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # existing rows untouched (NULL/0)
+    # Scenes libraries: kind='scene' rows never use TMDB; release_date YYYY-MM-DD; tpdb_id = ThePornDB scene id
+    if "tpdb_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN tpdb_checked REAL")
+    for col in ("kind", "release_date", "tpdb_id"):
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
@@ -161,8 +165,27 @@ def guess_title_year(path):
     return stem, None
 
 # ---------- scanning (read-only) ----------
+def scene_roots(c):
+    return [r.rstrip("\\/") for r in (get_setting(c, "scene_roots", []) or []) if r and r.strip()]
+
+def under(path, root):
+    p, r = os.path.normcase(path), os.path.normcase(root.rstrip("\\/"))
+    return p.startswith(r) and len(p) > len(r) and p[len(r)] in "\\/"
+
+def new_scene(c, p, size, root, now):
+    """Insert a scene found in a scenes library, prefilled from its filename (studio/date/performers/title)."""
+    import tpdb
+    n = tpdb.parse_name(p)
+    t = tpdb.default_title(n) or os.path.splitext(os.path.basename(p))[0]
+    cur = c.execute("INSERT INTO films(title,year,release_date,studio,cast_,storage,kind,primary_genre,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (t, int(n["date"][:4]) if n["date"] else None, n["date"], n["studio"], ", ".join(n["performers"]) or None,
+                     os.path.splitdrive(p)[0] or root, "scene", "Hardcore", now, now))
+    c.execute("INSERT INTO files(film_id,path,size) VALUES(?,?,?)", (cur.lastrowid, p, size))
+    return cur.lastrowid
+
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}
+    sroots = scene_roots(c)
     now = time.time(); added = 0; seen = set(); errors = []
     for root in roots:
         if not os.path.isdir(root):
@@ -178,10 +201,14 @@ def scan(c, roots, progress=None):
                 r = c.execute("SELECT id, film_id FROM files WHERE path=?", (p,)).fetchone()
                 try: size = os.path.getsize(p)
                 except OSError: size = None
+                is_scene = any(under(p, sr) for sr in sroots)
                 if r:
+                    if is_scene: c.execute("UPDATE films SET kind='scene' WHERE id=? AND kind IS NULL", (r["film_id"],))
                     c.execute("UPDATE files SET missing=0, size=? WHERE id=?", (size, r["id"]))
                     c.execute("UPDATE films SET missing=0 WHERE id=?", (r["film_id"],))
                     continue
+                if is_scene:
+                    new_scene(c, p, size, root, now); added += 1; continue
                 t, y = guess_title_year(p)
                 drive = os.path.splitdrive(p)[0] or root
                 cur = c.execute("INSERT INTO films(title,year,storage,added_at,updated_at) VALUES(?,?,?,?,?)",
