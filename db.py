@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS saved_searches(id INTEGER PRIMARY KEY, name TEXT, que
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
 CREATE INDEX IF NOT EXISTS ix_films_title ON films(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS ix_films_year ON films(year);
+CREATE TABLE IF NOT EXISTS sub_probe(path TEXT PRIMARY KEY COLLATE NOCASE, size INTEGER, mtime INTEGER, streams TEXT);
 """
 
 PEOPLE_COLS = ["writers", "producers", "cinematographer", "composer"]
@@ -111,6 +112,11 @@ def connect():
     for col, typ in (("aznude_status", "TEXT"), ("aznude_checked", "REAL"), ("aznude_url", "TEXT"), ("aznude_note", "TEXT")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # AZNude Status; NULL status = Unchecked
     if "tmdb_genres" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_genres TEXT")  # JSON list of TMDB genre names, in TMDB order
+    # Subtitles: text summary, manual-override flag (scans never overwrite while set), last-detected marker
+    for col, typ in (("subtitles", "TEXT"), ("subs_manual", "INTEGER DEFAULT 0"), ("subs_checked", "REAL")):
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # existing rows untouched (NULL/0)
+    import subtitles as _subs
+    c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
                       [(n, i) for i, n in enumerate(DEFAULT_CATEGORIES)])

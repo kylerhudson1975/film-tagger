@@ -3,10 +3,11 @@ import os, io, csv, json, time, urllib.request, urllib.parse, urllib.error
 from flask import Flask, request, jsonify, send_from_directory, Response
 import db
 import resolution as resmod
+import subtitles as submod
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -49,15 +50,15 @@ def build_query(q):
         PATHQ = "f.id IN (SELECT film_id FROM files WHERE path LIKE ?)"
         TITLEQ = "title_match(f.title, f.original_title, COALESCE(f.alt_titles,'') || ' ; ' || COALESCE(f.user_akas,''), ?)"
         single = {"title": TITLEQ, "plot": "f.plot LIKE ?", "cast": "f.cast_ LIKE ?", "director": "f.director LIKE ?",
-                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "studio": "fold_in(f.studio, ?)", "resolution": "f.resolution LIKE ?"}
+                  "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "studio": "fold_in(f.studio, ?)", "resolution": "f.resolution LIKE ?", "subtitles": "f.subtitles LIKE ?"}
         for w in text.split():
             like = f"%{w}%"
             if field in single:
                 where.append(single[field]); args.append(w if field in ("title", "studio") else like)
                 if field == "tags": args.append(w)
             else:
-                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
-                args += [w, like, like, like, like, like, w, like, w, like, like, w]
+                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR f.subtitles LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
+                args += [w, like, like, like, like, like, w, like, like, w, like, like, w]
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
                          ("rating_max", "rating", "<="), ("runtime_min", "runtime", ">="), ("runtime_max", "runtime", "<=")]:
         v = q.get(key)
@@ -109,6 +110,14 @@ def build_query(q):
         parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
         if "(none)" in rs: parts.append("COALESCE(f.resolution,'')=''")
         where.append("(" + " OR ".join(parts) + ")"); args += [x for x in rs if x != "(none)"]
+    sb = split_list(q.get("subs"))
+    if sb:  # OR across: "(has)" any subtitles, "(none)" none detected, or a language name
+        parts = []
+        for x in sb:
+            if x == "(has)": parts.append("COALESCE(f.subtitles,'') NOT IN ('','None')")
+            elif x == "(none)": parts.append("COALESCE(f.subtitles,'') IN ('','None')")
+            else: parts.append("sub_lang_in(f.subtitles, ?)"); args.append(x)
+        where.append("(" + " OR ".join(parts) + ")")
     pgs = split_list(q.get("pgenre"))
     if pgs:  # OR across primary genres (accent/case-insensitive); "(none)" = not set
         parts = [f"tag_norm(f.primary_genre) IN ({','.join('tag_norm(?)' for x in pgs if x != '(none)')})"] if [x for x in pgs if x != "(none)"] else []
@@ -295,6 +304,7 @@ def clean(d):
             if k in ("country", "studio"): v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
             if k == "primary_genre": v = " ".join((v or "").split()) or None
             if k == "aznude_status": v = db.norm_aznude_status(v)
+            if k == "subtitles": v = " ".join((v or "").split()) or None
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -325,19 +335,22 @@ def update_film(fid):
     if not old: return jsonify(error="not found"), 404
     ed = set(json.loads(old["edited_fields"] or "[]"))
     changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}; ed |= changed
+    if "subtitles" in changed: f["subs_manual"] = 1  # hand-edited subtitles: scans never overwrite until Re-detect
     if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports
     new_tid = f.get("tmdb_id") if "tmdb_id" in f and f.get("tmdb_id") and f.get("tmdb_id") != old["tmdb_id"] else None
     f["edited_fields"] = json.dumps(sorted(ed)); f["updated_at"] = time.time()
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in f)} WHERE id=?", list(f.values()) + [fid])
+    paths_changed = False
     if "paths" in d:  # manual edit of the catalogue's path list (does not touch disk)
         new = split_list(d["paths"]) if not isinstance(d["paths"], str) else [x.strip() for x in d["paths"].splitlines() if x.strip()]
         before = {r[0] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fid,))}
         c.execute(f"DELETE FROM files WHERE film_id=? AND path NOT IN ({','.join('?'*len(new)) or 'NULL'})", [fid] + new)
         if before != {r[0] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fid,))}:
             c.execute("UPDATE films SET res_checked=NULL WHERE id=?", (fid,))  # paths changed: re-detect resolution
-            c.commit(); start_res_job([fid])
+            c.commit(); start_res_job([fid]); paths_changed = True
         for p in new:
             c.execute("INSERT OR IGNORE INTO files(film_id,path,missing) VALUES(?,?,?)", (fid, p, 0 if os.path.exists(p) else 1))
+    if paths_changed: detect_subs_one(c, fid)
     if d.get("replace_tags") is True and isinstance(d.get("tags"), list):  # explicit full replace of approved tags: list of {name, category}
         c.execute("DELETE FROM film_tags WHERE film_id=? AND status='approved'", (fid,))
         for t in d["tags"]:
@@ -577,6 +590,8 @@ def scan():
         SCAN["running"] = False; SCAN["finished_at"] = time.time()
         try: start_res_job()  # detect resolution of newly found films in the background
         except Exception: pass
+        try: start_subs_job(recheck=True)  # refresh subtitles for every non-overridden film (cached probes: fast)
+        except Exception: pass
 
 SCAN = {"running": False, "kind": "scan"}
 
@@ -600,7 +615,7 @@ def libraries():
     return jsonify(out)
 
 @app.get("/api/jobs")
-def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES)
+def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES, subs=SUBS)
 
 @app.get("/api/searches")
 def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name COLLATE FOLD")])
@@ -694,7 +709,7 @@ def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
 # Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
-TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "edited_fields",
+TMDB_NEVER = {"rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
@@ -1359,6 +1374,107 @@ def import_backup():
 # ---------- person pages (people.py) ----------
 import people as peoplemod
 peoplemod.init(app, tmdb, POSTERS_DIR)
+
+# ---------- subtitles (local files; external sidecars + embedded streams, cached by size/mtime) ----------
+SUBS = {"running": False, "kind": "subtitles"}
+SUBS_LOCK = threading.Lock()
+
+def detect_subs_one(c, fid, dircache=None, force=False):
+    """Detect and store one film's subtitles unless hand-overridden (force ignores the override).
+    Returns the text, 'manual' if overridden, or None if its drive is not mounted."""
+    r = c.execute("SELECT subs_manual FROM films WHERE id=?", (fid,)).fetchone()
+    if not r: return None
+    if r[0] and not force: return "manual"
+    paths = [x[0] for x in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,))]
+    v = submod.detect(c, paths, dircache) if paths else submod.NONE
+    if v is None: return None
+    c.execute("UPDATE films SET subtitles=?, subs_checked=? WHERE id=?" + ("" if force else " AND COALESCE(subs_manual,0)=0"), (v, time.time(), fid))
+    c.commit()
+    return v
+
+def run_subs_job(ids):
+    c = C(); dc = {}
+    try:
+        for fid in ids:
+            if SUBS["cancel"]: break
+            try:
+                v = detect_subs_one(c, fid, dc)
+                if v is None: SUBS["offline"] += 1
+                elif v == "manual": SUBS["manual"] += 1
+                elif submod.has_subs(v): SUBS["with_subs"] += 1
+                else: SUBS["without"] += 1
+            except Exception as e:
+                SUBS["errors"] += 1; SUBS["error"] = f"{type(e).__name__}: {e}"
+            SUBS["done"] += 1
+            el = time.time() - SUBS["started_at"]
+            SUBS["eta_s"] = int(el / SUBS["done"] * (SUBS["total"] - SUBS["done"])) if SUBS["done"] else None
+    finally:
+        SUBS["running"] = False; SUBS["finished_at"] = time.time(); c.close()
+
+def start_subs_job(film_ids=None, recheck=False, wait=False):
+    with SUBS_LOCK:
+        if SUBS.get("running"): return False
+        c = C()
+        if film_ids is not None: ids = [int(i) for i in film_ids]
+        else:
+            ids = [r[0] for r in c.execute("SELECT id FROM films WHERE COALESCE(subs_manual,0)=0"
+                   + ("" if recheck else " AND subs_checked IS NULL") + " ORDER BY id")]
+        c.close()
+        SUBS.clear(); SUBS.update(running=True, kind="subtitles", done=0, total=len(ids), with_subs=0, without=0, manual=0, offline=0,
+                                  errors=0, error=None, cancel=False, started_at=time.time(), eta_s=None, method=submod.method_name())
+        t = threading.Thread(target=run_subs_job, args=(ids,), daemon=True); t.start()
+    if wait: t.join()
+    return True
+
+def subs_counts(c):
+    roots = db.get_setting(c, "roots", []) or []
+    rows = c.execute("SELECT f.id, f.subtitles, (SELECT GROUP_CONCAT(path, char(10)) FROM files WHERE film_id=f.id) FROM films f").fetchall()
+    tot = dict(films=len(rows), with_subs=0, none=0, unchecked=0); libs = {r.rstrip("\\/"): dict(films=0, with_subs=0, none=0, unchecked=0) for r in roots}
+    langs = {}
+    for fid, v, ps in rows:
+        k = "unchecked" if v is None else ("with_subs" if submod.has_subs(v) else "none")
+        tot[k] += 1
+        for lg in submod.languages(v): langs[lg] = langs.get(lg, 0) + 1
+        pl = [p.lower() for p in (ps or "").split("\n") if p]
+        for root, d in libs.items():
+            rl = root.lower()
+            if any(p.startswith(rl) and len(p) > len(rl) and p[len(rl)] in "\\/" for p in pl): d["films"] += 1; d[k] += 1
+    return tot, libs, langs
+
+@app.get("/api/subtitles")
+def subtitles_list():
+    """Sidebar chip counts: (has), (none) and each language."""
+    tot, _, langs = subs_counts(C())
+    return jsonify([dict(name="(has)", n=tot["with_subs"]), dict(name="(none)", n=tot["none"] + tot["unchecked"])] +
+                   [dict(name=k, n=v) for k, v in sorted(langs.items(), key=lambda kv: (-kv[1], kv[0]))])
+
+@app.post("/api/subtitles/start")
+def subtitles_start():
+    """Detect subtitles for unchecked films; {recheck:true} for all non-overridden films; {wait:true} blocks until done."""
+    d = (request.json or {}) if request.is_json else {}
+    if not start_subs_job(d.get("film_ids"), bool(d.get("recheck")), bool(d.get("wait"))): return jsonify(error="Subtitle detection is already running"), 409
+    return jsonify(SUBS)
+
+@app.post("/api/subtitles/cancel")
+def subtitles_cancel(): SUBS["cancel"] = True; return jsonify(SUBS)
+
+@app.get("/api/subtitles/status")
+def subtitles_status():
+    tot, libs, langs = subs_counts(C())
+    return jsonify(job=SUBS, method=submod.method_name(), ffprobe=resmod.ffprobe_path() or None, totals=tot, libraries=libs, languages=langs)
+
+@app.post("/api/films/<int:fid>/subtitles/redetect")
+def subtitles_redetect(fid):
+    """Clear the manual override and detect this film's subtitles now."""
+    c = C()
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    ed = set(json.loads(r[0] or "[]")); ed.discard("subtitles")
+    c.execute("UPDATE films SET subs_manual=0, edited_fields=? WHERE id=?", (json.dumps(sorted(ed)), fid)); c.commit()
+    v = detect_subs_one(c, fid, force=True)
+    j = get_film(fid).get_json(); j["subs_offline"] = v is None
+    return jsonify(j)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
