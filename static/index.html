@@ -16,6 +16,7 @@ button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:v
 #bulk{display:none;gap:6px;padding:8px 10px;background:#1d2a40;border-bottom:1px solid var(--b);align-items:center;flex-wrap:wrap}
 #content{flex:1;overflow:auto;padding:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
+.pac{display:none;position:absolute;left:0;right:0;top:100%;z-index:50;background:var(--p);border:1px solid #8886;border-radius:4px;max-height:220px;overflow:auto}.pac div{padding:4px 8px;cursor:pointer}.pac div:hover{background:var(--p2)}
 .su.st{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.su.st a.stl{color:inherit;text-decoration:none;border-bottom:1px dotted #888}.su.st a.stl:hover{color:#fff}
 .tpc{display:flex;gap:8px;align-items:center;padding:5px;border-bottom:1px solid #8883}.tpc img,.tpc .nt{width:84px;height:48px;object-fit:cover;border-radius:4px;background:var(--p2);flex:none}.tpc .tx{flex:1;min-width:0;font-size:.9em}.tpc .tx div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .card{background:var(--p);border:2px solid transparent;border-radius:8px;overflow:hidden;cursor:pointer;position:relative}
@@ -104,6 +105,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button onclick="openPending()" id="pendBtn">AI review</button>
   <button onclick="openQueue()" id="queueBtn">Queue</button>
   <button onclick="newFilm()">+ Film</button>
+  <button onclick="newPerson()" title="Add a performer or other person by hand">+ Person</button>
   <button onclick="openSettings()">⚙ Library & Settings</button>
  </div>
  <div id="jobbar"><b id="jbLabel"></b><div class="track"><div class="fill" id="jbFill"></div></div><span id="jbText"></span><button id="jbCancel" onclick="cancelJob()">Cancel</button><button id="jbClose" onclick="$('jobbar').style.display='none';S.jbHide=S.jbKey">×</button></div>
@@ -170,7 +172,13 @@ function mpaaOpts(v){v=v||'';const l=['',...MPAA_ALL];if(v&&!l.includes(v))l.pus
 function peopleField(f,k,role){const v=f[k]||'',names=v.split(',').map(s=>s.trim()).filter(Boolean);
  return `<div><label>${ROLES[role][1]} <a href="#" title="Edit names" style="text-decoration:none" onclick="togglePF('${k}');return false">✏️</a></label>
  <div id=pv_${k} class=plinks style="min-height:1.6em">${names.map(n=>`<a href="#" title="Open ${esc(n)}'s page" onclick="filterPerson('${jsq(n)}','${role}');return false">${esc(n)}</a>`).join(', ')||'<span class=muted>—</span>'}</div>
- <input id=e_${k} value="${esc(v)}" style="display:none" placeholder="Names, comma-separated"></div>`}
+ <div style="position:relative"><input id=e_${k} value="${esc(v)}" style="display:none" autocomplete=off placeholder="Names, comma-separated" oninput="pAC(this)" onblur="setTimeout(()=>pACclose(),200)"><div id=pac_${k} class=pac></div></div></div>`}
+async function pAC(el){const k=el.id.slice(2),box=$('pac_'+k),tok=el.value.split(',').pop().trim();if(tok.length<2){box.style.display='none';return}
+ let j;try{j=await api('/api/people/search?'+new URLSearchParams({q:tok,limit:8}))}catch(e){return}if(el.value.split(',').pop().trim()!==tok)return;
+ if(!j.people.length){box.style.display='none';return}
+ box.innerHTML=j.people.map(p=>`<div onmousedown="event.preventDefault();pACpick('${k}','${jsq(p.name)}')">${esc(p.name)} <span class=muted>${p.n?p.n+' film'+(p.n==1?'':'s'):'added by hand'}</span></div>`).join('');box.style.display='block'}
+function pACpick(k,name){const el=$('e_'+k),parts=el.value.split(',');parts[parts.length-1]=' '+name;el.value=parts.join(',').replace(/^\s+/,'')+', ';$('pac_'+k).style.display='none';el.focus()}
+function pACclose(){document.querySelectorAll('.pac').forEach(b=>b.style.display='none')}
 function togglePF(k){const i=$('e_'+k),v=$('pv_'+k),edit=i.style.display=='none';i.style.display=edit?'':'none';v.style.display=edit?'none':'';if(edit)i.focus()}
 async function more(){if(S.page||S.busy||S.films.length>=S.total)return;S.busy=true;
  const j=await api('/api/films?'+params({limit:300,offset:S.films.length}));S.films.push(...j.films);S.busy=false;render(true)}
@@ -516,6 +524,10 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   let l=[...d.library];if(S.ppDesc)l.reverse();
   h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
+ if(d.scenes&&d.scenes.length){let l=d.scenes.filter(x=>!S.ppOnly||x.film_id);if(S.ppDesc)l=[...l].reverse();const own=d.scenes.filter(x=>x.film_id).length;
+  h+=`<h3 class=ppdept>Scenes (ThePornDB) <span class=muted>— you have ${own} of ${d.scenes.length}</span>${d.groups&&d.groups.length?'':` <button onclick="ppOnly(${S.ppOnly?0:1})">${S.ppOnly?'Show all scenes':'Only scenes I have'}</button>`}</h3>`+(l.length?`<div class=pplist>${l.map(x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
+   inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
+   return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`}).join('')}</div>`:'<p class=muted>None in your library.</p>')}
  c.innerHTML=h+'</div>'}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
@@ -529,11 +541,22 @@ async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const 
  const m=$('ppRefMsg');if(m)m.textContent='✓ Updated just now';
  toast(`Updated from ${d.person.source||'TMDB'} — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
 async function setPersonTpdb(pid,auto){try{await api('/api/person/'+pid+'/tpdb',{method:'POST',body:{tpdb:auto?'':$('ppTpdb').value}})}catch(e){toast(e.message||String(e));return}showPerson(pid,{keep:true,nohist:true,refresh:!!auto})}
-const PPF=[['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
+const PPF=[['links','Links (one per line, "IAFD: https://…" or just the URL)'],['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
 function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}
- e.innerHTML=PPF.map(([k,l])=>{const v=k=='aliases'?(p.aliases||[]).join(', '):(p[k]||'');return `<label style="display:block;margin:4px 0">${l}<br>${k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+`<button onclick="savePerson(${p.id})">Save</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
-async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{const v=$('ppe_'+k).value,old=k=='aliases'?(p.aliases||[]).join(', '):(p[k]||'');if(v!==old)b[k]=v});
- if(Object.keys(b).length)await api('/api/person/'+pid+'/edit',{method:'POST',body:b});showPerson(pid,{keep:true,nohist:true})}
+ e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
+async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{const v=$('ppe_'+k).value;if(v!==ppVal(p,k))b[k]=v});
+ if(Object.keys(b).length)await api('/api/person/'+pid+'/edit',{method:'POST',body:b});
+ const fd=new FormData(),f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
+ if(f||u){try{await api('/api/person/'+pid+'/photo/upload',{method:'POST',body:fd})}catch(e){toast(e.message||String(e))}}
+ showPerson(pid,{keep:true,nohist:true})}
+function ppVal(p,k){return k=='aliases'?(p.aliases||[]).join(', '):k=='links'?Object.entries(p.links||{}).map(([a,b])=>a+': '+b).join('\n'):(p[k]||'')}
+const PHOTO_IN=`<label style="display:block;margin:4px 0">Photo: upload <input type=file id=ppe_photo accept="image/*"> or URL <input id=ppe_photo_url placeholder="https://…" style="width:50%"></label>`;
+function newPerson(){openM(`<h3>Add person</h3><p class=muted>For performers or anyone else who isn't on ThePornDB or TMDB. Everything you enter is kept as a manual edit and never overwritten.</p>
+ <label>Name (required)<br><input id=ppe_name style="width:100%"></label>`+PPF.map(([k,l])=>`<label style="display:block;margin:4px 0">${l}<br>${k=='bio'||k=='links'?`<textarea id=ppe_${k} rows=${k=='bio'?4:3} style="width:100%"></textarea>`:`<input id=ppe_${k} style="width:100%">`}</label>`).join('')+PHOTO_IN+
+ `<div style="text-align:right;margin-top:10px"><button class=pri onclick="saveNewPerson()">Add person</button></div>`);$('ppe_name').focus()}
+async function saveNewPerson(){const n=$('ppe_name').value.trim();if(!n){toast('Name is required');return}const fd=new FormData();fd.append('name',n);
+ PPF.forEach(([k])=>{const v=$('ppe_'+k).value.trim();if(v)fd.append(k,v)});const f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
+ let r;try{r=await api('/api/people/new',{method:'POST',body:fd})}catch(e){toast(e.message||String(e));return}if(r.warning)toast(r.warning);closeM();showPerson(r.id)}
 async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
 S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');setIn(localStorage.searchIn||'');$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();
 </script></body></html>

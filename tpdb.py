@@ -202,7 +202,8 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
                 if r: return dict(scene=r[0], score=99, why=["fingerprint"], strategy="oshash", confident=True)
         except Exception: pass
     site_name = aliases[0] if aliases else studio
-    queries = [("parse", dict(parse=" ".join(x for x in [site_name, date, rest] if x)))]
+    queries = [("site-q", q) for q in site_queries(stem, text, rest)]
+    queries += [("parse", dict(parse=" ".join(x for x in [site_name, date, rest] if x)))]
     if site_name and date: queries.append(("studio+date", dict(site=site_name, date=date)))
     short = " ".join(rest.split()[:7])
     if site_name and short: queries.append(("studio+text", dict(q=short, site=site_name)))
@@ -213,6 +214,20 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
         if best and best["score"] >= CONFIDENT + 2: break
     if best: best["confident"] = is_confident(best["score"], best["why"])
     return best
+
+def site_queries(stem, text, rest):
+    """Queries like ThePornDB website's scene search box (plain ?q=, no parse/direct): every term must match, so try the
+    cleaned name, the raw name, the name without the studio glue, then shorter word windows (titles/performers)."""
+    out = [text, stem, rest]
+    w = [x for x in re.findall(r"[A-Za-z0-9']+", rest) if not re.fullmatch(r"\d{1,2}|\d{5,}", x)]
+    for n in (5, 4, 3):
+        if len(w) > n: out += [" ".join(w[:n]), " ".join(w[-n:])]
+    if len(w) > 6: out.append(" ".join(w[1:5]))
+    seen, res = set(), []
+    for q in out:
+        q = re.sub(r"\s+", " ", q or "").strip(" -")
+        if len(q) >= 4 and q.lower() not in seen: seen.add(q.lower()); res.append(dict(q=q, orderBy="most_relevant"))
+    return res
 
 def candidates(token, path, query=None, limit=8, fetch=None, site_cache=None):
     """Top ThePornDB candidates for a file (or a typed query), best first: list of dict(scene, score, why, confident)."""
@@ -227,11 +242,10 @@ def candidates(token, path, query=None, limit=8, fetch=None, site_cache=None):
     aliases = resolve_site(fetch, studio, site_cache) if studio else []
     site_name = aliases[0] if aliases else studio
     short = " ".join(rest.split()[:7])
-    qs = [dict(parse=" ".join(x for x in [site_name, date, rest] if x))]
+    qs = site_queries(query or stem, text, rest) + [dict(parse=" ".join(x for x in [site_name, date, rest] if x))]
     if site_name and date: qs.append(dict(site=site_name, date=date))
     if site_name and short: qs.append(dict(q=short, site=site_name))
     if short: qs.append(dict(q=short))
-    if query: qs.append(dict(q=text))
     seen, out = set(), []
     for q in qs:
         try: res = fetch("/scenes", **q).get("data") or []

@@ -50,7 +50,7 @@ class Match(unittest.TestCase):
         r = tpdb.identify("t", r"D:\Porn Scenes\Girls Only Porn\GirlsOnlyPorn Alexis Crystal Agatha Vega Perfect Moment.mp4", fetch=fetch)
         self.assertTrue(r["confident"]); self.assertEqual(r["scene"]["id"], "u1")
         self.assertEqual([c[0] for c in calls][:2], ["/sites", "/scenes"])
-        self.assertIn("parse", calls[1][1])
+        self.assertEqual(calls[1][1].get("q"), "GirlsOnlyPorn Alexis Crystal Agatha Vega Perfect Moment")  # website-style plain q first
         r = tpdb.identify("t", r"D:\x\_No Studio\swollen labia 0001.mp4", fetch=lambda p, **q: {"data": [OTHER]})
         self.assertFalse(r and r["confident"])
 
