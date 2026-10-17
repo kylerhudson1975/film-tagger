@@ -1558,7 +1558,7 @@ def tpdb_apply(fid):
             p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
             s = tpdb.lookup(token, p[0]) if p else None
             if s: s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
-        if not s: return jsonify(error="No ThePornDB match"), 404
+        if not s: return jsonify(error="No ThePornDB match (no confident match; use Find… to pick a candidate)"), 404
     except Exception as e: return jsonify(error=tpdb_err(e)), 502
     apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS]); c.commit()
     return get_film(fid)
