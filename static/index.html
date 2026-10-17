@@ -478,13 +478,19 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <button style="float:right" onclick="history.back()" title="Back (Alt+←)">← Back</button>
  <h2 style="margin:0 0 4px">${esc(p.name)}</h2>${p.aka.length?`<div class=muted>Also credited as ${p.aka.map(esc).join(', ')}</div>`:''}
  <div class=muted>${p.known_for?`Known for: <b>${esc(p.known_for)}</b>`:''}${roles?` · In your library: ${roles}`:''}</div>
+ <div class=muted style="font-size:.85em">Source: <b>${p.source?esc(p.source):'library only'}</b>${p.edited&&p.edited.length?` · hand-edited: ${p.edited.map(esc).join(', ')}`:''}</div>
+ ${p.aliases&&p.aliases.length?`<div class=muted>Aliases: ${p.aliases.map(esc).join(', ')}</div>`:''}
+ ${[p.nationality&&'Nationality: '+esc(p.nationality),p.height&&'Height: '+esc(p.height),p.measurements&&'Measurements: '+esc(p.measurements),p.career&&'Career: '+esc(p.career)].filter(Boolean).map(x=>`<span>${x}</span>`).join(' · ')}
  ${p.birthday?`<div>Born ${fmtDate(p.birthday)}${p.deathday?'':ageAt(p.birthday)}${p.place?' in '+esc(p.place):''}</div>`:p.place?`<div>Born in ${esc(p.place)}</div>`:''}
  ${p.deathday?`<div>Died ${fmtDate(p.deathday)}${ageAt(p.birthday,p.deathday)}</div>`:''}
  ${bio?`<p id=ppbio class=ppbio>${esc(short)}${short!==bio?` <a href="#" onclick="$('ppbio').textContent=S.ppData.person.bio;return false">more</a>`:''}</p>`:''}
  ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
+ ${p.links&&Object.keys(p.links).length?`<div class=plinks>${Object.entries(p.links).map(([k,u])=>`<a href="${esc(u)}" target=_blank rel=noopener>${esc(k)} ↗</a>`).join(' · ')}</div>`:''}
+ ${p.adult?`<div class=ppctl>${p.tpdb_url?`<a href="${esc(p.tpdb_url)}" target=_blank rel=noopener>ThePornDB page ↗</a>`:''}<span class=muted>ThePornDB performer:</span><input id=ppTpdb placeholder="id or ThePornDB URL" value="${esc(p.tpdb_performer_id||'')}" style="width:220px"><button onclick="setPersonTpdb(${p.id})">Load</button>${p.tpdb_manual?`<button onclick="setPersonTpdb(${p.id},true)" title="Forget the manual id and search by name again">Auto</button>`:''}</div>`:''}
+ <div class=ppctl><button onclick="editPerson()">✎ Edit profile</button></div><div id=ppEdit style="display:none"></div>
  <div class=ppctl>${p.tmdb_url?`<a href="${esc(p.tmdb_url)}" target=_blank rel=noopener>TMDB page ↗</a>`:''}
- <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch from TMDB">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
- <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched from TMDB yet)'}</div>
+ <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
+ <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
  </div></div>`;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
@@ -505,11 +511,17 @@ async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const 
  let d;try{d=await api('/api/person/'+pid+'?refresh=1')}catch(e){if(S.page==='person:'+pid){b.disabled=false;b.textContent='↻ Refresh'}toast("Couldn't reach Film Tagger: "+(e.message||e));return}
  if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=d;renderPerson();$('content').scrollTop=st;
  const fresh=d.person.fetched_at&&(!prev||d.person.fetched_at!==prev.person.fetched_at);
- if(!fresh||d.status==='offline'){toast(d.status==='no_key'?'No TMDB API key set':d.status==='no_match'?'No matching person on TMDB':"Couldn't reach TMDB"+(d.message?' — '+d.message:''));return}
+ if(!fresh||d.status==='offline'){toast(d.status==='no_key'?'No TMDB API key set':d.status==='no_match'?(d.message||'No matching person found'):"Couldn't reach TMDB"+(d.message?' — '+d.message:''));return}
  const ch=[];if(prev&&prev.total!==d.total)ch.push(`films ${prev.total} → ${d.total}`);if(prev&&prev.owned!==d.owned)ch.push(`in library ${prev.owned} → ${d.owned}`);
  if(prev&&(prev.person.bio||'')!==(d.person.bio||''))ch.push('bio updated');
  const m=$('ppRefMsg');if(m)m.textContent='✓ Updated just now';
- toast(`Updated from TMDB — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
+ toast(`Updated from ${d.person.source||'TMDB'} — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
+async function setPersonTpdb(pid,auto){try{await api('/api/person/'+pid+'/tpdb',{method:'POST',body:{tpdb:auto?'':$('ppTpdb').value}})}catch(e){toast(e.message||String(e));return}showPerson(pid,{keep:true,nohist:true,refresh:!!auto})}
+const PPF=[['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
+function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}
+ e.innerHTML=PPF.map(([k,l])=>{const v=k=='aliases'?(p.aliases||[]).join(', '):(p[k]||'');return `<label style="display:block;margin:4px 0">${l}<br>${k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+`<button onclick="savePerson(${p.id})">Save</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
+async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{const v=$('ppe_'+k).value,old=k=='aliases'?(p.aliases||[]).join(', '):(p[k]||'');if(v!==old)b[k]=v});
+ if(Object.keys(b).length)await api('/api/person/'+pid+'/edit',{method:'POST',body:b});showPerson(pid,{keep:true,nohist:true})}
 async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
 S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');setIn(localStorage.searchIn||'');$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();
 </script></body></html>

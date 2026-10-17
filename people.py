@@ -1,5 +1,5 @@
 """Person pages: library people index, TMDB person resolution/caching, filmography with owned-film matching."""
-import os, re, json, time, threading, urllib.request, urllib.error
+import os, re, json, time, threading, urllib.request, urllib.error, urllib.parse
 from flask import request, jsonify, send_from_directory
 import db
 
@@ -17,13 +17,98 @@ DEPT_ORDER = ["Acting", "Directing", "Writing", "Production", "Camera", "Sound",
               "Visual Effects", "Crew", "Lighting"]
 STALE_S = 14 * 86400
 NO_MATCH = -1  # tmdb_person_id value meaning "searched TMDB, nothing found"
+TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing found"
+
+# ThePornDB profile columns (adult performers). edited_fields = profile fields changed by hand; never overwritten.
+TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
+             ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
+             ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL")]
+EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases")
+ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
+
+def migrate(c):
+    have = {r[1] for r in c.execute("PRAGMA table_info(people)")}
+    for col, typ in TPDB_COLS:
+        if col not in have: c.execute(f"ALTER TABLE people ADD COLUMN {col} {typ}")
+    c.commit()
+
+def adult_roots(c):
+    """Scene libraries plus adult film libraries (setting adult_roots, else library folders named porn/xxx/adult)."""
+    extra = db.get_setting(c, "adult_roots", None)
+    if extra is None: extra = [r for r in (db.get_setting(c, "roots", []) or []) if r and ADULT_HINT.search(os.path.basename(r.rstrip("\\/")) or r)]
+    return [r.rstrip("\\/") for r in list(db.scene_roots(c)) + list(extra or []) if r]
+
+def adult_film_ids(c):
+    roots = adult_roots(c)
+    ids = {r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")}
+    if roots:
+        for fid, path in c.execute("SELECT film_id, path FROM files"):
+            if any(db.under(path, r) for r in roots): ids.add(fid)
+    return ids
+
+def review_film_ids(c):
+    return {r[0] for r in c.execute("SELECT id FROM films WHERE COALESCE(notes,'') LIKE '%Review by hand%'")}
+
+def parse_tpdb_performer(v):
+    """id, slug or https://theporndb.net/performers/<id-or-slug> -> identifier, else None."""
+    v = (v or "").strip()
+    m = re.search(r"/performers/([A-Za-z0-9._-]+)", v)
+    if m: return m.group(1)
+    return v if re.fullmatch(r"[A-Za-z0-9._-]+", v) else None
+
+def pick_performer(results, name):
+    """Exact (accent/case-insensitive) name match first, then alias match; ties: most scenes/rating, then API order."""
+    t = db.fold(" ".join(name.split()))
+    def nm(x): return db.fold(" ".join((x or "").split()))
+    exact = [p for p in results if nm(p.get("name")) == t]
+    if not exact: exact = [p for p in results if any(nm(a) == t for a in (p.get("aliases") or []))]
+    if not exact: return None
+    return exact[0] if len(exact) == 1 else max(exact, key=lambda p: ((p.get("scenes_count") or 0), (p.get("rating") or 0)))
+
+def tpdb_fields(p):
+    """ThePornDB performer resource -> people columns. IAFD is stored only if ThePornDB provides it."""
+    ex = p.get("extras") or {}
+    cs, ce = ex.get("career_start_year"), ex.get("career_end_year")
+    career = (f"{cs}–{ce}" if cs and ce else f"{cs}–present" if cs else f"until {ce}" if ce else None)
+    links = {k: v for k, v in (ex.get("links") or {}).items() if isinstance(v, str) and v.startswith("http")}
+    return dict(bio=(p.get("bio") or "").strip() or None, birthday=ex.get("birthday") or None, deathday=ex.get("deathday") or None,
+                place=ex.get("birthplace") or None, nationality=ex.get("nationality") or None,
+                measurements=ex.get("measurements") or None, height=ex.get("height") or None, career=career,
+                aliases=json.dumps([a for a in (p.get("aliases") or []) if a]) if p.get("aliases") else None,
+                links_json=json.dumps(links) if links else None, image_url=p.get("image") or p.get("thumbnail") or None,
+                gender=ex.get("gender") or None)
+
+def apply_tpdb(c, row, p, allow_image=True):
+    """Write a ThePornDB performer onto a people row, skipping hand-edited fields."""
+    f = tpdb_fields(p); edited = set(json.loads(row["edited_fields"] or "[]"))
+    if not allow_image: f["image_url"] = None
+    sets = {k: v for k, v in f.items() if k not in edited}
+    sets.update(source="tpdb", tpdb_performer_id=str(p.get("id")), tpdb_fetched_at=time.time(), fetched_at=time.time())
+    c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]]); c.commit()
+
+def tpdb_resolve(c, token, row, call):
+    """Search /performers for the row's name; returns the full performer dict or None. `call(path, **params)`."""
+    if row["tpdb_performer_id"] and row["tpdb_performer_id"] != TPDB_NONE:
+        return call(f"/performers/{row['tpdb_performer_id']}").get("data") or None
+    hit = pick_performer(call("/performers", q=row["name"]).get("data") or [], row["name"])
+    if not hit: return None
+    return call(f"/performers/{hit['id']}").get("data") or hit
+
+def tpdb_update(c, token, row, call, allow_image=True):
+    """Resolve + apply. Returns 'found' or 'not_found'. Manual ids are never replaced by search."""
+    p = tpdb_resolve(c, token, row, call)
+    if not p:
+        if not row["tpdb_manual"]: c.execute("UPDATE people SET tpdb_performer_id=?, tpdb_fetched_at=? WHERE id=?", (TPDB_NONE, time.time(), row["id"])); c.commit()
+        return "not_found"
+    apply_tpdb(c, c.execute("SELECT * FROM people WHERE id=?", (row["id"],)).fetchone(), p, allow_image)
+    return "found"
 
 def init(app, tmdb, posters_dir):
     PHOTO_DIR = os.path.join(posters_dir, "people")
     fold = db.fold
 
     def C():
-        c = db.connect(); c.executescript(PEOPLE_SCHEMA); return c
+        c = db.connect(); c.executescript(PEOPLE_SCHEMA); migrate(c); return c
 
     # ---------- library people index (fold(name) -> names, roles, film ids) ----------
     IDX = {"at": 0, "key": None, "data": {}}
@@ -50,7 +135,8 @@ def init(app, tmdb, posters_dir):
     def best_name(e): return max(e["names"].items(), key=lambda kv: (kv[1], len(kv[0])))[0]
     def top_role(e): return max(e["roles"].items(), key=lambda kv: len(kv[1]))[0]
     def photo_url(row):
-        return f"/api/person/{row['id']}/photo?v={int(row['fetched_at'] or 0)}" if row and row["profile_path"] else None
+        has = row and (row["image_url"] if row["source"] == "tpdb" else row["profile_path"])
+        return f"/api/person/{row['id']}/photo?v={int(row['fetched_at'] or 0)}" if has else None
 
     def ensure_row(c, name):
         k = fold(" ".join(name.split()))
@@ -113,9 +199,12 @@ def init(app, tmdb, posters_dir):
         keep = lambda x: x.get("media_type", "movie") == "movie"
         credits = dict(cast=[{k: x.get(k) for k in ("id", "title", "original_title", "release_date", "character", "poster_path")} for x in cc.get("cast", []) if keep(x)],
                        crew=[{k: x.get(k) for k in ("id", "title", "original_title", "release_date", "job", "department", "poster_path")} for x in cc.get("crew", []) if keep(x)])
-        c.execute("UPDATE people SET profile_path=?, bio=?, birthday=?, deathday=?, place=?, known_for=?, credits_json=?, fetched_at=? WHERE id=?",
-                  (p.get("profile_path"), p.get("biography"), p.get("birthday"), p.get("deathday"), p.get("place_of_birth"),
-                   p.get("known_for_department"), json.dumps(credits), time.time(), row["id"]))
+        edited = set(json.loads(row["edited_fields"] or "[]"))
+        sets = dict(profile_path=p.get("profile_path"), bio=p.get("biography"), birthday=p.get("birthday"), deathday=p.get("deathday"),
+                    place=p.get("place_of_birth"), known_for=p.get("known_for_department"), credits_json=json.dumps(credits),
+                    fetched_at=time.time(), source="tmdb")
+        sets = {k: v for k, v in sets.items() if k not in edited}
+        c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]])
         c.commit()
 
     def filmography(c, credits):
@@ -150,8 +239,24 @@ def init(app, tmdb, posters_dir):
         e = index(c).get(row["name_norm"]) or {"names": {}, "roles": {}, "films": set()}
         lib_ids = sorted(e["films"])
         status, msg = "ok", None
+        adult = bool(set(lib_ids) & adult_film_ids(c))
+        mainstream = bool(set(lib_ids) - adult_film_ids(c))
+        tp_note = None
+        if adult:
+            tok = db.get_setting(c, "tpdb_key", "") or ""
+            if not tok: tp_note = "No ThePornDB token set."
+            else:
+                stale = time.time() - (row["tpdb_fetched_at"] or 0) > STALE_S
+                if row["tpdb_performer_id"] is None or request.args.get("refresh") or (stale and row["tpdb_performer_id"] != TPDB_NONE):
+                    import tpdb as tpdbmod
+                    try: tpdb_update(c, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw), allow_image=not (set(lib_ids) & review_film_ids(c)))
+                    except Exception as ex: tp_note = f"Could not reach ThePornDB ({type(ex).__name__})."
+                    row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        on_tpdb = adult and row["tpdb_performer_id"] not in (None, TPDB_NONE) and row["source"] == "tpdb"
         key = key_of(c)
-        if not key: status, msg = "no_key", "No TMDB API key set, so only the films in your library are shown."
+        if on_tpdb: status, msg = "ok", tp_note
+        elif adult and not mainstream: status, msg = "no_match", tp_note or "Not found on ThePornDB. You can set the ThePornDB performer id manually."
+        elif not key: status, msg = "no_key", "No TMDB API key set, so only the films in your library are shown."
         else:
             try:
                 if row["tmdb_person_id"] is None or (request.args.get("refresh") and not row["tmdb_manual"] and row["tmdb_person_id"] == NO_MATCH):
@@ -168,7 +273,7 @@ def init(app, tmdb, posters_dir):
             if row["tmdb_person_id"] == NO_MATCH: status, msg = "no_match", "No matching person found on TMDB. You can set the TMDB person id manually."
         lib = [dict(r) for r in c.execute(f"SELECT id, title, year, poster, custom_poster, tmdb_id FROM films WHERE id IN ({','.join('?'*len(lib_ids))}) ORDER BY year IS NULL, year, title COLLATE FOLD", lib_ids)] if lib_ids else []
         for f in lib: f["roles"] = [ro for ro, s in e["roles"].items() if f["id"] in s]
-        groups = filmography(c, json.loads(row["credits_json"])) if row["credits_json"] and (row["tmdb_person_id"] or 0) > 0 else None
+        groups = filmography(c, json.loads(row["credits_json"])) if not on_tpdb and row["credits_json"] and (row["tmdb_person_id"] or 0) > 0 else None
         total = owned = 0
         if groups:
             allm = {}
@@ -177,8 +282,16 @@ def init(app, tmdb, posters_dir):
             total, owned = len(allm), sum(1 for v in allm.values() if v)
         tp = row["tmdb_person_id"] if (row["tmdb_person_id"] or 0) > 0 else None
         names = list(e["names"]) or [row["name"]]
+        tpid = row["tpdb_performer_id"] if row["tpdb_performer_id"] not in (None, TPDB_NONE) else None
+        links = json.loads(row["links_json"] or "{}") if on_tpdb else {}
+        source = "ThePornDB" if on_tpdb else ("TMDB" if tp and row["credits_json"] else None)
         return jsonify(status=status, message=msg, person=dict(
             id=pid, name=row["name"], aka=[n for n in names if n != row["name"]], tmdb_person_id=tp, manual=bool(row["tmdb_manual"]),
+            source=source, adult=adult, tpdb_performer_id=tpid, tpdb_manual=bool(row["tpdb_manual"]),
+            tpdb_url=tpid and f"https://theporndb.net/performers/{tpid}", aliases=json.loads(row["aliases"] or "[]"),
+            nationality=row["nationality"], measurements=row["measurements"], height=row["height"], career=row["career"],
+            links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
+            edited=json.loads(row["edited_fields"] or "[]"),
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
@@ -198,16 +311,59 @@ def init(app, tmdb, posters_dir):
             c.execute("UPDATE people SET tmdb_person_id=?, tmdb_manual=1, credits_json=NULL, fetched_at=NULL, profile_path=NULL WHERE id=?", (tid, pid))
         c.commit(); return jsonify(ok=True)
 
+    @app.post("/api/person/<int:pid>/tpdb")
+    def person_set_tpdb(pid):
+        """Manual ThePornDB performer: {tpdb: id | slug | performer URL | '' (auto)}. Loads the profile immediately."""
+        c = C(); v = str((request.json or {}).get("tpdb") or "").strip()
+        row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        if not v:
+            c.execute("UPDATE people SET tpdb_performer_id=NULL, tpdb_manual=0, tpdb_fetched_at=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
+        ident = parse_tpdb_performer(v)
+        if not ident: return jsonify(error=f"Not a ThePornDB performer id or URL: {v}"), 400
+        tok = db.get_setting(c, "tpdb_key", "") or ""
+        if not tok: return jsonify(error="No ThePornDB token set (Settings)."), 400
+        import tpdb as tpdbmod
+        try: p = tpdbmod.call_retry(f"/performers/{ident}", tok).get("data")
+        except urllib.error.HTTPError as ex: return jsonify(error=f"ThePornDB error {ex.code}"), 502
+        except Exception as ex: return jsonify(error=f"Could not reach ThePornDB ({type(ex).__name__})"), 502
+        if not p: return jsonify(error="Performer not found on ThePornDB"), 404
+        c.execute("UPDATE people SET tpdb_manual=1 WHERE id=?", (pid,))
+        e = index(c).get(row["name_norm"]) or {"films": set()}
+        apply_tpdb(c, c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone(), p, allow_image=not (e["films"] & review_film_ids(c)))
+        return jsonify(ok=True, name=p.get("name"))
+
+    @app.post("/api/person/<int:pid>/edit")
+    def person_edit(pid):
+        """Hand edits to profile fields; edited fields are never overwritten by TPDB/TMDB fetches."""
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        d = request.json or {}; edited = set(json.loads(row["edited_fields"] or "[]"))
+        for k in EDITABLE:
+            if k not in d: continue
+            v = d[k]
+            if k == "aliases": v = json.dumps([a.strip() for a in (v if isinstance(v, list) else str(v or "").split(",")) if a.strip()])
+            else: v = (str(v).strip() or None) if v is not None else None
+            if v != row[k]: c.execute(f"UPDATE people SET {k}=? WHERE id=?", (v, pid)); edited.add(k)
+        c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), pid)); c.commit()
+        return jsonify(ok=True, edited=sorted(edited))
+
     @app.get("/api/person/<int:pid>/photo")
     def person_photo(pid):
-        """TMDB profile photo, cached locally under posters/people/ like posters."""
-        c = C(); row = c.execute("SELECT tmdb_person_id, profile_path FROM people WHERE id=?", (pid,)).fetchone()
-        if not row or not row["profile_path"]: return jsonify(error="No photo"), 404
-        name = f"person-{row['tmdb_person_id']}-{os.path.basename(row['profile_path'])}"
+        """Profile photo (TMDB or ThePornDB), cached locally under posters/people/ like posters."""
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        tp = row and row["source"] == "tpdb" and row["image_url"]
+        if not row or not (tp or row["profile_path"]): return jsonify(error="No photo"), 404
+        if tp:
+            import hashlib
+            ext = os.path.splitext(urllib.parse.urlparse(row["image_url"]).path)[1][:5] or ".jpg"
+            name, src = f"tpdb-{hashlib.sha1(row['image_url'].encode()).hexdigest()[:16]}{ext}", row["image_url"]
+        else:
+            name, src = f"person-{row['tmdb_person_id']}-{os.path.basename(row['profile_path'])}", "https://image.tmdb.org/t/p/w300" + row["profile_path"]
         path = os.path.join(PHOTO_DIR, name)
         if not os.path.exists(path):
             try:
-                with urllib.request.urlopen("https://image.tmdb.org/t/p/w300" + row["profile_path"], timeout=15) as r: data = r.read()
+                with urllib.request.urlopen(urllib.request.Request(src, headers={"User-Agent": "FilmTagger"}), timeout=15) as r: data = r.read()
                 os.makedirs(PHOTO_DIR, exist_ok=True)
                 with open(path + ".tmp", "wb") as fh: fh.write(data)
                 os.replace(path + ".tmp", path)
