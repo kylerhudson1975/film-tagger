@@ -1502,10 +1502,41 @@ def apply_scene(c, fid, s, keep=()):
     f = tpdb.scene_fields(s)
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]")) | set(keep)
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
+    if is_review(c, fid): upd.pop("poster", None)  # possibly-underage review flag: never fetch images
     upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
     c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
     db.set_primary_genre(c, fid, "Hardcore", only_if_empty=True)
+
+def is_review(c, fid):
+    r = c.execute("SELECT COALESCE(notes,'') FROM films WHERE id=?", (fid,)).fetchone()
+    return bool(r) and "Review by hand" in r[0]
+
+TPC = {}  # candidate cache: (film id, query) -> result
+@app.get("/api/films/<int:fid>/tpdb/candidates")
+def tpdb_candidates(fid):
+    """Top ThePornDB candidates for a scene from its cleaned file name, or ?q= typed text. No images for review-flagged scenes."""
+    c = C(); token = db.get_setting(c, "tpdb_key", "")
+    if not token: return jsonify(error="No ThePornDB API token set in Settings"), 400
+    if not is_scene(c, fid): return jsonify(error="Not a scene"), 400
+    q = (request.args.get("q") or "").strip() or None
+    p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+    key = (fid, q)
+    if key not in TPC or request.args.get("refresh"):
+        try: TPC[key] = tpdb.candidates(token, p[0] if p else "", query=q, limit=int(request.args.get("limit", 8)))
+        except Exception as e: return jsonify(error=tpdb_err(e)), 502
+    r = TPC[key]; img = not is_review(c, fid)
+    return jsonify(query=r["query"], review=not img, file=os.path.basename(p[0]) if p else None,
+                   results=[dict(tpdb.brief(e["scene"], img), score=e["score"], why=e["why"], confident=e["confident"]) for e in r["results"]])
+
+@app.get("/api/tpdb/unmatched")
+def tpdb_unmatched():
+    """Scenes without a ThePornDB id (for the Review unmatched view)."""
+    c = C()
+    rows = c.execute("SELECT f.id, f.title, f.studio, COALESCE(f.notes,'') LIKE '%Review by hand%' review, "
+                     "(SELECT path FROM files x WHERE x.film_id=f.id ORDER BY id LIMIT 1) path FROM films f "
+                     "WHERE f.kind='scene' AND COALESCE(f.tpdb_id,'')='' ORDER BY f.studio COLLATE FOLD, f.title COLLATE FOLD").fetchall()
+    return jsonify(scenes=[dict(id=r["id"], title=r["title"], studio=r["studio"], review=bool(r["review"]), file=os.path.basename(r["path"] or "")) for r in rows])
 
 def tpdb_err(e):
     if isinstance(e, urllib.error.HTTPError):

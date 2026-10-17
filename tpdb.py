@@ -214,6 +214,46 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
     if best: best["confident"] = is_confident(best["score"], best["why"])
     return best
 
+def candidates(token, path, query=None, limit=8, fetch=None, site_cache=None):
+    """Top ThePornDB candidates for a file (or a typed query), best first: list of dict(scene, score, why, confident)."""
+    fetch = fetch or (lambda p, **q: call_retry(p, token, **q))
+    parts = re.split(r"[\\/]", path or "")
+    stem = os.path.splitext(parts[-1])[0] if path else ""
+    folder = parts[-2] if len(parts) > 1 else None
+    text = clean_stem(query or stem)
+    studio, rest = split_studio(text, None if query else folder)
+    date, m = _date(rest)
+    if m: rest = (rest[:m.start()] + " " + rest[m.end():]).strip()
+    aliases = resolve_site(fetch, studio, site_cache) if studio else []
+    site_name = aliases[0] if aliases else studio
+    short = " ".join(rest.split()[:7])
+    qs = [dict(parse=" ".join(x for x in [site_name, date, rest] if x))]
+    if site_name and date: qs.append(dict(site=site_name, date=date))
+    if site_name and short: qs.append(dict(q=short, site=site_name))
+    if short: qs.append(dict(q=short))
+    if query: qs.append(dict(q=text))
+    seen, out = set(), []
+    for q in qs:
+        try: res = fetch("/scenes", **q).get("data") or []
+        except Exception: continue
+        for sc in res[:10]:
+            k = sc.get("id") or sc.get("_id")
+            if not k or k in seen: continue
+            seen.add(k); sv, why = score(sc, studio, date, f"{studio or ''} {rest}", aliases)
+            out.append(dict(scene=sc, score=sv, why=why, confident=sv >= 0 and is_confident(sv, why)))
+    out.sort(key=lambda e: -e["score"])
+    return dict(query=" ".join(x for x in [studio, date, rest] if x), results=out[:limit])
+
+def brief(sc, images=True):
+    """Small JSON-able summary of a scene for candidate pickers."""
+    site = sc.get("site") or {}
+    d = dict(id=str(sc.get("id") or sc.get("_id")), title=sc.get("title"), studio=site.get("name"), date=(sc.get("date") or "")[:10],
+             performers=[p.get("name") for p in sc.get("performers") or [] if p.get("name")], duration=sc.get("duration"),
+             url=f"https://theporndb.net/scenes/{sc.get('slug') or sc.get('id')}")
+    if images: d["thumb"] = (sc.get("posters") or {}).get("small") if isinstance(sc.get("posters"), dict) else None
+    if images and not d.get("thumb"): d["thumb"] = sc.get("poster") or sc.get("image")
+    return d
+
 def resolve_site(fetch, studio, cache=None):
     """ThePornDB site names matching a studio spelling (via /sites?q=), e.g. 'Sis Loves Me' -> ['Sis Loves Me']."""
     k = nrm(studio)
