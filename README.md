@@ -14,6 +14,7 @@ Point it at the folders where your video files live. It builds a searchable cata
 - **Rich records:** title, original and alternative titles, year, country, director, cast, studio, runtime, plot, poster, MPAA rating, resolution, subtitles, your 1–10 rating, watched flag, notes, storage location and file paths. Everything is editable.
 - **Poster grid and sortable table**, fast with 10,000+ items. Scene cards show a studio line (studio · date · runtime).
 - **Back to top:** a floating ↑ button appears in the grid, on person profiles and in long dialogs once you scroll down.
+- **About and Check for Updates:** *ⓘ About* in the toolbar shows the version, author, links and data credits. *⟳ Updates* checks GitHub for a newer release and shows its notes with a link to the release page; nothing is downloaded or installed automatically. A quiet check at startup puts a small dot on the button when an update is out.
 - **Backup / restore** as JSON or CSV.
 
 ### Tags, genres and search
@@ -22,6 +23,7 @@ Point it at the folders where your video files live. It builds a searchable cata
 - **Powerful search:** tag logic (ALL / ANY / NOT), text search in any field (accent-insensitive, including alternative titles), filters for year, decade, country, studio, primary genre, rating, runtime, watched, MPAA, resolution, subtitles and library folder. Searches can be saved, and Back/Forward history works for every filter.
 - **Country, studio and decade links** show every film from that country, studio or decade. *Fill missing countries / studios* backfill older records from TMDB; values you edit are never overwritten.
 - **Resolution** is auto-detected from the video files (ffprobe if installed, otherwise a built-in reader, otherwise the filename). **Subtitles** are detected from sidecar files (.srt, .ass, …) and embedded streams, and can be edited by hand.
+- **Runtime from the files:** an empty runtime is filled from the video's real duration (ffprobe if installed, otherwise the MP4/MKV/AVI header) after every scan. Runtimes you edit by hand are never overwritten.
 
 ### Scenes libraries and ThePornDB
 Mark one or more folders as **Scenes libraries** (Library & Settings) for individual adult scenes instead of full-length films. Scenes never use TMDB; they are looked up on [ThePornDB](https://theporndb.net) and get Primary genre Hardcore.

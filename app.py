@@ -6,6 +6,9 @@ import resolution as resmod
 import subtitles as submod
 import tpdb
 
+APP_VERSION = "1.0.42"  # keep in sync with installer/FilmTagger.nsi APPVER
+REPO = "kylerhudson1975/film-tagger"
+
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
                "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id"]
@@ -1157,6 +1160,7 @@ def posters_status(): return jsonify(JOB)
 # ---------- resolution detection (local files; independent of the TMDB job so both can run at once) ----------
 RES = {"running": False, "kind": "resolution"}
 RES_LOCK = threading.Lock()
+RES_EXPLICIT = set()  # ids passed explicitly: always re-detect resolution
 
 def run_res_job(ids):
     c = C()
@@ -1166,6 +1170,14 @@ def run_res_job(ids):
             try:
                 paths = [r[0] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,))]
                 RES["current"] = paths[0] if paths else ""
+                st = c.execute("SELECT res_checked, runtime, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+                if paths and st and not st[1] and '"runtime"' not in (st[2] or ""):  # fill empty runtime from the file's real duration
+                    rt = resmod.runtime_minutes(paths)
+                    if rt and c.execute("UPDATE films SET runtime=? WHERE id=? AND COALESCE(runtime,0)=0 AND COALESCE(edited_fields,'') NOT LIKE '%\"runtime\"%'",
+                                        (rt, fid)).rowcount: RES["runtime_filled"] = RES.get("runtime_filled", 0) + 1
+                    c.commit()
+                if st and st[0] is not None and not RES.get("recheck") and fid not in RES_EXPLICIT:
+                    RES["skipped"] += 1; RES["done"] += 1; continue  # resolution already checked: runtime-only pass
                 r = resmod.detect(paths) if paths else dict(resolution=None, width=None, height=None, method="none")
                 if r is None: RES["offline"] += 1  # drive not mounted: leave unchecked so a later run retries
                 else:
@@ -1191,11 +1203,13 @@ def start_res_job(film_ids=None, recheck=False):
         c = C()
         if film_ids is not None: ids = [int(i) for i in film_ids]
         else:
-            ids = [r[0] for r in c.execute("SELECT id FROM films WHERE COALESCE(edited_fields,'') NOT LIKE '%\"resolution\"%'"
-                   + ("" if recheck else " AND res_checked IS NULL") + " AND id IN (SELECT film_id FROM files) ORDER BY id")]
+            ids = [r[0] for r in c.execute("SELECT id FROM films WHERE id IN (SELECT film_id FROM files) AND ((COALESCE(edited_fields,'') NOT LIKE '%\"resolution\"%'"
+                   + ("" if recheck else " AND res_checked IS NULL") + ") OR (COALESCE(runtime,0)=0 AND COALESCE(edited_fields,'') NOT LIKE '%\"runtime\"%')) ORDER BY id")]
         c.close()
         RES.clear(); RES.update(running=True, kind="resolution", done=0, total=len(ids), matched=0, skipped=0, offline=0, errors=0,
-                                error=None, cancel=False, started_at=time.time(), eta_s=None, current="", method=resmod.method_name())
+                                error=None, cancel=False, started_at=time.time(), eta_s=None, current="", method=resmod.method_name(),
+                                recheck=bool(recheck), runtime_filled=0)
+        RES_EXPLICIT.clear(); RES_EXPLICIT.update(ids if film_ids is not None else ())
         threading.Thread(target=run_res_job, args=(ids,), daemon=True).start()
         return True
 
@@ -1744,6 +1758,48 @@ def tpdb_status():
     c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
     return jsonify(job=TP, token_set=bool(db.get_setting(c, "tpdb_key", "")), scenes=q("kind='scene'"),
                    matched=q("kind='scene' AND tpdb_id IS NOT NULL"), unmatched=q("kind='scene' AND tpdb_id IS NULL"))
+
+# ---------- About / Check for Updates (read-only: never downloads or runs anything) ----------
+UPD = {"at": 0, "data": None}
+UPD_TTL = 3600
+
+def _ver(v):
+    m = _re.match(r"^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(v or ""))
+    return tuple(int(x or 0) for x in m.groups()) if m else None
+
+def check_updates(force=False):
+    if not force and UPD["data"] and time.time() - UPD["at"] < UPD_TTL: return dict(UPD["data"], cached=True)
+    base = dict(current=APP_VERSION, releases_url=f"https://github.com/{REPO}/releases", checked_at=time.time())
+    try:
+        req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                     headers={"Accept": "application/vnd.github+json", "User-Agent": f"FilmTagger/{APP_VERSION}"})
+        with urllib.request.urlopen(req, timeout=8) as r: rel = json.loads(r.read().decode("utf-8"))
+        latest = (rel.get("tag_name") or rel.get("name") or "").strip()
+        lv, cv = _ver(latest), _ver(APP_VERSION)
+        out = dict(base, ok=True, latest=latest.lstrip("vV"), update_available=bool(lv and cv and lv > cv),
+                   notes=(rel.get("body") or "")[:8000], release_url=rel.get("html_url") or base["releases_url"],
+                   published_at=rel.get("published_at"))
+    except urllib.error.HTTPError as e:
+        rl = e.headers.get("X-RateLimit-Remaining") == "0" or e.code == 429
+        msg = ("GitHub rate limit reached; try again later" if rl or e.code == 403 else
+               "No published releases found" if e.code == 404 else f"GitHub answered HTTP {e.code}")
+        out = dict(base, ok=False, error=msg, update_available=False)
+    except Exception as e:
+        out = dict(base, ok=False, error="Could not reach GitHub (offline?): " + type(e).__name__, update_available=False)
+    UPD.update(at=time.time(), data=out)
+    return dict(out, cached=False)
+
+@app.get("/api/about")
+def about():
+    return jsonify(name="Film Tagger", version=APP_VERSION, author="Kyle R. Hudson",
+                   description="A local catalogue and tagger for your film and scene library.",
+                   repo_url=f"https://github.com/{REPO}", releases_url=f"https://github.com/{REPO}/releases",
+                   credits="Film data from TMDB (this product uses the TMDB API but is not endorsed or certified by TMDB). Scene data from ThePornDB.")
+
+@app.get("/api/updates/check")
+def updates_check():
+    """?force=1 bypasses the one-hour cache. Only reports; the user opens the release page themselves."""
+    return jsonify(check_updates(bool(request.args.get("force"))))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))

@@ -111,6 +111,8 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button onclick="newFilm()">+ Film</button>
   <button onclick="newPerson()" title="Add a performer or other person by hand">+ Person</button>
   <button onclick="openSettings()">⚙ Library & Settings</button>
+  <button onclick="openAbout()" title="About Film Tagger">ⓘ About</button>
+  <button id="updBtn" onclick="openUpdates(true)" title="Check for Updates" style="position:relative">⟳ Updates<span id="updDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:#e5484d"></span></button>
  </div>
  <div id="jobbar"><b id="jbLabel"></b><div class="track"><div class="fill" id="jbFill"></div></div><span id="jbText"></span><button id="jbCancel" onclick="cancelJob()">Cancel</button><button id="jbClose" onclick="$('jobbar').style.display='none';S.jbHide=S.jbKey">×</button></div>
  <div id="bulk"><b id="selN"></b>
@@ -388,6 +390,19 @@ async function openQueue(){const q=await api('/api/queue/export');
 async function showExcluded(){const b=$('exclBox');if(b.style.display=='block'){b.style.display='none';return}const d=await api('/api/excluded');
  b.innerHTML=d.items.length?`<table style="width:100%">${d.items.map(x=>`<tr id=ex_${x.id}><td>${esc(x.title||'')}<div class=muted style="font-size:.85em;word-break:break-all">${esc(x.path)}${x.exists?'':' (file no longer at this path)'}</div></td><td class=muted style="white-space:nowrap">${new Date(x.removed_at*1000).toLocaleDateString()}</td><td><button onclick="restoreExcl(${x.id})">Restore</button></td></tr>`).join('')}</table>`:'<p class=muted>Nothing removed.</p>';b.style.display='block'}
 async function restoreExcl(id){const r=await api('/api/excluded/'+id+'/restore',{method:'POST'});$('ex_'+id).remove();toast(r.added?'Restored and added back to the library':'Restored: it will be added again on the next scan');reload();refreshMeta()}
+
+async function openAbout(){const a=await api('/api/about');
+ openM(`<h3>${esc(a.name)} <span class=muted>v${esc(a.version)}</span></h3><p>${esc(a.description)}</p><p>By ${esc(a.author)}</p>
+ <p><a href="${esc(a.repo_url)}" target=_blank rel=noopener>GitHub repository</a> · <a href="${esc(a.releases_url)}" target=_blank rel=noopener>Releases</a></p>
+ <p class=muted style="font-size:12px">${esc(a.credits)}</p><button onclick="openUpdates(true)">Check for Updates</button>`)}
+async function openUpdates(force){const u=await api('/api/updates/check'+(force?'?force=1':''));updDot(u);
+ if(!u.ok)return openM(`<h3>Check for Updates</h3><p>${esc(u.error)}</p><p class=muted>You are on v${esc(u.current)}.</p><a href="${esc(u.releases_url)}" target=_blank rel=noopener>Open the Releases page</a>`);
+ if(!u.update_available)return openM(`<h3>Check for Updates</h3><p>You're up to date (v${esc(u.current)}).</p><p class=muted>Latest release: v${esc(u.latest)}</p>`);
+ openM(`<h3>v${esc(u.latest)} is available</h3><p class=muted>You have v${esc(u.current)}. Nothing is downloaded or installed automatically.</p>
+ <pre style="white-space:pre-wrap;max-height:50vh;overflow:auto">${esc(u.notes||'(no release notes)')}</pre>
+ <button class=pri onclick="window.open('${esc(u.release_url)}','_blank','noopener')">Open release page</button>`)}
+function updDot(u){const d=document.getElementById('updDot');if(d)d.style.display=u&&u.update_available?'block':'none'}
+setTimeout(()=>api('/api/updates/check').then(updDot).catch(()=>{}),4000);
 async function openSettings(){const s=await api('/api/settings');
  openM(`<h3>Library folders</h3><p class=muted>One folder per line (e.g. <code>E:\\Movies</code> or <code>E:\\</code>). Scanning is read-only: files are never moved, renamed or deleted (matched scenes are renamed to the standard scene name). Films you remove from the library stay removed: see Removed items below.</p>
  <textarea id=s_roots rows=4 style="width:100%">${esc(s.roots.join('\n'))}</textarea><button onclick="browseFolder()">Browse…</button> <button class=pri onclick="doScan()">Save & scan</button> <span id=scanRes class=muted></span>

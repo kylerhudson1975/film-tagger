@@ -215,5 +215,85 @@ def detect(paths):
         if g: return dict(resolution=g, width=None, height=None, method="filename")
     return dict(resolution=None, width=None, height=None, method="none")
 
+# ---------- duration (seconds) ----------
+def duration_ffprobe(path):
+    ff = ffprobe_path()
+    if not ff: return None
+    try:
+        kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        out = subprocess.run([ff, "-v", "error", "-show_entries", "format=duration", "-of", "json", path],
+                             capture_output=True, timeout=60, **kw).stdout
+        d = float((json.loads(out or b"{}").get("format") or {}).get("duration") or 0)
+        return d if d > 0 else None
+    except Exception: return None
+
+def duration_mp4(f, fsize):
+    for typ, s, e in _boxes(f, 0, fsize):
+        if typ != b"moov": continue
+        for t2, s2, e2 in _boxes(f, s, e):
+            if t2 != b"mvhd": continue
+            f.seek(s2); d = f.read(32)
+            if d[0] == 1: ts, du = struct.unpack(">IQ", d[20:32])
+            else: ts, du = struct.unpack(">II", d[12:20])
+            return du / ts if ts else None
+        return None
+    return None
+
+def duration_mkv(f, fsize):
+    f.seek(0)
+    eid, _ = _vint(f, True)
+    if eid != 0x1A45DFA3: return None
+    sz, _ = _vint(f); f.seek(f.tell() + sz)
+    eid, _ = _vint(f, True)
+    if eid != 0x18538067: return None
+    ssz, _ = _vint(f); p = f.tell(); end = fsize if ssz < 0 else min(fsize, p + ssz); n = 0
+    while p < end and n < 5000:
+        f.seek(p); i, _ = _vint(f, True); s, _ = _vint(f)
+        if i is None or s is None or s < 0: return None
+        d = f.tell(); n += 1
+        if i == 0x1549A966:  # Info
+            scale, dur, q = 1000000, None, d
+            while q < d + s:
+                f.seek(q); ci, _ = _vint(f, True); cs, _ = _vint(f)
+                if ci is None or cs is None or cs < 0: break
+                cd = f.tell(); raw = f.read(cs)
+                if ci == 0x2AD7B1: scale = int.from_bytes(raw, "big")
+                elif ci == 0x4489: dur = struct.unpack(">f" if cs == 4 else ">d", raw)[0] if cs in (4, 8) else None
+                q = cd + cs
+            return dur * scale / 1e9 if dur else None
+        p = d + s
+    return None
+
+def duration_avi(f, fsize):
+    f.seek(0); d = f.read(4096)
+    if d[:4] != b"RIFF" or d[8:12] not in (b"AVI ", b"AVIX"): return None
+    i = d.find(b"avih")
+    if i < 0 or i + 28 > len(d): return None
+    us, = struct.unpack("<I", d[i + 8:i + 12]); frames, = struct.unpack("<I", d[i + 24:i + 28])
+    return us * frames / 1e6 if us and frames else None
+
+DUR_READERS = {".mp4": duration_mp4, ".m4v": duration_mp4, ".mov": duration_mp4, ".3gp": duration_mp4,
+               ".mkv": duration_mkv, ".webm": duration_mkv, ".avi": duration_avi, ".divx": duration_avi}
+
+def probe_duration(path):
+    """Seconds of playback from file metadata (ffprobe, else container header). None when unreadable."""
+    d = duration_ffprobe(path)
+    if d: return d
+    r = DUR_READERS.get(os.path.splitext(path)[1].lower())
+    if not r: return None
+    try:
+        with open(path, "rb") as f: d = r(f, os.path.getsize(path))
+        return d if d and d > 0 else None
+    except Exception: return None
+
+def runtime_minutes(paths):
+    """Longest readable duration among a film's reachable files, in whole minutes (min 1). None if unknown."""
+    best = None
+    for p in paths:
+        if is_mounted(p) and os.path.isfile(p):
+            d = probe_duration(p)
+            if d and (best is None or d > best): best = d
+    return max(1, round(best / 60)) if best else None
+
 def method_name():
     return "ffprobe" if ffprobe_path() else "built-in MP4/MKV/AVI/MPEG header reader + filename tokens"
