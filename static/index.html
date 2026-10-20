@@ -487,7 +487,7 @@ async function doScan(){const roots=$('s_roots').value.split('\n').map(s=>s.trim
 async function doImport(){const f=$('s_file').files[0];if(!f)return;if(f.name.endsWith('.json')&&!confirm('This REPLACES your whole database. Continue?'))return;
  const fd=new FormData();fd.append('file',f);const r=await api('/api/import',{method:'POST',body:fd});toast('Imported: '+JSON.stringify(r));refreshMeta();load()}
 // ---------- person search + person pages ----------
-S.people=[];S.peopleTotal=0;S.page=null;S.ppOnly=localStorage.ppOnly=='1';S.ppDesc=localStorage.ppDesc=='1';
+S.people=[];S.peopleTotal=0;S.page=null;S.ppOnly=localStorage.ppOnly=='1';S.ppDesc=localStorage.ppDesc=='1';S.ppScOnly=localStorage.ppScOnly=='1';
 const RLBL={director:'Director',cast:'Actor',writer:'Writer',producer:'Producer',cinematographer:'Cinematographer',composer:'Composer'};
 const initials=n=>esc(String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase());
 async function searchPeople(){const q=$('q').value.trim(),inn=$('f_in').value;
@@ -504,7 +504,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep)S.ppLim=200;S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -540,10 +540,17 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   let l=[...d.library];if(S.ppDesc)l.reverse();
   h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
- if(d.scenes&&d.scenes.length){let l=d.scenes.filter(x=>!S.ppOnly||x.film_id);if(S.ppDesc)l=[...l].reverse();const own=d.scenes.filter(x=>x.film_id).length;
-  h+=`<h3 class=ppdept>Scenes (ThePornDB) <span class=muted>— you have ${own} of ${d.scenes.length}</span>${d.groups&&d.groups.length?'':` <button onclick="ppOnly(${S.ppOnly?0:1})">${S.ppOnly?'Show all scenes':'Only scenes I have'}</button>`}</h3>`+(l.length?`<div class=pplist>${l.map(x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
+ if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id),rest=S.ppScOnly?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
+  const lim=S.ppLim||200,shown=rest.slice(0,lim),ld=d.scenes_loading;
+  const card=x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
    inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
-   return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`}).join('')}</div>`:'<p class=muted>None in your library.</p>')}
+   return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`};
+  h+=`<h3 class=ppdept>Scenes <span class=muted>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
+   +(S.ppScOnly&&!d.scenes_loading?`<p class=muted>Showing only your ${d.scenes_owned} scene(s); ${Math.max(0,(d.scenes_total||0)-d.scenes_owned)} more on ThePornDB.</p>`:'')
+   +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})</p>`:'')
+   +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
+   +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
+  if(ld&&!S.ppPoll){const pid=d.person.id;S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){}},3000)}}
  c.innerHTML=h+'</div>'}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}

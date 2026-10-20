@@ -33,7 +33,14 @@ def tp(path, tok, **k):
     return {"data": dict(perf, id=path.split("/")[-1])}
 tpdb.call_retry = tp
 cl = app.app.test_client()
-def page(name): return cl.get("/api/person/" + str(cl.get("/api/person/lookup?name=" + name).json["id"])).json
+import time
+def page(name):
+    pid = cl.get("/api/person/lookup?name=" + name).json["id"]
+    for _ in range(100):  # ThePornDB scene list loads in the background
+        j = cl.get(f"/api/person/{pid}").json
+        if not j.get("scenes_loading"): return j
+        time.sleep(0.05)
+    return j
 m = page("Main Actor")  # mainstream: full TMDB filmography, owned + not owned
 assert m["person"]["source"] == "TMDB" and m["total"] == 3 and m["owned"] == 1, m
 assert {g["dept"] for g in m["groups"]} == {"Acting", "Directing"} and not m["scenes"]

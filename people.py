@@ -17,12 +17,14 @@ DEPT_ORDER = ["Acting", "Directing", "Writing", "Production", "Camera", "Sound",
               "Visual Effects", "Crew", "Lighting"]
 STALE_S = 14 * 86400
 NO_MATCH = -1  # tmdb_person_id value meaning "searched TMDB, nothing found"
+TPDB_MAX_PAGES = 200  # 100 scenes per page (20,000 scenes)
 TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing found"
 
 # ThePornDB profile columns (adult performers). edited_fields = profile fields changed by hand; never overwritten.
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
-             ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL")]
+             ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
+             ("tpdb_scenes_total", "INTEGER")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 
@@ -156,6 +158,55 @@ def init(app, tmdb, posters_dir):
             IDX.update(key=key, data=data, at=time.time())
             return data
 
+    def person_entry(c, row):
+        """Library index entry for a person, merged over their name and multi-word aliases (fold-normalised)."""
+        idx = index(c); keys = [row["name_norm"]]
+        try: als = json.loads(row["aliases"] or "[]")
+        except Exception: als = []
+        keys += [fold(" ".join(a.split())) for a in als if isinstance(a, str) and len(a.split()) >= 2]
+        out = {"names": {}, "roles": {}, "films": set()}
+        for k in dict.fromkeys(keys):
+            x = idx.get(k)
+            if not x: continue
+            for n, v in x["names"].items(): out["names"][n] = out["names"].get(n, 0) + v
+            for ro, ids in x["roles"].items(): out["roles"].setdefault(ro, set()).update(ids)
+            out["films"] |= x["films"]
+        return out
+
+    SCN = {}  # pid -> background ThePornDB scene-list load progress
+    SCN_LOCK = threading.Lock()
+    def start_scene_load(pid, tok, perf_id):
+        """Fetch every page of /performers/{id}/scenes in a background thread (rate-limited by call_retry); the list and the
+        API's total are cached in people.tpdb_scenes_json / tpdb_scenes_total. A partial list is saved as pages arrive."""
+        with SCN_LOCK:
+            if (SCN.get(pid) or {}).get("running"): return
+            SCN[pid] = dict(running=True, done=0, total=None, page=0, pages=None, error=None)
+        def run():
+            import tpdb as tpdbmod
+            st = SCN[pid]; c2 = C()
+            try:
+                allsc, page, seen = [], 1, set()
+                while page <= TPDB_MAX_PAGES:
+                    r = tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, per_page=100, page=page)
+                    d = r.get("data") or []
+                    new = [x for x in d if str(x.get("id")) not in seen]; seen |= {str(x.get("id")) for x in d}; allsc += new
+                    meta = r.get("meta") if isinstance(r.get("meta"), dict) else {}
+                    last, tot = meta.get("last_page"), meta.get("total")
+                    st.update(done=len(allsc), page=page, pages=int(last) if last else None, total=int(tot) if tot else None)
+                    final = not d or not new or (last and page >= int(last)) or (not last and len(d) < 100) or page >= TPDB_MAX_PAGES
+                    if final or page % 5 == 0:
+                        keep = [dict(id=str(x.get("id")), _id=str(x.get("_id") or ""), title=x.get("title"), date=(x.get("date") or "")[:10],
+                                     studio=(x.get("site") or {}).get("name"), slug=x.get("slug"),
+                                     thumb=((x.get("posters") or {}).get("small") if isinstance(x.get("posters"), dict) else None) or x.get("poster") or x.get("image"))
+                                for x in allsc]
+                        c2.execute("UPDATE people SET tpdb_scenes_json=?, tpdb_scenes_at=?, tpdb_scenes_total=? WHERE id=?",
+                                   (json.dumps(keep), time.time() if final else 0, st["total"] or len(keep), pid)); c2.commit()
+                    if final: break
+                    page += 1
+            except Exception as ex: st["error"] = type(ex).__name__
+            finally: st["running"] = False; c2.close()
+        threading.Thread(target=run, daemon=True).start()
+
     def best_name(e): return max(e["names"].items(), key=lambda kv: (kv[1], len(kv[0])))[0]
     def top_role(e): return max(e["roles"].items(), key=lambda kv: len(kv[1]))[0]
     def photo_url(row):
@@ -266,7 +317,7 @@ def init(app, tmdb, posters_dir):
     def person_page(pid):
         c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         if not row: return jsonify(error="Unknown person"), 404
-        e = index(c).get(row["name_norm"]) or {"names": {}, "roles": {}, "films": set()}
+        e = person_entry(c, row)
         lib_ids = sorted(e["films"])
         status, msg = "ok", None
         adult = bool(set(lib_ids) & adult_film_ids(c))
@@ -307,36 +358,41 @@ def init(app, tmdb, posters_dir):
         elif adult and not mainstream: status, msg = "no_match", tp_note or "Not found on ThePornDB or TMDB. You can set either id manually."
         elif not key: status, msg = "no_key", "No TMDB API key set, so only the films in your library are shown."
         else: status, msg = "no_match", "No matching person found on TMDB. You can set the TMDB person id manually."
-        scenes = None
+        scenes = None; scenes_loading = None; extra_owned = 0; tp_count = 0
         if on_tpdb:
             tok = db.get_setting(c, "tpdb_key", "") or ""
             if tok and (not row["tpdb_scenes_json"] or request.args.get("refresh") or time.time() - (row["tpdb_scenes_at"] or 0) > STALE_S):
-                import tpdb as tpdbmod
-                try:
-                    allsc = []
-                    for page in (1, 2, 3):
-                        r = tpdbmod.call_retry(f"/performers/{row['tpdb_performer_id']}/scenes", tok, per_page=100, page=page)
-                        d = r.get("data") or []; allsc += d
-                        if len(d) < 100: break
-                    keep = [dict(id=str(x.get("id")), _id=str(x.get("_id") or ""), title=x.get("title"), date=(x.get("date") or "")[:10],
-                                 studio=(x.get("site") or {}).get("name"), slug=x.get("slug"),
-                                 thumb=((x.get("posters") or {}).get("small") if isinstance(x.get("posters"), dict) else None) or x.get("poster") or x.get("image"))
-                            for x in allsc]
-                    c.execute("UPDATE people SET tpdb_scenes_json=?, tpdb_scenes_at=? WHERE id=?", (json.dumps(keep), time.time(), pid)); c.commit()
-                    row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
-                except Exception as ex: msg = (msg + " " if msg else "") + f"Could not load ThePornDB scenes ({type(ex).__name__})."
+                start_scene_load(pid, tok, row["tpdb_performer_id"])
+            load = SCN.get(pid)
+            if load and load.get("running"): scenes_loading = dict(done=load["done"], total=load["total"], pages=load["pages"], page=load["page"])
+            elif load and load.get("error"): msg = (msg + " " if msg else "") + f"Could not load all ThePornDB scenes ({load['error']}); showing cached list."
             if row["tpdb_scenes_json"]:
-                img = not (set(lib_ids) & review_film_ids(c))
-                owned = {}
-                for r in c.execute("SELECT id, tpdb_id, poster, custom_poster FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''"):
-                    owned[str(r["tpdb_id"])] = r
-                scenes = []
-                for x in json.loads(row["tpdb_scenes_json"]):
-                    o = owned.get(x["id"]) or owned.get(x.get("_id") or "-")
-                    scenes.append(dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
-                                       film_id=o["id"] if o else None, thumb=(x["thumb"] if img else None),
-                                       poster=((o["custom_poster"] or o["poster"]) if o and img else None)))
-                scenes.sort(key=lambda z: z["date"] or "")
+                scenes = [dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
+                               film_id=None, thumb=x["thumb"], poster=None, _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
+        if adult:  # ALL of the user's library scenes for this person (name/aliases or ThePornDB scene id), listed first
+            img = not (set(lib_ids) & review_film_ids(c))
+            tp_ids = sorted({i for z in (scenes or []) for i in z["_ids"] if i and i != "-"})
+            q = "SELECT id, title, release_date, year, studio, tpdb_id, poster, custom_poster FROM films WHERE kind='scene' AND (0"
+            args = []
+            for chunk in [lib_ids[i:i + 500] for i in range(0, len(lib_ids), 500)]: q += f" OR id IN ({','.join('?'*len(chunk))})"; args += chunk
+            for chunk in [tp_ids[i:i + 500] for i in range(0, len(tp_ids), 500)]: q += f" OR tpdb_id IN ({','.join('?'*len(chunk))})"; args += chunk
+            mine = {r["id"]: r for r in c.execute(q + ")", args)}
+            have_tp = {str(r["tpdb_id"]) for r in mine.values() if r["tpdb_id"]}
+            tp_count = len(scenes or []); tps = set(tp_ids)
+            extra_owned = sum(1 for r in mine.values() if not r["tpdb_id"] or str(r["tpdb_id"]) not in tps)  # owned but not in the ThePornDB list
+            tp_thumb = {i: z["thumb"] for z in (scenes or []) for i in z["_ids"] if i and i != "-"}
+            owned_list = [dict(title=r["title"], date=r["release_date"] or (str(r["year"]) if r["year"] else None), studio=r["studio"], url=None,
+                               film_id=r["id"], thumb=tp_thumb.get(str(r["tpdb_id"] or "-")) if img else None,
+                               poster=((r["custom_poster"] or r["poster"]) if img else None)) for r in mine.values()]
+            rest = []
+            for z in (scenes or []):
+                if any(i in have_tp for i in z.pop("_ids")): continue  # already listed from the library
+                if not img: z["thumb"] = None
+                rest.append(z)
+            owned_list.sort(key=lambda z: z["date"] or ""); rest.sort(key=lambda z: z["date"] or "")
+            if owned_list or scenes is not None: scenes = owned_list + rest
+        elif scenes:
+            for z in scenes: z.pop("_ids", None)
         lib = [dict(r) for r in c.execute(f"SELECT id, title, year, poster, custom_poster, tmdb_id FROM films WHERE id IN ({','.join('?'*len(lib_ids))}) ORDER BY year IS NULL, year, title COLLATE FOLD", lib_ids)] if lib_ids else []
         for f in lib: f["roles"] = [ro for ro, s in e["roles"].items() if f["id"] in s]
         groups = filmography(c, json.loads(row["credits_json"])) if row["credits_json"] and (row["tmdb_person_id"] or 0) > 0 else None
@@ -361,7 +417,11 @@ def init(app, tmdb, posters_dir):
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
-            roles={ro: len(s) for ro, s in e["roles"].items()}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes)
+            roles={ro: len(s) for ro, s in e["roles"].items()}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes,
+            scenes_owned=sum(1 for z in (scenes or []) if z.get("film_id")),
+            scenes_total=(max(row["tpdb_scenes_total"] or 0, tp_count) + extra_owned) if scenes is not None else None,
+            scenes_tpdb_total=max(row["tpdb_scenes_total"] or 0, tp_count) or None,
+            scenes_loading=scenes_loading)
 
     @app.post("/api/person/<int:pid>/tmdb")
     def person_set_tmdb(pid):
@@ -384,7 +444,7 @@ def init(app, tmdb, posters_dir):
         row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         if not row: return jsonify(error="Unknown person"), 404
         if not v:
-            c.execute("UPDATE people SET tpdb_performer_id=NULL, tpdb_manual=0, tpdb_fetched_at=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
+            c.execute("UPDATE people SET tpdb_performer_id=NULL, tpdb_manual=0, tpdb_fetched_at=NULL, tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
         ident = parse_tpdb_performer(v)
         if not ident: return jsonify(error=f"Not a ThePornDB performer id or URL: {v}"), 400
         tok = db.get_setting(c, "tpdb_key", "") or ""
@@ -394,8 +454,10 @@ def init(app, tmdb, posters_dir):
         except urllib.error.HTTPError as ex: return jsonify(error=f"ThePornDB error {ex.code}"), 502
         except Exception as ex: return jsonify(error=f"Could not reach ThePornDB ({type(ex).__name__})"), 502
         if not p: return jsonify(error="Performer not found on ThePornDB"), 404
+        if str(p.get("id")) != str(row["tpdb_performer_id"] or ""):  # different performer: drop the cached scene list
+            c.execute("UPDATE people SET tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL WHERE id=?", (pid,))
         c.execute("UPDATE people SET tpdb_manual=1 WHERE id=?", (pid,))
-        e = index(c).get(row["name_norm"]) or {"films": set()}
+        e = person_entry(c, row)
         apply_tpdb(c, c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone(), p, allow_image=not (e["films"] & review_film_ids(c)))
         return jsonify(ok=True, name=p.get("name"))
 
