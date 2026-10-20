@@ -372,6 +372,12 @@ def update_film(fid):
             t = {"name": t} if isinstance(t, str) else t
             db.add_tag(c, fid, t.get("name"), t.get("category"))
     c.commit()
+    rename_note = None
+    if old["kind"] == "scene" and changed & set(SCENE_NAME_FIELDS):  # Rename on Save
+        try: rename_note = rename_scene_file(c, fid)[1]
+        except OSError as e: rename_note = f"Saved, but the file could not be renamed: {e}"
+    if rename_note and not new_tid:
+        j = get_film(fid).get_json(); j["rename_note"] = rename_note; return jsonify(j)
     if new_tid:  # new/changed TMDB id on Save: load its details now (hand edits + this save's changes are kept; tags only added)
         err = fetch_and_apply(c, fid, new_tid, keep=changed)
         r = get_film(fid); j = r.get_json(); j["tmdb_loaded"] = not err
@@ -1605,29 +1611,78 @@ def scene_file_name(f):
     ps = ", ".join(perf[:4]) + (" et al" if len(perf) > 4 else "")
     return " - ".join(x for x in [_safe(f["studio"], 60), f["release_date"] or "", _safe(ps, 90), _safe(f["title"], 90)] if x)
 
-def rename_scene_file(c, fid):
-    """Move a matched scene's file (and same-name sidecars) to <scenes root>/<Studio>/<standard name>; logs to the root's rename CSV."""
+SCENE_NAME_FIELDS = ("studio", "release_date", "cast_", "title")
+KEEP_DIRS = {"_no studio"}
+
+def plan_scene_rename(c, fid):
+    """Planned moves for one scene: ([dict(file_id, old, new, root, sidecars=[(a, b)])], note or None).
+    Target: <scenes root>/<Studio>/<Studio> - YYYY-MM-DD - <Performers> - <Title>.<ext>; never overwrites (' (2)')."""
     f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
-    if not f or not f["studio"] or not f["title"]: return None
-    for x in c.execute("SELECT id, path FROM files WHERE film_id=?", (fid,)).fetchall():
+    if not f: return [], "not found"
+    miss = [n for k, n in (("studio", "studio"), ("release_date", "date"), ("title", "title")) if not (f[k] or "").strip()]
+    if miss: return [], "Not renamed: missing " + ", ".join(miss)
+    out, taken = [], set()
+    for x in c.execute("SELECT id, path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall():
         old = x["path"]; root = next((r for r in db.scene_roots(c) if db.under(old, r)), None)
         if not root or not os.path.exists(old): continue
         ext = os.path.splitext(old)[1].lower(); folder = os.path.join(root, _safe(f["studio"], 60))
         base = os.path.join(folder, scene_file_name(f)); new = base + ext; n = 2
-        while os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old): new = f"{base} ({n}){ext}"; n += 1
+        while (os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old)) or os.path.normcase(new) in taken:
+            new = f"{base} ({n}){ext}"; n += 1
+        taken.add(os.path.normcase(new))
         if new == old: continue
-        os.makedirs(folder, exist_ok=True)
         st, dd = os.path.splitext(os.path.basename(old))[0], os.path.dirname(old)
-        pairs = [(old, new)] + [(os.path.join(dd, y), os.path.splitext(new)[0] + y[len(st):]) for y in os.listdir(dd)
-                                 if y.lower().startswith(st.lower() + ".") and os.path.join(dd, y) != old]
+        side = [(os.path.join(dd, y), os.path.splitext(new)[0] + y[len(st):]) for y in os.listdir(dd)
+                if y.lower().startswith(st.lower() + ".") and os.path.normcase(os.path.join(dd, y)) != os.path.normcase(old)]
+        out.append(dict(file_id=x["id"], old=old, new=new, root=root, sidecars=side))
+    return out, None
+
+def do_scene_moves(c, moves):
+    """Execute planned moves: rename file + sidecars, update the files table (path index) and subtitle cache, log CSV,
+    drop the old folder if now empty (never the root or '_No Studio')."""
+    import csv
+    done = 0
+    for m in moves:
+        old, new = m["old"], m["new"]
+        if os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old): continue  # appeared since planning
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        pairs = [(old, new)] + [(a, b) for a, b in m["sidecars"] if os.path.exists(a) and not os.path.exists(b)]
         for a, b in pairs: os.rename(a, b)
-        c.execute("UPDATE files SET path=? WHERE id=?", (new, x["id"])); c.commit()
-        import csv
-        with open(os.path.join(root, "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh: csv.writer(fh).writerows(pairs)
+        c.execute("UPDATE files SET path=?, missing=0 WHERE id=?", (new, m["file_id"]))
+        c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (new, old)); c.commit(); done += 1
+        with open(os.path.join(m["root"], "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh: csv.writer(fh).writerows(pairs)
+        dd = os.path.dirname(old)
         try:
-            if not os.listdir(dd) and os.path.normcase(dd) != os.path.normcase(root): os.rmdir(dd)
+            if (not os.listdir(dd) and os.path.normcase(dd) != os.path.normcase(m["root"])
+                    and os.path.basename(dd).lower() not in KEEP_DIRS): os.rmdir(dd)
         except OSError: pass
-    return True
+    return done
+
+def rename_scene_file(c, fid):
+    """Move a scene's file(s) (and same-name sidecars) to the standard name. Returns (renamed count, note)."""
+    moves, note = plan_scene_rename(c, fid)
+    return (do_scene_moves(c, moves) if moves else 0), note
+
+@app.get("/api/scenes/rename-preview")
+def scenes_rename_preview():
+    """Every scene whose file name differs from the standard name: [{id, old, new}] (nothing is moved)."""
+    c = C(); items, skipped = [], []
+    for (fid,) in c.execute("SELECT id FROM films WHERE kind='scene' ORDER BY studio COLLATE FOLD, title COLLATE FOLD").fetchall():
+        moves, note = plan_scene_rename(c, fid)
+        if note: skipped.append(dict(id=fid, note=note)); continue
+        items += [dict(id=fid, old=m["old"], new=m["new"]) for m in moves]
+    return jsonify(count=len(items), items=items, skipped=len(skipped))
+
+@app.post("/api/scenes/rename-apply")
+def scenes_rename_apply():
+    """Apply the standard names to all scenes (or {ids:[...]}). Same logging as Rename on Save."""
+    c = C(); ids = (request.json or {}).get("ids")
+    if not ids: ids = [r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")]
+    n, errors = 0, []
+    for fid in ids:
+        try: n += rename_scene_file(c, int(fid))[0]
+        except OSError as e: errors.append(dict(id=fid, error=str(e)))
+    return jsonify(renamed=n, errors=errors)
 
 TP = {"running": False, "kind": "tpdb"}
 TP_LOCK = threading.Lock()
