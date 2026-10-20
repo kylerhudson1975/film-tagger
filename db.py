@@ -89,6 +89,8 @@ def connect():
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(SCHEMA)
+    c.execute("CREATE TABLE IF NOT EXISTS excluded(id INTEGER PRIMARY KEY, path TEXT, size INTEGER, oshash TEXT, title TEXT, kind TEXT, removed_at REAL)")
+    c.execute("CREATE INDEX IF NOT EXISTS ix_excluded_size ON excluded(size)")
     cols = {r[1] for r in c.execute("PRAGMA table_info(films)")}
     if "edited_fields" not in cols: c.execute("ALTER TABLE films ADD COLUMN edited_fields TEXT")
     if "tmdb_status" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_status TEXT")
@@ -164,6 +166,36 @@ def guess_title_year(path):
             return s, year
     return stem, None
 
+# ---------- removed items: never re-added by scans (files are not touched) ----------
+def file_hash(p):
+    try:
+        import tpdb
+        return tpdb.oshash(p)
+    except Exception: return None
+
+def exclude_film(c, fid):
+    """Remember a film's files before it is removed from the library, so later scans skip them (also after a rename/move)."""
+    f = c.execute("SELECT title, kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return 0
+    n = 0
+    for x in c.execute("SELECT path, size FROM files WHERE film_id=?", (fid,)).fetchall():
+        size = x["size"]
+        try: size = os.path.getsize(x["path"])
+        except OSError: pass
+        c.execute("INSERT INTO excluded(path,size,oshash,title,kind,removed_at) VALUES(?,?,?,?,?,?)",
+                  (x["path"], size, file_hash(x["path"]) if os.path.exists(x["path"]) else None, f["title"], f["kind"], time.time())); n += 1
+    c.execute("DELETE FROM files WHERE film_id=?", (fid,))
+    c.execute("DELETE FROM films WHERE id=?", (fid,))
+    return n
+
+def is_excluded(c, p, size):
+    """Same path, or same size + OpenSubtitles hash (renamed or moved copy)."""
+    if c.execute("SELECT 1 FROM excluded WHERE path=? COLLATE NOCASE", (p,)).fetchone(): return True
+    if size:
+        hs = [r[0] for r in c.execute("SELECT oshash FROM excluded WHERE size=? AND oshash IS NOT NULL", (size,))]
+        if hs and file_hash(p) in hs: return True
+    return False
+
 # ---------- scanning (read-only) ----------
 def scene_roots(c):
     return [r.rstrip("\\/") for r in (get_setting(c, "scene_roots", []) or []) if r and r.strip()]
@@ -202,6 +234,7 @@ def scan(c, roots, progress=None):
                 try: size = os.path.getsize(p)
                 except OSError: size = None
                 is_scene = any(under(p, sr) for sr in sroots)
+                if not r and is_excluded(c, p, size): continue  # removed by hand earlier
                 if r:
                     if is_scene: c.execute("UPDATE films SET kind='scene' WHERE id=? AND kind IS NULL", (r["film_id"],))
                     c.execute("UPDATE files SET missing=0, size=? WHERE id=?", (size, r["id"]))

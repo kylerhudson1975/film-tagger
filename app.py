@@ -373,7 +373,10 @@ def update_film(fid):
 
 @app.delete("/api/films/<int:fid>")
 def delete_film(fid):  # removes catalogue entry only; never touches files
-    c = C(); c.execute("DELETE FROM films WHERE id=?", (fid,)); c.commit(); return ok()
+    c = C()
+    if request.args.get("exclude", "1") == "0": c.execute("DELETE FROM films WHERE id=?", (fid,))
+    else: db.exclude_film(c, fid)  # remembered so scans never re-add it; the file itself is left alone
+    c.commit(); return ok()
 
 @app.post("/api/films/merge")
 def merge_films():
@@ -468,8 +471,26 @@ def bulk_mpaa():
 @app.post("/api/bulk/delete")
 def bulk_delete():
     c = C()
-    for fid in (request.json or {}).get("film_ids", []): c.execute("DELETE FROM films WHERE id=?", (fid,))
+    for fid in (request.json or {}).get("film_ids", []): db.exclude_film(c, fid)
     c.commit(); return ok()
+
+@app.get("/api/excluded")
+def excluded_list():
+    rows = C().execute("SELECT id, path, size, title, kind, removed_at, oshash IS NOT NULL hashed FROM excluded ORDER BY removed_at DESC").fetchall()
+    return jsonify(items=[dict(r) | {"exists": os.path.exists(r["path"])} for r in rows])
+
+@app.post("/api/excluded/<int:xid>/restore")
+def excluded_restore(xid):
+    """Forget the exclusion and add the file back right away if it is still there (title is guessed again / rematched)."""
+    c = C(); r = c.execute("SELECT * FROM excluded WHERE id=?", (xid,)).fetchone()
+    if not r: return jsonify(error="not found"), 404
+    c.execute("DELETE FROM excluded WHERE id=?", (xid,)); c.commit()
+    added = False
+    roots = [x for x in (db.get_setting(c, "roots", []) or []) + db.scene_roots(c) if x]
+    root = next((x for x in roots if db.under(r["path"], x)), None)
+    if root and os.path.exists(r["path"]):
+        res = db.scan(c, [root]); added = res.get("added", 0) > 0
+    return ok(added=added)
 
 @app.get("/api/categories")
 def cats():
@@ -1561,7 +1582,44 @@ def tpdb_apply(fid):
         if not s: return jsonify(error="No ThePornDB match (no confident match; use Find… to pick a candidate)"), 404
     except Exception as e: return jsonify(error=tpdb_err(e)), 502
     apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS]); c.commit()
+    if d.get("rename", True):
+        try: rename_scene_file(c, fid)
+        except OSError as e: return jsonify(error=f"Matched, but the file could not be renamed: {e}"), 500
     return get_film(fid)
+
+def _safe(s, n=80):
+    s = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", s or "").strip().rstrip(". ")
+    return s[:n].rstrip(". ") if len(s) > n else s
+
+def scene_file_name(f):
+    """'<Studio> - YYYY-MM-DD - <Performers> - <Title>' (same scheme as the scene import)."""
+    perf = [x.strip() for x in (f["cast_"] or "").split(",") if x.strip()]
+    ps = ", ".join(perf[:4]) + (" et al" if len(perf) > 4 else "")
+    return " - ".join(x for x in [_safe(f["studio"], 60), f["release_date"] or "", _safe(ps, 90), _safe(f["title"], 90)] if x)
+
+def rename_scene_file(c, fid):
+    """Move a matched scene's file (and same-name sidecars) to <scenes root>/<Studio>/<standard name>; logs to the root's rename CSV."""
+    f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
+    if not f or not f["studio"] or not f["title"]: return None
+    for x in c.execute("SELECT id, path FROM files WHERE film_id=?", (fid,)).fetchall():
+        old = x["path"]; root = next((r for r in db.scene_roots(c) if db.under(old, r)), None)
+        if not root or not os.path.exists(old): continue
+        ext = os.path.splitext(old)[1].lower(); folder = os.path.join(root, _safe(f["studio"], 60))
+        base = os.path.join(folder, scene_file_name(f)); new = base + ext; n = 2
+        while os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old): new = f"{base} ({n}){ext}"; n += 1
+        if new == old: continue
+        os.makedirs(folder, exist_ok=True)
+        st, dd = os.path.splitext(os.path.basename(old))[0], os.path.dirname(old)
+        pairs = [(old, new)] + [(os.path.join(dd, y), os.path.splitext(new)[0] + y[len(st):]) for y in os.listdir(dd)
+                                 if y.lower().startswith(st.lower() + ".") and os.path.join(dd, y) != old]
+        for a, b in pairs: os.rename(a, b)
+        c.execute("UPDATE files SET path=? WHERE id=?", (new, x["id"])); c.commit()
+        import csv
+        with open(os.path.join(root, "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh: csv.writer(fh).writerows(pairs)
+        try:
+            if not os.listdir(dd) and os.path.normcase(dd) != os.path.normcase(root): os.rmdir(dd)
+        except OSError: pass
+    return True
 
 TP = {"running": False, "kind": "tpdb"}
 TP_LOCK = threading.Lock()

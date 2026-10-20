@@ -100,7 +100,7 @@ def scene_fields(s):
 
 # ---------- improved multi-strategy identification (v1.0.28) ----------
 import struct, difflib
-SITE_JUNK = re.compile(r"(watch on\b.*$|pornhoarder\S*|hqporner\S*|\b4kporn\b|\beporn\b|\bxvideos\b|\bfull hi\b|\b1080hd\b|\b\d{3,4}x\d{3,4}\b|\(\d\)|\.mp4\b)", re.I)
+SITE_JUNK = re.compile(r"(watch on\b.*$|pornhoarder\S*|hqporner\S*|\b4kporn\b|\beporn\b|\bxvideos\b|\bfull hi\b|\b1080hd\b|\b\d{3,4}\s*x\s*\d{3,4}\b|\b\d{3,4}p\b|\(\d\)|\.mp4\b)", re.I)
 STOP = {"and", "the", "a", "in", "of", "with", "for", "to", "on", "my", "is", "her", "his", "me", "you", "i", "it", "at", "by", "s", "t"}
 
 def oshash(path):
@@ -218,7 +218,8 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
 def site_queries(stem, text, rest):
     """Queries like ThePornDB website's scene search box (plain ?q=, no parse/direct): every term must match, so try the
     cleaned name, the raw name, the name without the studio glue, then shorter word windows (titles/performers)."""
-    out = [text, stem, rest]
+    raw = re.sub(r"\s+", " ", SITE_JUNK.sub(" ", stem or "")).strip(" -")  # raw name minus '1280x720', 'EPORN', 'Watch on…'
+    out = [text, raw, rest]
     w = [x for x in re.findall(r"[A-Za-z0-9']+", rest) if not re.fullmatch(r"\d{1,2}|\d{5,}", x)]
     for n in (5, 4, 3):
         if len(w) > n: out += [" ".join(w[:n]), " ".join(w[-n:])]
