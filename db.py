@@ -262,12 +262,15 @@ def scan(c, roots, progress=None):
     return {"added": added, "found": len(seen), "missing_files": missing, "errors": errors[:50]}
 
 # ---------- tags ----------
-def get_tag_id(c, name, category=None):
+def get_tag_id(c, name, category=None, set_category=False):
+    """Tag id by name (names are unique, case-insensitive). A missing category is filled in; with set_category=True
+    (a category the user explicitly chose) an existing tag is moved to that category, for every film that has it."""
     name = re.sub(r"\s+", " ", (name or "")).strip()
     if not name: return None
     r = c.execute("SELECT id, category FROM tags WHERE name=?", (name,)).fetchone()
     if r:
-        if category and not r["category"]:
+        if category and (not r["category"] or (set_category and r["category"] != category)):
+            c.execute("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,99)", (category,))
             c.execute("UPDATE tags SET category=? WHERE id=?", (category, r["id"]))
         return r["id"]
     if category: c.execute("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,99)", (category,))
@@ -284,7 +287,7 @@ def add_tag_if_absent(c, film_id, name, category=None, source="tmdb"):
     c.execute("INSERT INTO film_tags VALUES(?,?,?,?,?)", (film_id, tid, source, "approved", time.time()))
 
 def add_tag(c, film_id, name, category=None, source="user"):
-    tid = get_tag_id(c, name, category)
+    tid = get_tag_id(c, name, category, set_category=(source == "user" and bool(category)))
     if not tid: return
     status = "pending" if source == "ai" else "approved"
     ex = c.execute("SELECT status FROM film_tags WHERE film_id=? AND tag_id=?", (film_id, tid)).fetchone()

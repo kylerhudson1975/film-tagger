@@ -1412,7 +1412,7 @@ def import_backup():
         for t in (row.get("tags") or "").split(";"):
             t = t.strip()
             if t:
-                cat, _, name = t.rpartition(":"); db.add_tag(c, fid, name, cat or None)
+                cat, _, name = t.rpartition(":"); db.add_tag(c, fid, name, cat or None, source="import")
         n += 1
     c.commit(); return ok(mode="merge", rows=n)
 
