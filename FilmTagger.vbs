@@ -28,17 +28,26 @@ Else
 End If
 sh.Environment("PROCESS")("PORT") = port
 
-running = False
-Set wmi = GetObject("winmgmts:\\.\root\cimv2")
-For Each p In wmi.ExecQuery("SELECT CommandLine FROM Win32_Process WHERE Name='python.exe' OR Name='pythonw.exe'")
-  If Not IsNull(p.CommandLine) Then
-    If InStr(1, p.CommandLine, "app.py", 1) > 0 And InStr(1, p.CommandLine, d, 1) > 0 Then running = True
-  End If
-Next
-If Not running Then
+' Already running? Ask the port (a process check can be fooled by another Film Tagger copy).
+Function Up()
+  Up = False
+  On Error Resume Next
+  Set x = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+  x.setTimeouts 1000, 1000, 2000, 2000
+  x.Open "GET", "http://127.0.0.1:" & port & "/", False
+  x.Send
+  If Err.Number = 0 Then If x.Status = 200 Then Up = True
+  On Error GoTo 0
+End Function
+If Not Up() Then
   sh.CurrentDirectory = d
   sh.Run """" & pyw & """ """ & d & "\app.py""", 0, False
-  If Not serverOnly Then WScript.Sleep 3000
+  If Not serverOnly Then
+    For i = 1 To 30
+      WScript.Sleep 500
+      If Up() Then Exit For
+    Next
+  End If
 End If
 If serverOnly Then WScript.Quit 0
 
