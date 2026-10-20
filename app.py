@@ -1613,6 +1613,11 @@ def scene_file_name(f):
 
 SCENE_NAME_FIELDS = ("studio", "release_date", "cast_", "title")
 KEEP_DIRS = {"_no studio"}
+HOLD_RENAME = "[Hold rename]"  # in notes: Fix all file names skips the scene (shaky match / raw-filename metadata)
+
+def rename_held(c, fid):
+    r = c.execute("SELECT COALESCE(notes,'') FROM films WHERE id=?", (fid,)).fetchone()
+    return bool(r) and HOLD_RENAME.lower() in r[0].lower()
 
 def plan_scene_rename(c, fid):
     """Planned moves for one scene: ([dict(file_id, old, new, root, sidecars=[(a, b)])], note or None).
@@ -1666,12 +1671,13 @@ def rename_scene_file(c, fid):
 @app.get("/api/scenes/rename-preview")
 def scenes_rename_preview():
     """Every scene whose file name differs from the standard name: [{id, old, new}] (nothing is moved)."""
-    c = C(); items, skipped = [], []
+    c = C(); items, skipped, held = [], [], 0
     for (fid,) in c.execute("SELECT id FROM films WHERE kind='scene' ORDER BY studio COLLATE FOLD, title COLLATE FOLD").fetchall():
+        if rename_held(c, fid): held += 1; continue
         moves, note = plan_scene_rename(c, fid)
         if note: skipped.append(dict(id=fid, note=note)); continue
         items += [dict(id=fid, old=m["old"], new=m["new"]) for m in moves]
-    return jsonify(count=len(items), items=items, skipped=len(skipped))
+    return jsonify(count=len(items), items=items, skipped=len(skipped), held=held)
 
 @app.post("/api/scenes/rename-apply")
 def scenes_rename_apply():
@@ -1680,6 +1686,7 @@ def scenes_rename_apply():
     if not ids: ids = [r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")]
     n, errors = 0, []
     for fid in ids:
+        if rename_held(c, int(fid)): continue
         try: n += rename_scene_file(c, int(fid))[0]
         except OSError as e: errors.append(dict(id=fid, error=str(e)))
     return jsonify(renamed=n, errors=errors)

@@ -60,4 +60,9 @@ class SceneRename(unittest.TestCase):
         self.assertEqual((self.path(b), self.path(s)), (pb, ps))
         self.assertEqual(self.cl.get("/api/scenes/rename-preview").get_json()["count"], 0)
 
+    def test_hold_rename_note_skips_fix_all(self):
+        a, pa = self.scene(os.path.join("S", "h.mp4"), studio="S", release_date="2021-05-06", cast_="Ann", title="Held", notes="[Hold rename] shaky match")
+        j = self.cl.get("/api/scenes/rename-preview").get_json(); self.assertEqual((j["count"], j["held"]), (0, 1))
+        self.cl.post("/api/scenes/rename-apply", json={}); self.assertEqual(self.path(a), pa)
+
 if __name__ == "__main__": unittest.main()
