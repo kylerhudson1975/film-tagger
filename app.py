@@ -182,7 +182,11 @@ def primary_genres():
     c = C()
     used = [dict(name=r[0], n=r[1]) for r in c.execute("SELECT primary_genre, COUNT(*) FROM films WHERE COALESCE(primary_genre,'')<>'' GROUP BY primary_genre")]
     tags = [r[0] for r in c.execute("SELECT name FROM tags WHERE category='Genre' COLLATE NOCASE")]
-    return jsonify(used=sorted(used, key=lambda x: db.fold(x["name"])), genre_tags=sorted(tags, key=lambda x: (db.fold(x), x)))
+    custom = db.custom_primary_genres(c)
+    choices = {}
+    for n in tags + custom + [u["name"] for u in used]: choices.setdefault(db.fold(n), n)
+    return jsonify(used=sorted(used, key=lambda x: db.fold(x["name"])), genre_tags=sorted(tags, key=lambda x: (db.fold(x), x)),
+                   custom=sorted(custom, key=lambda x: (db.fold(x), x)), choices=sorted(choices.values(), key=lambda x: (db.fold(x), x)))
 
 @app.post("/api/primary-genre/backfill")
 def primary_genre_backfill():
@@ -325,6 +329,8 @@ def clean(d):
 @app.post("/api/films")
 def create_film():
     c = C(); d = request.json or {}; f = clean(d); f.setdefault("title", "Untitled")
+    if f.get("primary_genre"):  # typed in the new-film window: remember it and protect it from auto fill
+        f["primary_genre"] = db.remember_primary_genre(c, f["primary_genre"]); f["edited_fields"] = json.dumps(["primary_genre"])
     f["added_at"] = f["updated_at"] = time.time()
     cur = c.execute(f"INSERT INTO films({','.join(f)}) VALUES({','.join('?'*len(f))})", list(f.values()))
     for p in split_list(d.get("paths")): c.execute("INSERT OR IGNORE INTO files(film_id,path) VALUES(?,?)", (cur.lastrowid, p))
@@ -341,6 +347,8 @@ def update_film(fid):
     old = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not old: return jsonify(error="not found"), 404
     ed = set(json.loads(old["edited_fields"] or "[]"))
+    if f.get("primary_genre"):  # hand-typed primary genre: reuse the existing spelling, remember new names for the list
+        f["primary_genre"] = db.remember_primary_genre(c, f["primary_genre"])
     changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}; ed |= changed
     if "subtitles" in changed: f["subs_manual"] = 1  # hand-edited subtitles: scans never overwrite until Re-detect
     if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports

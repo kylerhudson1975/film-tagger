@@ -306,6 +306,26 @@ def genre_tag_name(c, name):
         if fold(t) == k: return t
     return name
 
+def custom_primary_genres(c):
+    """Primary genres the user typed in the edit window that are not Genre tags (settings key custom_primary_genres)."""
+    return [x for x in (get_setting(c, "custom_primary_genres", []) or []) if isinstance(x, str) and x.strip()]
+
+def remember_primary_genre(c, name):
+    """Normalise a hand-entered primary genre to an existing Genre tag / known custom genre spelling (case/accent-
+    insensitive); a brand-new name is added to custom_primary_genres so it shows in the list and filter. Returns the name."""
+    name = re.sub(r"\s+", " ", (name or "")).strip()
+    if not name: return None
+    k = fold(name)
+    for (t,) in c.execute("SELECT name FROM tags WHERE category='Genre' COLLATE NOCASE"):
+        if fold(t) == k: return t
+    custom = custom_primary_genres(c)
+    for t in custom:
+        if fold(t) == k: return t
+    for (t,) in c.execute("SELECT DISTINCT primary_genre FROM films WHERE COALESCE(primary_genre,'')<>''"):
+        if fold(t) == k: name = t; break
+    set_setting(c, "custom_primary_genres", custom + [name])
+    return name
+
 def pg_user_edited(c, fid):
     r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
     return bool(r) and "primary_genre" in set(json.loads(r[0] or "[]"))
