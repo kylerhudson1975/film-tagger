@@ -7,6 +7,12 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
+## New in v1.1.0
+- **Scene photo galleries:** put a scene's photo set in a folder named `<video stem> - GALLERY` beside the video and Film Tagger links it to the scene. Scenes with a gallery show a 📷 badge with the photo count, and the Edit window's **📷 From Gallery** picker lets you use any photo as the poster. *Fix all* file names moves a gallery folder along with its video, and scans never catalogue gallery photos as films.
+- **Gallery re-check:** opening a scene's Edit window looks for its gallery again, so a folder added or removed outside the app is picked up straight away.
+- **🔎 Find Gallery:** searches ViperGirls as a guest (no login) by the scene's performers plus the studio's prefix tag, falling back to one performer at a time and then performers plus studio as plain text. Results are text only, ranked by how many performers and the studio appear plus a small boost for a close release date. The query is editable and you can paste a thread or post link. Searches are throttled (one at a time, at least 20 s apart) and cached. Nothing downloads until you click **Download**, which runs [gallery-dl](https://github.com/mikf/gallery-dl) into the scene's gallery folder with a file count and **Cancel**, removes placeholder/tiny files and asks before adding to an existing gallery. Scenes marked *Review by hand* are blocked from searching and downloading.
+- **Remove from catalog** keeps your scroll position.
+
 ## New in v1.0.46
 - **Studio aliases:** the same studio often turns up under different spellings (e.g. *angels.love* from ThePornDB and *Angels Love* from file names). Map any spelling to one main name; case, accents and punctuation are ignored. The alias stays hidden but still works: studio filters and searches for it find the main name, ThePornDB matching treats it as the same studio, and every write (ThePornDB fetch, manual and bulk edits, TMDB studio fill, scans) saves the main name, so a later fetch never undoes the merge.
 - **Studio aliases in Library & Settings:** type the alias and the main name and click *Merge studio*. After a confirmation, existing scenes are updated. Each alias is listed with a *remove* link (scenes keep the main name).
@@ -148,10 +154,12 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
 - API keys are stored only in your local database.
 
 ## Tech
-Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step, and Flask is the only required dependency (ffprobe is used for resolution and subtitle detection if installed).
+Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## License
 [MIT](LICENSE) © 2026 Kyle R. Hudson & Grok Bot
+
+Third-party software: [gallery-dl](https://github.com/mikf/gallery-dl) © Mike Fährmann, [GPL-2.0](https://github.com/mikf/gallery-dl/blob/master/LICENSE), installed alongside the app and run as a separate program (never imported or linked). Details in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## AZNude Status
 

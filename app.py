@@ -1,13 +1,14 @@
 """Film Tagger - local film library cataloging & tagging. Run: python app.py -> http://localhost:5050"""
 import os, io, csv, json, time, urllib.request, urllib.parse, urllib.error
-from flask import Flask, request, jsonify, send_from_directory, Response
+from flask import Flask, request, jsonify, send_from_directory, send_file, Response
 import db
 import resolution as resmod
 import subtitles as submod
 import tpdb
 import focus as focusmod
+import gallery as gallerymod
 
-APP_VERSION = "1.0.46"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.1.0"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -328,6 +329,11 @@ def remove_poster(fid):
 def get_film(fid):
     c = C(); r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not r: return jsonify(error="not found"), 404
+    if r["kind"] == "scene" and request.method == "GET" and request.endpoint == "get_film":  # galleries added by hand show up without a scan
+        try:
+            scene_gallery(c, fid)  # cheap folder check; stores gallery_path/count only (updated_at untouched)
+            r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
+        except Exception: pass
     return jsonify(attach(c, [dict(r)])[0])
 
 def parse_tmdb_id(v):
@@ -674,7 +680,9 @@ def scan():
     if SCAN["running"]: return jsonify(error="A scan is already running"), 409
     SCAN.clear(); SCAN.update(running=True, kind="scan", found=0, added=0, cancel=False, current="")
     try:
-        r = db.scan(c, roots, SCAN); SCAN.update(r); SCAN["cancelled"] = SCAN.get("cancel", False); return jsonify(r)
+        r = db.scan(c, roots, SCAN); SCAN.update(r); SCAN["cancelled"] = SCAN.get("cancel", False)
+        threading.Thread(target=refresh_galleries, daemon=True).start()
+        return jsonify(r)
     finally:
         SCAN["running"] = False; SCAN["finished_at"] = time.time()
         try: start_res_job()  # detect resolution of newly found films in the background
@@ -1693,11 +1701,18 @@ def plan_scene_rename(c, fid):
         while (os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old)) or os.path.normcase(new) in taken:
             new = f"{base} ({n}){ext}"; n += 1
         taken.add(os.path.normcase(new))
-        if new == old: continue
+        gk, gd = gallerymod.find(old, db.VIDEO_EXT)  # the photo gallery moves with the video (legacy 'gallery' -> canonical)
+        gal = None
+        if gd:
+            gnew = gallerymod.canonical_dir(new)
+            if os.path.normcase(gnew) != os.path.normcase(gd) and not os.path.exists(gnew): gal = (gd, gnew)
+        if new == old and not gal: continue
         st, dd = os.path.splitext(os.path.basename(old))[0], os.path.dirname(old)
         side = [(os.path.join(dd, y), os.path.splitext(new)[0] + y[len(st):]) for y in os.listdir(dd)
-                if y.lower().startswith(st.lower() + ".") and os.path.normcase(os.path.join(dd, y)) != os.path.normcase(old)]
-        out.append(dict(file_id=x["id"], old=old, new=new, root=root, sidecars=side))
+                if y.lower().startswith(st.lower() + ".") and os.path.normcase(os.path.join(dd, y)) != os.path.normcase(old)
+                and not os.path.isdir(os.path.join(dd, y))]
+        if new == old: side = []
+        out.append(dict(file_id=x["id"], old=old, new=new, root=root, sidecars=side, gallery=gal))
     return out, None
 
 def do_scene_moves(c, moves):
@@ -1709,8 +1724,14 @@ def do_scene_moves(c, moves):
         old, new = m["old"], m["new"]
         if os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old): continue  # appeared since planning
         os.makedirs(os.path.dirname(new), exist_ok=True)
-        pairs = [(old, new)] + [(a, b) for a, b in m["sidecars"] if os.path.exists(a) and not os.path.exists(b)]
-        for a, b in pairs: os.rename(a, b)
+        pairs = ([(old, new)] if new != old else []) + [(a, b) for a, b in m["sidecars"] if os.path.exists(a) and not os.path.exists(b)]
+        g = m.get("gallery")
+        if g and os.path.isdir(g[0]) and not os.path.exists(g[1]): pairs.append(g)
+        for a, b in pairs:
+            if os.path.isdir(a):
+                import shutil; shutil.move(a, b)
+            else: os.rename(a, b)
+        if g: c.execute("UPDATE films SET gallery_path=? WHERE id=(SELECT film_id FROM files WHERE id=?)", (g[1], m["file_id"]))
         c.execute("UPDATE files SET path=?, missing=0 WHERE id=?", (new, m["file_id"]))
         c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (new, old)); c.commit(); done += 1
         with open(os.path.join(m["root"], "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh: csv.writer(fh).writerows(pairs)
@@ -1734,8 +1755,10 @@ def scenes_rename_preview():
         if rename_held(c, fid): held += 1; continue
         moves, note = plan_scene_rename(c, fid)
         if note: skipped.append(dict(id=fid, note=note)); continue
-        items += [dict(id=fid, old=m["old"], new=m["new"]) for m in moves]
-    return jsonify(count=len(items), items=items, skipped=len(skipped), held=held)
+        items += [dict(id=fid, old=m["old"], new=m["new"], gallery_old=m["gallery"][0] if m.get("gallery") else None,
+                       gallery_new=m["gallery"][1] if m.get("gallery") else None) for m in moves]
+    gal = [dict(id=x["id"], old=x["gallery_old"], new=x["gallery_new"]) for x in items if x["gallery_old"]]
+    return jsonify(count=len(items), items=items, skipped=len(skipped), held=held, galleries=gal)
 
 @app.post("/api/scenes/rename-apply")
 def scenes_rename_apply():
@@ -1748,6 +1771,168 @@ def scenes_rename_apply():
         try: n += rename_scene_file(c, int(fid))[0]
         except OSError as e: errors.append(dict(id=fid, error=str(e)))
     return jsonify(renamed=n, errors=errors)
+
+# ---------- scene photo galleries (gallery.py): listing, cached thumbnails, full images, use as poster ----------
+GALLERY_THUMBS = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "gallery_thumbs")
+
+def scene_gallery(c, fid):
+    """-> (kind, folder) for a scene's first file with a gallery; updates films.gallery_path/count if they changed."""
+    kind = folder = None
+    for (p,) in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall():
+        kind, folder = gallerymod.find(p, db.VIDEO_EXT)
+        if folder: break
+    n = len(gallerymod.images(folder)) if folder else 0
+    r = c.execute("SELECT gallery_path, gallery_count FROM films WHERE id=?", (fid,)).fetchone()
+    if r and (r[0] != folder or (r[1] or 0) != n):
+        c.execute("UPDATE films SET gallery_path=?, gallery_count=? WHERE id=?", (folder, n or None, fid)); c.commit()
+    return kind, folder
+
+def refresh_galleries(c=None):
+    """Re-detect galleries for every scene (startup, after scans). Returns {film_id: count}."""
+    c = c or C(); out = {}
+    for (fid,) in c.execute("SELECT id FROM films WHERE kind='scene'").fetchall():
+        k, f = scene_gallery(c, fid)
+        if f: out[fid] = len(gallerymod.images(f))
+    return out
+
+def _gallery_or_404(fid):
+    c = C()
+    if is_review(c, fid): return None, (jsonify(error="Gallery hidden: this scene is flagged for review by hand"), 403)
+    kind, folder = scene_gallery(c, fid)
+    if not folder: return None, (jsonify(error="No gallery for this scene"), 404)
+    return (c, kind, folder), None
+
+@app.get("/api/films/<int:fid>/gallery")
+def gallery_list(fid):
+    g, err = _gallery_or_404(fid)
+    if err: return err
+    c, kind, folder = g; names = gallerymod.images(folder)
+    return jsonify(kind=kind, folder=os.path.basename(folder), count=len(names), images=names)
+
+@app.get("/api/films/<int:fid>/gallery/thumb")
+def gallery_thumb(fid):
+    g, err = _gallery_or_404(fid)
+    if err: return err
+    p = gallerymod.safe_name(g[2], request.args.get("name"))
+    if not p: return jsonify(error="not found"), 404
+    t = gallerymod.thumb(p, GALLERY_THUMBS)
+    return send_file(t or p, max_age=86400 * 30)
+
+@app.get("/api/films/<int:fid>/gallery/image")
+def gallery_image(fid):
+    g, err = _gallery_or_404(fid)
+    if err: return err
+    p = gallerymod.safe_name(g[2], request.args.get("name"))
+    if not p: return jsonify(error="not found"), 404
+    return send_file(p, max_age=86400)
+
+@app.post("/api/films/<int:fid>/gallery/poster")
+def gallery_poster(fid):
+    """{name}: copy that gallery photo into the posters folder and use it as the custom poster (smart crop runs after)."""
+    g, err = _gallery_or_404(fid)
+    if err: return err
+    c = g[0]; p = gallerymod.safe_name(g[2], (request.json or {}).get("name"))
+    if not p: return jsonify(error="not found"), 404
+    if os.path.getsize(p) > POSTER_MAX: return jsonify(error="Image is too large (max 15 MB)"), 413
+    with open(p, "rb") as fh: data = fh.read()
+    ext = sniff_image(data)
+    if not ext: return jsonify(error="That file is not a JPG, PNG or WebP image"), 415
+    val = _save_poster(c, fid, data, ext)
+    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
+    return jsonify(dict(get_film(fid).json, poster_note="from gallery"))
+
+# ---------- Find Gallery: guest ViperGirls search + gallery-dl download (findgallery.py) ----------
+import findgallery as fgmod
+
+def _fg_scene(fid):
+    """-> (c, film row, first video path) or an error response. Review-flagged scenes are blocked."""
+    c = C(); f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
+    if not f or f["kind"] != "scene": return None, (jsonify(error="Not a scene"), 404)
+    if is_review(c, fid): return None, (jsonify(error="Blocked: this scene is flagged for review by hand"), 403)
+    p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+    return (c, f, p[0] if p else None), None
+
+def _fg_parts(f):
+    studios = db.studio_names(f["studio"]) if f["studio"] else []
+    perfs = split_list(f["cast_"] or "")
+    if len(perfs) <= 1:  # unlinked scene: cast is one run-on string, or empty -> guess names from cast/title
+        g = fgmod.guess_names(perfs[0] if perfs else (f["title"] or ""), studios)
+        if len(g) > len(perfs): perfs = g
+    return perfs, studios
+
+@app.post("/api/films/<int:fid>/findgallery/search")
+def findgallery_search(fid):
+    """{query?: str, prefix?: bool}. Default: performers + the studio's prefix tag; if nothing, performers + studio as text."""
+    g, err = _fg_scene(fid)
+    if err: return err
+    c, f, _ = g; d = request.json or {}
+    perfs, studios = _fg_parts(f)
+    default_q = " ".join(perfs + studios[:1]).strip()
+    try: plist = fgmod.prefixes(os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "vg_prefixes.json"))
+    except Exception: plist = []
+    prefix = fgmod.match_prefix(studios, plist) if studios else None
+    q = (d.get("query") or "").strip(); tried = []
+    try:
+        if q:  # Kyle's own query; the studio prefix is used unless switched off
+            use = prefix if d.get("prefix", True) else None
+            res, cached = fgmod.search(q, use); tried.append(dict(query=q, prefix=use, n=len(res), cached=cached)); pref_used = bool(use)
+        else:
+            if not perfs: return jsonify(error="This scene has no performers to search for; type a query", default_query=default_q), 400
+            res, pref_used = [], False
+            if prefix:
+                res, cached = fgmod.search(" ".join(perfs), prefix); pref_used = True
+                tried.append(dict(query=" ".join(perfs), prefix=prefix, n=len(res), cached=cached))
+            if not res and prefix and len(perfs) > 1:  # fewer ANDed keywords: one performer at a time
+                for one in perfs[:2]:
+                    res, cached = fgmod.search(one, prefix, block=True)
+                    tried.append(dict(query=one, prefix=prefix, n=len(res), cached=cached))
+                    if res: break
+            if not res:
+                res, cached = fgmod.search(default_q, None, block=bool(tried)); pref_used = False
+                tried.append(dict(query=default_q, prefix=None, n=len(res), cached=cached))
+    except fgmod.Busy as b:
+        return jsonify(error=f"Another search ran just now; try again in {b.seconds:.0f} s", wait=round(b.seconds), default_query=default_q), 429
+    except Exception as e:
+        return jsonify(error=f"Search failed ({type(e).__name__})", default_query=default_q), 502
+    res = fgmod.rank([dict(r) for r in res], perfs, studios, f["release_date"], pref_used)
+    return jsonify(default_query=default_q, prefix=prefix, tried=tried, results=res[:60])
+
+@app.post("/api/films/<int:fid>/findgallery/download")
+def findgallery_download(fid):
+    """{url, overwrite?}: run gallery-dl into '<video stem> - GALLERY' beside the video (one job at a time)."""
+    g, err = _fg_scene(fid)
+    if err: return err
+    c, f, path = g; d = request.json or {}
+    if not path: return jsonify(error="This scene has no video file"), 400
+    url = fgmod.normalize_url(d.get("url"))
+    if not url: return jsonify(error="Paste a vipergirls.to thread link (https://vipergirls.to/threads/…); bare /posts/ links can't be downloaded"), 400
+    if fgmod.DL.get("running"): return jsonify(error="A gallery download is already running"), 409
+    dest = gallerymod.canonical_dir(path)
+    kind, cur = gallerymod.find(path, db.VIDEO_EXT)
+    existing = len(gallerymod.images(cur)) if cur else 0
+    if existing and not d.get("overwrite"):
+        return jsonify(error=f"This scene already has a gallery with {existing} photos", confirm=True, existing=existing), 409
+    def done(): scene_gallery(C(), fid)
+    fgmod.DL.update(running=True, film_id=fid, files=0, error=None)
+    threading.Thread(target=fgmod.run_download, args=(url, dest, done), daemon=True).start()
+    return jsonify(ok=True, url=url, dest=os.path.basename(dest))
+
+@app.get("/api/findgallery/status")
+def findgallery_status():
+    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at")}
+    j["dest"] = os.path.basename(fgmod.DL.get("dest") or "")
+    return jsonify(j)
+
+@app.post("/api/findgallery/cancel")
+def findgallery_cancel():
+    fgmod.DL["cancel"] = True; return jsonify(ok=True)
+
+@app.post("/api/galleries/refresh")
+def galleries_refresh():
+    found = refresh_galleries()
+    return jsonify(scenes=len(found), photos=sum(found.values()))
+
+threading.Thread(target=lambda: (time.sleep(3), refresh_galleries()), daemon=True).start()  # detect galleries in the background at startup
 
 TP = {"running": False, "kind": "tpdb"}
 TP_LOCK = threading.Lock()

@@ -263,6 +263,8 @@ def connect():
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
     if "studio" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio TEXT")  # comma-separated production company names
     if "studio_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio_checked INTEGER")  # backfill tried
+    if "gallery_path" not in cols: c.execute("ALTER TABLE films ADD COLUMN gallery_path TEXT")  # scene photo gallery folder (gallery.py)
+    if "gallery_count" not in cols: c.execute("ALTER TABLE films ADD COLUMN gallery_count INTEGER")
     c.execute("CREATE TABLE IF NOT EXISTS studio_aliases(alias_key TEXT PRIMARY KEY, alias TEXT NOT NULL, canonical TEXT NOT NULL)")  # hidden studio spellings
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
@@ -379,6 +381,10 @@ def strip_title_quotes(t):
     s = re.sub(r'["\u201c\u201d\u201e\u00ab\u00bb]', '', t)
     return re.sub(r'\s{2,}', ' ', s).strip()
 
+def is_gallery_dir(name):
+    import gallery
+    return gallery.is_gallery_dir(name)
+
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}
     sroots = scene_roots(c)
@@ -387,7 +393,7 @@ def scan(c, roots, progress=None):
         if not os.path.isdir(root):
             errors.append(f"Not a folder or not reachable: {root}"); continue
         for dp, dns, fns in os.walk(root, onerror=lambda e: errors.append(str(e))):
-            dns[:] = [d for d in dns if not d.startswith(("$", "."))]
+            dns[:] = [d for d in dns if not d.startswith(("$", ".")) and not is_gallery_dir(d)]  # photo galleries are never catalogue items
             if progress.get("cancel"): break
             progress.update(found=len(seen), added=added, current=dp)
             for fn in fns:

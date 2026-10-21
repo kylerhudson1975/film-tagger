@@ -9,7 +9,7 @@ printf 'python312.zip\r\n.\r\nLib\\site-packages\r\n..\r\n\r\nimport site\r\n' >
 pip install -q --target "$B/stage/python/Lib/site-packages" --platform win_amd64 --python-version 3.12 \
   --implementation cp --only-binary=:all: -r "$SRC/requirements.txt" colorama
 rm -rf "$B/stage/python/Lib/site-packages/bin"
-for f in app.py db.py people.py resolution.py subtitles.py tpdb.py smarttag.py focus.py FilmTagger.vbs LICENSE README.md INSTALL.txt SMART_TAG_PROMPT.txt requirements.txt; do cp "$SRC/$f" "$B/stage/"; done
+for f in app.py db.py people.py resolution.py subtitles.py tpdb.py smarttag.py focus.py gallery.py findgallery.py FilmTagger.vbs LICENSE THIRD_PARTY.md README.md INSTALL.txt SMART_TAG_PROMPT.txt requirements.txt; do cp "$SRC/$f" "$B/stage/"; done
 mkdir "$B/stage/static" && cp "$SRC"/static/* "$B/stage/static/"
 mkdir "$B/stage/models" && cp "$SRC"/models/* "$B/stage/models/"
 find "$B/stage" -name __pycache__ -prune -exec rm -rf {} +
