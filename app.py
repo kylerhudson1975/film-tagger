@@ -5,8 +5,9 @@ import db
 import resolution as resmod
 import subtitles as submod
 import tpdb
+import focus as focusmod
 
-APP_VERSION = "1.0.42"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.0.43"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -133,7 +134,7 @@ def build_query(q):
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
-         "added": "f.added_at", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
+         "added": "f.added_at", "edited": "COALESCE(f.updated_at, f.added_at)", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
 
 def attach(c, films, full=False):
     if not films: return films
@@ -278,13 +279,13 @@ def set_poster(fid):
         except Exception:
             pass
         if val is None: _drop_local_poster(c, fid); val = url
-    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit()
+    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note=note))
 
 @app.delete("/api/films/<int:fid>/poster")
 def remove_poster(fid):
     c = C(); _drop_local_poster(c, fid)
-    c.execute("UPDATE films SET custom_poster=NULL, updated_at=? WHERE id=?", (time.time(), fid)); c.commit()
+    c.execute("UPDATE films SET custom_poster=NULL, updated_at=? WHERE id=?", (time.time(), fid)); c.commit(); kick_focus()
     return get_film(fid)
 
 @app.get("/api/films/<int:fid>")
@@ -375,6 +376,7 @@ def update_film(fid):
             t = {"name": t} if isinstance(t, str) else t
             db.add_tag(c, fid, t.get("name"), t.get("category"))
     c.commit()
+    if "poster" in changed and old["kind"] == "scene": kick_focus()
     rename_note = None
     if old["kind"] == "scene" and changed & set(SCENE_NAME_FIELDS):  # Rename on Save
         try: rename_note = rename_scene_file(c, fid)[1]
@@ -439,6 +441,7 @@ def bulk_tags():
             db.add_tag(c, fid, t.get("name"), t.get("category"))
         for name in d.get("remove", []):
             c.execute("DELETE FROM film_tags WHERE film_id=? AND tag_id=(SELECT id FROM tags WHERE name=?)", (fid, name))
+        c.execute("UPDATE films SET updated_at=? WHERE id=?", (time.time(), fid))
     c.commit(); return ok()
 
 @app.post("/api/bulk/update")
@@ -797,6 +800,8 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
     upd = {k: v for k, v in upd.items() if k not in ed and k not in TMDB_NEVER and k not in set(keep)}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
+    if upd.get("title"): upd["title"] = db.strip_title_quotes(upd["title"])
+    upd["updated_at"] = time.time()
     gnames = [g.get("name") for g in m.get("genres", []) if g.get("name")]
     if "genres" in m: upd["tmdb_genres"] = json.dumps(gnames, ensure_ascii=False)
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
@@ -1551,11 +1556,12 @@ def apply_scene(c, fid, s, keep=()):
     f = tpdb.scene_fields(s)
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]")) | set(keep)
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
-    if is_review(c, fid): upd.pop("poster", None)  # possibly-underage review flag: never fetch images
+    if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
     upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
     c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
     db.set_primary_genre(c, fid, "Hardcore", only_if_empty=True)
+    if "poster" in upd or "poster_wide" in upd: kick_focus()  # new cover: smart crop runs in the background once committed
 
 def is_review(c, fid):
     r = c.execute("SELECT COALESCE(notes,'') FROM films WHERE id=?", (fid,)).fetchone()
@@ -1758,6 +1764,146 @@ def tpdb_status():
     c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
     return jsonify(job=TP, token_set=bool(db.get_setting(c, "tpdb_key", "")), scenes=q("kind='scene'"),
                    matched=q("kind='scene' AND tpdb_id IS NOT NULL"), unmatched=q("kind='scene' AND tpdb_id IS NULL"))
+
+# ---------- smart poster crop (scenes): horizontal focus for wide covers, computed in memory, nothing stored but the number ----------
+FOC = {"running": False, "kind": "focus"}
+FOC_LOCK = threading.Lock()
+FOC_SQL = ("SELECT id, COALESCE(NULLIF(custom_poster,''), NULLIF(poster_wide,''), poster) src FROM films WHERE kind='scene' AND COALESCE(NULLIF(custom_poster,''), NULLIF(poster_wide,''), poster) IS NOT NULL "
+           "AND COALESCE(notes,'') NOT LIKE '%Review by hand%' AND COALESCE(edited_fields,'') NOT LIKE '%\"poster_focus_x\"%'")
+
+def _poster_bytes(src):
+    if src.startswith("/posters/"):
+        p = os.path.join(POSTERS_DIR, os.path.basename(src))
+        with open(p, "rb") as fh: return fh.read(POSTER_MAX + 1)
+    req = urllib.request.Request(src, headers={"User-Agent": "Mozilla/5.0 FilmTagger", "Accept": "image/*"})
+    with urllib.request.urlopen(req, timeout=20) as r: return r.read(POSTER_MAX + 1)
+
+def focus_one(c, fid, src):
+    """Compute and store the focus for one scene. Returns the method name, or None on failure."""
+    data = _poster_bytes(src)
+    r = focusmod.compute(data) if data and len(data) <= POSTER_MAX else None
+    del data
+    if r is None:
+        c.execute("UPDATE films SET poster_focus_src=?, poster_focus_method='failed' WHERE id=?", (src, fid)); return None
+    x = None if r["method"] == "portrait" else r["x"]
+    c.execute("UPDATE films SET poster_focus_x=?, poster_focus_src=?, poster_focus_method=? WHERE id=? AND COALESCE(edited_fields,'') NOT LIKE '%\"poster_focus_x\"%'",
+              (x, src, r["method"], fid))
+    return r["method"]
+
+def run_focus_job(recheck):
+    time.sleep(1.5)  # let the caller commit the new poster first
+    c = C(); tried = set()
+    try:
+        while not FOC["cancel"]:
+            rows = [r for r in c.execute(FOC_SQL + ("" if recheck else " AND COALESCE(poster_focus_src,'')<>COALESCE(NULLIF(custom_poster,''), NULLIF(poster_wide,''), poster)") + " ORDER BY id").fetchall()
+                    if r[0] not in tried]
+            if not rows:
+                if FOC.pop("again", False): time.sleep(1.5); continue
+                break
+            FOC["total"] = FOC["done"] + len(rows)
+            for fid, src in rows:
+                if FOC["cancel"]: break
+                tried.add(fid)
+                try:
+                    m = focus_one(c, fid, src)
+                    FOC[m or "failed"] = FOC.get(m or "failed", 0) + 1
+                except Exception as e:
+                    FOC["failed"] = FOC.get("failed", 0) + 1; FOC["error"] = f"{type(e).__name__}: {e}"
+                    c.execute("UPDATE films SET poster_focus_src=?, poster_focus_method='failed' WHERE id=?", (src, fid))
+                c.commit(); FOC["done"] += 1
+            recheck = False
+    finally:
+        FOC["running"] = False; FOC["finished_at"] = time.time(); c.close()
+
+def start_focus_job(recheck=False):
+    if not focusmod.available(): return None
+    with FOC_LOCK:
+        if FOC.get("running"): FOC["again"] = True; return False
+        FOC.clear(); FOC.update(running=True, kind="focus", done=0, total=0, failed=0, error=None, cancel=False, started_at=time.time())
+        threading.Thread(target=run_focus_job, args=(bool(recheck),), daemon=True).start()
+        return True
+
+def kick_focus():
+    try: start_focus_job()
+    except Exception: pass
+
+@app.post("/api/focus/start")
+def focus_start():
+    """Smart crop for scene posters that changed or were never checked. {recheck:true} redoes all (hand-set values kept)."""
+    d = (request.json or {}) if request.is_json else {}
+    r = start_focus_job(bool(d.get("recheck")))
+    if r is None: return jsonify(error="Smart crop needs opencv-python-headless and numpy in the app's Python"), 400
+    if r is False: return jsonify(error="Smart crop is already running"), 409
+    return jsonify(FOC)
+
+@app.post("/api/focus/cancel")
+def focus_cancel(): FOC["cancel"] = True; return jsonify(FOC)
+
+@app.get("/api/focus/status")
+def focus_status():
+    c = C(); q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE kind='scene' AND " + w).fetchone()[0]
+    return jsonify(job=FOC, available=focusmod.available(), by_method={r[0] or "unchecked": r[1] for r in c.execute(
+        "SELECT poster_focus_method, COUNT(*) FROM films WHERE kind='scene' AND COALESCE(NULLIF(custom_poster,''), NULLIF(poster_wide,''), poster) IS NOT NULL GROUP BY 1")},
+        hand_set=q("COALESCE(edited_fields,'') LIKE '%\"poster_focus_x\"%'"))
+
+@app.post("/api/films/<int:fid>/focus")
+def set_focus(fid):
+    """{x: 0..1} sets the crop by hand (protected); {auto: true} drops the hand value and re-detects."""
+    c = C(); d = request.json or {}
+    row = c.execute("SELECT edited_fields, COALESCE(NULLIF(custom_poster,''), NULLIF(poster_wide,''), poster) src FROM films WHERE id=?", (fid,)).fetchone()
+    if not row: return jsonify(error="not found"), 404
+    ed = set(json.loads(row["edited_fields"] or "[]"))
+    if d.get("auto"):
+        ed.discard("poster_focus_x"); c.execute("UPDATE films SET edited_fields=? WHERE id=?", (json.dumps(sorted(ed)), fid))
+        if row["src"] and focusmod.available():
+            try: focus_one(c, fid, row["src"])
+            except Exception as e: c.commit(); return jsonify(dict(get_film(fid).json, focus_error=f"{type(e).__name__}: {e}"))
+    else:
+        try: x = min(1.0, max(0.0, float(d.get("x"))))
+        except (TypeError, ValueError): return jsonify(error="x must be a number from 0 to 1"), 400
+        ed.add("poster_focus_x")
+        c.execute("UPDATE films SET poster_focus_x=?, poster_focus_method='manual', edited_fields=?, updated_at=? WHERE id=?", (round(x, 4), json.dumps(sorted(ed)), time.time(), fid))
+    c.commit(); return get_film(fid)
+
+# ---------- refresh ThePornDB image links for matched scenes (wide cover + fresh poster URL) ----------
+IMG = {"running": False, "kind": "tpdb_images"}
+
+def run_img_job(token, ids):
+    c = C(); rl = RateLimiter(2)
+    try:
+        for fid in ids:
+            if IMG["cancel"]: break
+            try:
+                r = c.execute("SELECT tpdb_id, poster, poster_wide, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+                rl.wait(); s = tpdb.get_scene(token, r["tpdb_id"])
+                if not s: IMG["missing"] += 1
+                else:
+                    ed = set(json.loads(r["edited_fields"] or "[]")); f = tpdb.scene_fields(s); upd = {}
+                    if f.get("poster_wide") and f["poster_wide"] != r["poster_wide"]: upd["poster_wide"] = f["poster_wide"]
+                    if f.get("poster") and f["poster"] != r["poster"] and "poster" not in ed: upd["poster"] = f["poster"]
+                    if upd:
+                        c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid]); c.commit()
+                        IMG["wide"] += "poster_wide" in upd; IMG["poster"] += "poster" in upd
+                    else: IMG["unchanged"] += 1
+            except Exception as e:
+                IMG["errors"] += 1; IMG["error"] = tpdb_err(e)
+            IMG["done"] += 1
+    finally:
+        IMG["running"] = False; IMG["finished_at"] = time.time(); c.close(); kick_focus()
+
+@app.post("/api/tpdb/refresh-images")
+def tpdb_refresh_images():
+    """Re-read image links of matched scenes from ThePornDB (never for Review-by-hand scenes; hand-set posters kept)."""
+    c = C(); token = db.get_setting(c, "tpdb_key", "")
+    if not token: return jsonify(error="No ThePornDB API token set in Settings"), 400
+    if IMG.get("running"): return jsonify(error="Already running"), 409
+    ids = [r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene' AND COALESCE(tpdb_id,'')<>'' AND COALESCE(notes,'') NOT LIKE '%Review by hand%' ORDER BY id")]
+    IMG.clear(); IMG.update(running=True, kind="tpdb_images", done=0, total=len(ids), wide=0, poster=0, unchanged=0, missing=0, errors=0, error=None, cancel=False)
+    threading.Thread(target=run_img_job, args=(token, ids), daemon=True).start()
+    return jsonify(IMG)
+
+@app.get("/api/tpdb/refresh-images")
+def tpdb_refresh_images_status(): return jsonify(IMG)
 
 # ---------- About / Check for Updates (read-only: never downloads or runs anything) ----------
 UPD = {"at": 0, "data": None}

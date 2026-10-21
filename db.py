@@ -100,6 +100,8 @@ def connect():
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     c.create_function("title_match", 4, title_match, deterministic=True)
     if "custom_poster" not in cols: c.execute("ALTER TABLE films ADD COLUMN custom_poster TEXT")  # user art; TMDB never touches it
+    for col, typ in (("poster_focus_x", "REAL"), ("poster_focus_src", "TEXT"), ("poster_focus_method", "TEXT"), ("poster_wide", "TEXT")):  # smart crop of wide scene covers
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")
     for col in PEOPLE_COLS:  # extra crew roles (nullable; existing rows untouched)
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     c.create_function("person_in", 2, person_in, deterministic=True)
@@ -214,6 +216,18 @@ def new_scene(c, p, size, root, now):
                      os.path.splitdrive(p)[0] or root, "scene", "Hardcore", now, now))
     c.execute("INSERT INTO files(film_id,path,size) VALUES(?,?,?)", (cur.lastrowid, p, size))
     return cur.lastrowid
+
+QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "\u201e": "\u201c", "'": "'", "\u2018": "\u2019", "\u00ab": "\u00bb"}
+
+def strip_title_quotes(t):
+    """'"Some Title"' -> 'Some Title'. Only a matched pair wrapping the whole title; quotes inside are kept."""
+    if not isinstance(t, str): return t
+    s = t.strip()
+    while len(s) > 2 and s[0] in QUOTE_PAIRS and s[-1] == QUOTE_PAIRS[s[0]]:
+        inner = s[1:-1]
+        if s[0] in inner or s[-1] in inner: break  # e.g. '"A" and "B"': not one wrapping pair
+        s = inner.strip()
+    return s or t
 
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}

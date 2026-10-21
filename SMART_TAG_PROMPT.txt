@@ -15,7 +15,7 @@ Rules:
                NEVER tag hardcore or softcore porn films "Exploitation": there the nudity is the point.
     Content  - notable content/advisories, e.g. violence, nudity, strong language, gore
                For hardcore porn (not softcore or mainstream) always also add "Cum" and "Semen";
-               cumshots are near-universal in hardcore features. Add "Creampie" only with evidence
+               cumshots are near-universal in hardcore features. EXCEPTION: do NOT add Cum/Semen for all-girl/lesbian-only films (no male performers). Add "Creampie" only with evidence
                (internal cumshots, title/plot, or known for it) and "Cumplay" only for cum play,
                swallowing, snowballing, bukkake or cum-swapping. Don't guess these two.
                Each goes in BOTH Content and Kink. Tag names are unique, so use these exact pairs:

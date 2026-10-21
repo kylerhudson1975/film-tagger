@@ -86,16 +86,26 @@ def lookup_legacy(token, path):
         if same: res = same
     return res[0]
 
+def _strip_q(t):
+    import db
+    return db.strip_title_quotes(t)
+
+def wide_image(s):
+    """Full-size landscape cover (the poster is ThePornDB's own 2:3 crop of it), or None."""
+    bg = s.get("background") if isinstance(s.get("background"), dict) else {}
+    u = bg.get("large") or bg.get("full") or s.get("image")
+    return u if u and u != s.get("poster") else None
+
 def scene_fields(s):
     """Map a ThePornDB scene resource to Film Tagger columns."""
     site = s.get("site") or {}
     img = s.get("poster") or s.get("image") or ((s.get("background") or {}).get("large"))
     date = (s.get("date") or "")[:10] or None
     dur = s.get("duration")
-    return dict(title=s.get("title"), studio=site.get("name"), release_date=date, year=int(date[:4]) if date else None,
+    return dict(title=_strip_q(s.get("title")), studio=site.get("name"), release_date=date, year=int(date[:4]) if date else None,
                 cast_=", ".join(p.get("name") for p in (s.get("performers") or []) if p.get("name")) or None,
                 runtime=round(dur / 60) if isinstance(dur, (int, float)) and dur else None, plot=s.get("description") or None,
-                poster=img or None, tpdb_id=str(s.get("id") or s.get("_id") or "") or None,
+                poster=img or None, poster_wide=wide_image(s), tpdb_id=str(s.get("id") or s.get("_id") or "") or None,
                 tags=[t.get("name") for t in (s.get("tags") or []) if t.get("name")])
 
 # ---------- improved multi-strategy identification (v1.0.28) ----------

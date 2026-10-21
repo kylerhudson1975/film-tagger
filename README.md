@@ -7,6 +7,15 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
+## ✨ New in v1.0.43: smart-crop posters
+Most library apps squeeze a wide cover into a poster slot with a blind centre crop, so the people end up cut in half. Film Tagger looks at the picture first.
+- **Smart-crop posters for Scenes:** Film Tagger takes the full-width studio cover, finds the faces with an on-device face detector (YuNet, MIT licence; falls back to a person detector, then to the most detailed area) and centres the 2:3 poster on the people. It runs in the background whenever a cover changes; on the author's own library it re-centred 545 posters automatically. Images are analysed in memory only, nothing leaves your computer.
+- **Focus slider with live preview:** not happy with a crop? Drag the Left/Right slider in the edit window and the poster updates live, in the dialog and in the grid behind it. *Auto* re-detects, *Reset* centres, and your hand-set value is never overwritten.
+- **Sort: Last edited:** jump straight back to whatever you touched most recently, whether that was a tag edit, a poster change or a metadata refresh.
+- Scene titles wrapped in quotation marks are cleaned up automatically, and the smart-tag prompt no longer adds Cum/Semen to all-girl films.
+
+<p align="center"><img src="docs/screenshots/8-smart-crop-grid.png" alt="Smart-cropped poster grid" width="760"></p>
+
 ## Features
 ### Library
 - **Library scan:** recursively finds video files (mkv, mp4, avi, mov, wmv, m4v, mpg, ts, webm, vob, …) in any folders or drives and guesses the title and year from file or folder names. Rescans add new files and flag missing ones. Film libraries are **read-only**: those files are never moved, renamed or deleted. (Scenes libraries can rename files; see below.)
@@ -46,7 +55,13 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **AZNude Status** per film (see below).
 
 ## Screenshots
-All screenshots use a demo library of public-domain classic films and fictional placeholder people.
+All screenshots use a demo library of public-domain classic films and fictional placeholder people; the v1.0.43 screenshots use made-up titles and abstract placeholder artwork.
+
+![Smart-cropped poster grid, sorted by Last edited](docs/screenshots/8-smart-crop-grid.png)
+
+![Focus slider with live poster preview](docs/screenshots/9-focus-slider.png)
+
+![Sort menu with Last edited](docs/screenshots/10-sort-last-edited.png)
 
 Library grid:
 
