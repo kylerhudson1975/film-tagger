@@ -144,6 +144,18 @@ def split_studio(text, folder=None):
     if m: return camel_split(m.group(1)), m.group(2)
     return (camel_split(folder) if folder and folder != "_No Studio" else None), t
 
+ALIAS_SOURCE = None  # set by the app: callable returning db.alias_nrm_map(...)
+_ALIAS_CACHE = {"at": 0, "map": {}}
+
+def performer_aliases():
+    """nrm(name) -> {nrm(alias), ...} from the local people table, refreshed at most once a minute."""
+    import time
+    if ALIAS_SOURCE and time.time() - _ALIAS_CACHE["at"] > 60:
+        try: _ALIAS_CACHE["map"] = ALIAS_SOURCE() or {}
+        except Exception: pass
+        _ALIAS_CACHE["at"] = time.time()
+    return _ALIAS_CACHE["map"]
+
 def score(scene, studio, date, text, aliases=()):
     """Confidence score of a ThePornDB scene vs. what the filename says. Returns (score, reasons) or (-1, ...) on a date clash."""
     site = scene.get("site") or {}
@@ -160,7 +172,14 @@ def score(scene, studio, date, text, aliases=()):
         s += 4; why.append("date")
     fw = set(words(text)); low = nrm(text)
     perfs = [p.get("name") for p in scene.get("performers") or [] if p.get("name")]
-    hit = [p for p in perfs if nrm(p) and nrm(p) in low]
+    amap = performer_aliases()
+    def pnames(p):  # the credited name, ThePornDB's own aliases for it, and aliases known in the local people table
+        ns = {nrm(p.get("name"))}
+        for src in (p, p.get("parent") if isinstance(p.get("parent"), dict) else {}):
+            ns |= {nrm(a) for a in (src.get("aliases") or []) if isinstance(a, str) and len(a.split()) >= 2}
+        ns |= amap.get(nrm(p.get("name")), set())
+        return {n for n in ns if len(n) >= 6}
+    hit = [p.get("name") for p in scene.get("performers") or [] if p.get("name") and any(n in low for n in pnames(p))]
     if hit: s += min(4, 2 * len(hit)); why.append(f"performers {len(hit)}/{len(perfs)}")
     tw = [w for w in words(scene.get("title")) if not re.fullmatch(r"s\d+|e\d+|\d+", w)]
     if tw and set(tw) <= set(words(" ".join(perfs))): tw = []  # title is just the performer names: no extra evidence

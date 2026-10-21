@@ -65,6 +65,83 @@ def person_in(field, name):
     n = norm_person(name)
     return 1 if any(norm_person(x) == n for x in field.split(",")) else 0
 
+# ---------- performer aliases: people.name + people.aliases (+ merges) form one identity ----------
+ALIAS_SEP = "\x1f"
+_AG = {"key": None, "groups": {}}
+
+def _alias_ok(a):
+    """Aliases used to link credits: at least two words (single first names like 'Anna' would match strangers)."""
+    return isinstance(a, str) and len(a.split()) >= 2
+
+def alias_groups(c):
+    """fold(name) -> sorted list of every name of that person (name, multi-word aliases, merged people). Cached."""
+    try:
+        cols = {r[1] for r in c.execute("PRAGMA table_info(people)")}
+        if "aliases" not in cols: return {}
+        mi = "merged_into" if "merged_into" in cols else "NULL"
+        key = tuple(c.execute(f"SELECT COUNT(*), MAX(id), SUM(LENGTH(COALESCE(aliases,''))), SUM(COALESCE({mi},0)) FROM people").fetchone())
+        if _AG["key"] == key: return _AG["groups"]
+        rows = c.execute(f"SELECT id, name, aliases, {mi} FROM people WHERE aliases IS NOT NULL OR {mi} IS NOT NULL").fetchall()
+        extra = {}
+        if any(r[3] for r in rows):
+            ids = {r[3] for r in rows if r[3]}
+            extra = {r[0]: r[1] for r in c.execute(f"SELECT id, name FROM people WHERE id IN ({','.join('?' * len(ids))})", list(ids))}
+    except Exception:
+        return {}
+    parent, disp = {}, {}
+    def find(x):
+        while parent.setdefault(x, x) != x: parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    def node(n):
+        n = " ".join(n.split()); k = fold(n); disp.setdefault(k, n); find(k); return k
+    for pid, name, als, into in rows:
+        if not name: continue
+        a = node(name)
+        try: lst = json.loads(als or "[]")
+        except Exception: lst = []
+        for x in lst:
+            if _alias_ok(x): parent[find(node(x))] = find(a)
+        if into and extra.get(into): parent[find(a)] = find(node(extra[into]))
+    members = {}
+    for k in parent: members.setdefault(find(k), []).append(k)
+    groups = {}
+    for ks in members.values():
+        if len(ks) < 2: continue
+        names = sorted({disp[k] for k in ks}, key=fold)
+        for k in ks: groups[k] = names
+    _AG.update(key=key, groups=groups)
+    return groups
+
+def expand_person(c, name):
+    """Every name the person `name` is known by (itself first)."""
+    n = " ".join((name or "").split())
+    g = alias_groups(c).get(fold(n))
+    return [n] + [x for x in g if fold(x) != fold(n)] if g else [n]
+
+def search_alias_names(c, text):
+    """Names of every aliased person where some name/alias contains all words of `text` (accent/case-insensitive)."""
+    ws = fold(text).split()
+    if not ws or len("".join(ws)) < 3: return []
+    out = []
+    for k, names in alias_groups(c).items():
+        if all(w in k for w in ws): out += names
+    return sorted(set(out), key=fold)
+
+def alias_nrm_map(c):
+    """For ThePornDB matching: alnum-lowercase name -> alnum-lowercase other names of the same person."""
+    nr = lambda s: re.sub(r"[^a-z0-9]", "", fold(s))
+    m = {}
+    for names in alias_groups(c).values():
+        ns = {nr(x) for x in names if nr(x)}
+        for x in ns: m[x] = ns - {x}
+    return m
+
+def person_in_any(field, names):
+    """1 if any comma-separated entry of `field` equals any of the ALIAS_SEP-joined `names`."""
+    if not field or not names: return 0
+    want = {norm_person(x) for x in names.split(ALIAS_SEP)}
+    return 1 if any(norm_person(x) in want for x in field.split(",")) else 0
+
 def tag_norm(s):
     """Spelling-tolerant tag key: casefold, strip accents, drop spaces/hyphens/underscores, and drop one trailing
     's' when at least 4 chars remain. 'Cum play' == 'cumplay' == 'Cum-Play'; 'Cumshots' == 'Cumshot';
@@ -105,6 +182,7 @@ def connect():
     for col in PEOPLE_COLS:  # extra crew roles (nullable; existing rows untouched)
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     c.create_function("person_in", 2, person_in, deterministic=True)
+    c.create_function("person_in_any", 2, person_in_any, deterministic=True)
     c.create_function("fold_in", 2, fold_in, deterministic=True)
     if "country" not in cols: c.execute("ALTER TABLE films ADD COLUMN country TEXT")  # comma-separated country names
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried

@@ -7,6 +7,12 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
+## New in v1.0.45
+- **Performer aliases everywhere:** performers often work under different names at different studios. Cast, People and Everything searches now match any of a performer's aliases (from ThePornDB or added by you), and a person page includes scenes and films credited under every alias.
+- **+ Alias:** add another name for a person straight from their page. Hand-added aliases are kept when the profile is refreshed.
+- **Merge with undo:** found the same performer twice? *⇄ Merge…* folds one person into the other after a confirmation. The other name becomes an alias, cast credits keep working, your files and cast lists are not changed, and each merge can be undone from the person page.
+- **Alias-aware ThePornDB matching:** a file name that credits a performer under an alias now counts as a performer match.
+
 ## New in v1.0.44
 - **Much faster ThePornDB matching:** searches now run in parallel, so finding a scene takes seconds instead of close to a minute.
 - **ThePornDB search box always visible** in the scene edit window, prefilled with the title: tweak it and press Enter.

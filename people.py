@@ -24,7 +24,7 @@ TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing 
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
-             ("tpdb_scenes_total", "INTEGER")]
+             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 
@@ -164,6 +164,7 @@ def init(app, tmdb, posters_dir):
         try: als = json.loads(row["aliases"] or "[]")
         except Exception: als = []
         keys += [fold(" ".join(a.split())) for a in als if isinstance(a, str) and len(a.split()) >= 2]
+        keys += [fold(n) for n in db.expand_person(c, row["name"])]  # linked aliases and merged people
         out = {"names": {}, "roles": {}, "films": set()}
         for k in dict.fromkeys(keys):
             x = idx.get(k)
@@ -236,10 +237,20 @@ def init(app, tmdb, posters_dir):
         for r in c.execute("SELECT name, name_norm FROM people WHERE source='manual'"):
             if r["name_norm"] not in have and all(w in r["name_norm"] for w in q):
                 hits.append((r["name_norm"], {"names": {r["name"]: 1}, "roles": {}, "films": set()}))
+        for k2, names in db.alias_groups(c).items():  # a search for any alias finds the person
+            if all(w in k2 for w in q):
+                for n in names:
+                    kn = fold(n)
+                    if kn not in have and kn in data: hits.append((kn, data[kn])); have.add(kn)
         rows = {r["name_norm"]: r for r in c.execute("SELECT * FROM people WHERE name_norm IN (%s)" % ",".join("?" * len(hits[:lim])), [k for k, _ in hits[:lim]])} if hits else {}
-        out = []
+        out = []; seen_pid = set()
         for k, e in hits[:lim]:
             r = rows.get(k); role = top_role(e) if e["roles"] else "cast"
+            if r and r["merged_into"]:
+                t = c.execute("SELECT * FROM people WHERE id=?", (r["merged_into"],)).fetchone()
+                if t: r = t; k = t["name_norm"]; e = dict(person_entry(c, t), names={t["name"]: 1})
+            if r and r["id"] in seen_pid: continue
+            if r: seen_pid.add(r["id"])
             out.append(dict(name=best_name(e), key=k, pid=r["id"] if r else None, n=len(e["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT[role]),
                             roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r)))
@@ -317,6 +328,11 @@ def init(app, tmdb, posters_dir):
     def person_page(pid):
         c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         if not row: return jsonify(error="Unknown person"), 404
+        hops = 0
+        while row["merged_into"] and hops < 5:  # merged into someone else: show that person
+            t = c.execute("SELECT * FROM people WHERE id=?", (row["merged_into"],)).fetchone()
+            if not t: break
+            row = t; pid = t["id"]; hops += 1
         e = person_entry(c, row)
         lib_ids = sorted(e["films"])
         status, msg = "ok", None
@@ -369,6 +385,17 @@ def init(app, tmdb, posters_dir):
             if row["tpdb_scenes_json"]:
                 scenes = [dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
                                film_id=None, thumb=x["thumb"], poster=None, _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
+        if adult:  # ThePornDB scene lists cached on alias / merged people rows (another performer id for the same person)
+            others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
+            if others:
+                seen_tp = {i for z in (scenes or []) for i in z["_ids"]}
+                for r2 in c.execute(f"SELECT tpdb_scenes_json FROM people WHERE id<>? AND tpdb_scenes_json IS NOT NULL AND name_norm IN ({','.join('?'*len(others))})", [pid] + others):
+                    for x in json.loads(r2[0] or "[]"):
+                        ids = (str(x["id"]), str(x.get("_id") or "-"))
+                        if ids[0] in seen_tp: continue
+                        seen_tp.add(ids[0]); scenes = scenes or []
+                        scenes.append(dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
+                                           film_id=None, thumb=x["thumb"], poster=None, _ids=ids))
         if adult:  # ALL of the user's library scenes for this person (name/aliases or ThePornDB scene id), listed first
             img = not (set(lib_ids) & review_film_ids(c))
             tp_ids = sorted({i for z in (scenes or []) for i in z["_ids"] if i and i != "-"})
@@ -414,6 +441,7 @@ def init(app, tmdb, posters_dir):
             nationality=row["nationality"], measurements=row["measurements"], height=row["height"], career=row["career"],
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"),
+            merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
@@ -507,6 +535,40 @@ def init(app, tmdb, posters_dir):
         if not c.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone(): return jsonify(error="Unknown person"), 404
         err = photo_from_request(c, pid)
         return (jsonify(error=err), 502) if err else jsonify(ok=True)
+
+    @app.post("/api/person/<int:pid>/merge")
+    def person_merge(pid):
+        """Fold another person into this one: {other: person id | name}. The other's name and aliases become (protected)
+        aliases here; their row is kept but points here (merged_into), so links and cast credits keep working."""
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        v = (request.json or {}).get("other")
+        o = None
+        if isinstance(v, int) or (isinstance(v, str) and v.strip().isdigit()):
+            o = c.execute("SELECT * FROM people WHERE id=?", (int(v),)).fetchone()
+        elif isinstance(v, str) and v.strip():
+            o = ensure_row(c, v)
+        if not o: return jsonify(error="Pick the person to merge"), 400
+        if o["id"] == pid: return jsonify(error="That is the same person"), 400
+        if row["merged_into"]: return jsonify(error="This person was merged into someone else"), 400
+        try: als = json.loads(row["aliases"] or "[]")
+        except Exception: als = []
+        try: oal = json.loads(o["aliases"] or "[]")
+        except Exception: oal = []
+        have = {fold(a) for a in als} | {row["name_norm"]}
+        for a in [o["name"]] + oal:
+            if isinstance(a, str) and a.strip() and fold(a) not in have: als.append(" ".join(a.split())); have.add(fold(a))
+        edited = set(json.loads(row["edited_fields"] or "[]")) | {"aliases"}
+        c.execute("UPDATE people SET aliases=?, edited_fields=? WHERE id=?", (json.dumps(als), json.dumps(sorted(edited)), pid))
+        c.execute("UPDATE people SET merged_into=? WHERE id=?", (pid, o["id"]))
+        c.execute("UPDATE people SET merged_into=? WHERE merged_into=?", (pid, o["id"]))  # people merged into the other move along
+        c.commit()
+        return jsonify(ok=True, id=pid, merged=o["name"], aliases=als)
+
+    @app.post("/api/person/<int:pid>/unmerge")
+    def person_unmerge(pid):
+        """Undo a merge for one person row that was merged into another (its name stays as an alias until removed by hand)."""
+        c = C(); c.execute("UPDATE people SET merged_into=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
 
     @app.post("/api/person/<int:pid>/edit")
     def person_edit(pid):

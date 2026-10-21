@@ -7,7 +7,7 @@ import subtitles as submod
 import tpdb
 import focus as focusmod
 
-APP_VERSION = "1.0.44"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.0.45"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -27,6 +27,12 @@ def local_only_guard():
         if oh.lower() not in {"localhost", "127.0.0.1", "::1"}: return jsonify(error="Forbidden origin"), 403
 
 def C(): return db.connect()
+
+def _alias_map():
+    c = db.connect()
+    try: return db.alias_nrm_map(c)
+    finally: c.close()
+tpdb.ALIAS_SOURCE = _alias_map  # ThePornDB matching counts a performer alias as a performer match
 def ok(**k): return jsonify(dict(ok=True, **k))
 
 @app.route("/")
@@ -56,14 +62,20 @@ def build_query(q):
         TITLEQ = "title_match(f.title, f.original_title, COALESCE(f.alt_titles,'') || ' ; ' || COALESCE(f.user_akas,''), ?)"
         single = {"title": TITLEQ, "plot": "f.plot LIKE ?", "cast": "f.cast_ LIKE ?", "director": "f.director LIKE ?",
                   "notes": "f.notes LIKE ?", "tags": TAGQ, "path": PATHQ, "country": "f.country LIKE ?", "studio": "fold_in(f.studio, ?)", "resolution": "f.resolution LIKE ?", "subtitles": "f.subtitles LIKE ?"}
+        tw, ta = [], []
         for w in text.split():
             like = f"%{w}%"
             if field in single:
-                where.append(single[field]); args.append(w if field in ("title", "studio") else like)
-                if field == "tags": args.append(w)
+                tw.append(single[field]); ta.append(w if field in ("title", "studio") else like)
+                if field == "tags": ta.append(w)
             else:
-                where.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR f.subtitles LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
-                args += [w, like, like, like, like, like, w, like, like, w, like, like, w]
+                tw.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR f.subtitles LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
+                ta += [w, like, like, like, like, like, w, like, like, w, like, like, w]
+        als = db.search_alias_names(C(), text) if field in ("cast", "people", "all") else []
+        if als:  # performer aliases: 'Erica Black' also finds scenes credited to 'Daphne Klyde'
+            where.append("((" + " AND ".join(tw) + ") OR person_in_any(f.cast_, ?))"); args += ta + [db.ALIAS_SEP.join(als)]
+        else:
+            where += tw; args += ta
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
                          ("rating_max", "rating", "<="), ("runtime_min", "runtime", ">="), ("runtime_max", "runtime", "<=")]:
         v = q.get(key)
@@ -101,7 +113,8 @@ def build_query(q):
     if person:  # exact name match against stored people lists (not a text search)
         role = q.get("prole") or ""
         cols = [db.PEOPLE_ROLES[role]] if role in db.PEOPLE_ROLES else list(db.PEOPLE_ROLES.values())
-        where.append("(" + " OR ".join(f"person_in(f.{col}, ?)" for col in cols) + ")"); args += [person] * len(cols)
+        names = db.ALIAS_SEP.join(db.expand_person(C(), person))  # the person under any of their aliases
+        where.append("(" + " OR ".join(f"person_in_any(f.{col}, ?)" for col in cols) + ")"); args += [names] * len(cols)
     decs = [int(x) for x in split_list(q.get("decade")) if x.isdigit()]
     if decs:  # OR across decades
         where.append("(" + " OR ".join("(f.year>=? AND f.year<?)" for _ in decs) + ")")
@@ -214,7 +227,7 @@ def people():
     if role and role not in db.PEOPLE_ROLES: return jsonify(error="unknown role"), 400
     c = C(); counts = {}
     for r, col in db.PEOPLE_ROLES.items():
-        counts[r] = c.execute(f"SELECT COUNT(*) FROM films WHERE person_in({col}, ?)", (name,)).fetchone()[0]
+        counts[r] = c.execute(f"SELECT COUNT(*) FROM films WHERE person_in_any({col}, ?)", (db.ALIAS_SEP.join(db.expand_person(c, name)),)).fetchone()[0]
     where, args = build_query({"person": name, "prole": role})
     rows = c.execute(f"SELECT f.id, f.title, f.year FROM films f {where} ORDER BY f.year IS NULL, f.year, f.title COLLATE FOLD", args).fetchall()
     return jsonify(name=name, role=role or None, total=len(rows), counts=counts,
