@@ -14,7 +14,7 @@ Most library apps squeeze a wide cover into a poster slot with a blind centre cr
 - **Sort: Last edited:** jump straight back to whatever you touched most recently, whether that was a tag edit, a poster change or a metadata refresh.
 - Scene titles wrapped in quotation marks are cleaned up automatically, and the smart-tag prompt no longer adds Cum/Semen to all-girl films.
 
-<p align="center"><img src="docs/screenshots/8-smart-crop-grid.png" alt="Smart-cropped poster grid" width="760"></p>
+<p align="center"><img src="docs/screenshots/0-smart-crop-before-after.png" alt="Plain centre crop vs Film Tagger smart crop" width="900"></p>
 
 ## Features
 ### Library
@@ -55,7 +55,9 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **AZNude Status** per film (see below).
 
 ## Screenshots
-All screenshots use a demo library of public-domain classic films and fictional placeholder people; the v1.0.43 screenshots use made-up titles and abstract placeholder artwork.
+All screenshots use a demo library of public-domain classic films and fictional placeholder people; the v1.0.43 screenshots use made-up titles and studios, AI-generated covers of fictional people, and abstract placeholder artwork.
+
+![Plain centre crop (top) vs Film Tagger smart crop (bottom)](docs/screenshots/0-smart-crop-before-after.png)
 
 ![Smart-cropped poster grid, sorted by Last edited](docs/screenshots/8-smart-crop-grid.png)
 
