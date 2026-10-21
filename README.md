@@ -7,6 +7,12 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
+## New in v1.0.44
+- **Much faster ThePornDB matching:** searches now run in parallel, so finding a scene takes seconds instead of close to a minute.
+- **ThePornDB search box always visible** in the scene edit window, prefilled with the title: tweak it and press Enter.
+- **Smarter default sort:** picking the Porn Scenes library sorts by Studio; other libraries sort by Title.
+- **Cleaner titles:** double quotation marks (straight, curly and « ») are removed anywhere in a scene title; apostrophes are kept.
+
 ## ✨ New in v1.0.43: smart-crop posters
 Most library apps squeeze a wide cover into a poster slot with a blind centre crop, so the people end up cut in half. Film Tagger looks at the picture first.
 - **Smart-crop posters for Scenes:** Film Tagger takes the full-width studio cover, finds the faces with an on-device face detector (YuNet, MIT licence; falls back to a person detector, then to the most detailed area) and centres the 2:3 poster on the people. It runs in the background whenever a cover changes; on the author's own library it re-centred 545 posters automatically. Images are analysed in memory only, nothing leaves your computer.

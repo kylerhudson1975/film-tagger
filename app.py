@@ -7,7 +7,7 @@ import subtitles as submod
 import tpdb
 import focus as focusmod
 
-APP_VERSION = "1.0.43"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.0.44"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")

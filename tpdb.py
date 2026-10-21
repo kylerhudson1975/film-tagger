@@ -187,6 +187,14 @@ def is_confident(sv, why):
 CONFIDENT = 7   # e.g. studio + title (3+4), studio + date (3+4), studio + 2 performers + partial title
 REVIEW = 5      # reported as low-confidence candidates, never applied automatically
 
+def _fetch_all(fetch, qs, workers=6):
+    """Run ThePornDB searches in parallel (each takes ~7-13 s on their side); results in the same order, None on error."""
+    from concurrent.futures import ThreadPoolExecutor
+    def one(q):
+        try: return fetch("/scenes", **q).get("data") or []
+        except Exception: return None
+    with ThreadPoolExecutor(max_workers=min(workers, max(1, len(qs)))) as ex: return list(ex.map(one, qs))
+
 def identify(token, path, folder=None, fetch=None, site_cache=None):
     """Try strategies in order; return dict(scene, score, why, strategy, confident) for the best candidate, or None.
     fetch(path, **params) does the HTTP call (injectable for tests); defaults to call() with retries."""
@@ -218,9 +226,9 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
     short = " ".join(rest.split()[:7])
     if site_name and short: queries.append(("studio+text", dict(q=short, site=site_name)))
     if short: queries.append(("text", dict(q=short)))
-    for strat, q in queries:
-        try: consider(fetch("/scenes", **q).get("data") or [], strat)
-        except Exception: continue
+    for (strat, q), res in zip(queries, _fetch_all(fetch, [q for _, q in queries])):
+        if res is None: continue
+        consider(res, strat)
         if best and best["score"] >= CONFIDENT + 2: break
     if best: best["confident"] = is_confident(best["score"], best["why"])
     return best
@@ -258,9 +266,8 @@ def candidates(token, path, query=None, limit=8, fetch=None, site_cache=None):
     if site_name and short: qs.append(dict(q=short, site=site_name))
     if short: qs.append(dict(q=short))
     seen, out = set(), []
-    for q in qs:
-        try: res = fetch("/scenes", **q).get("data") or []
-        except Exception: continue
+    for res in _fetch_all(fetch, qs):
+        if res is None: continue
         for sc in res[:10]:
             k = sc.get("id") or sc.get("_id")
             if not k or k in seen: continue

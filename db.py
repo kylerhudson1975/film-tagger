@@ -220,14 +220,10 @@ def new_scene(c, p, size, root, now):
 QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "\u201e": "\u201c", "'": "'", "\u2018": "\u2019", "\u00ab": "\u00bb"}
 
 def strip_title_quotes(t):
-    """'"Some Title"' -> 'Some Title'. Only a matched pair wrapping the whole title; quotes inside are kept."""
-    if not isinstance(t, str): return t
-    s = t.strip()
-    while len(s) > 2 and s[0] in QUOTE_PAIRS and s[-1] == QUOTE_PAIRS[s[0]]:
-        inner = s[1:-1]
-        if s[0] in inner or s[-1] in inner: break  # e.g. '"A" and "B"': not one wrapping pair
-        s = inner.strip()
-    return s or t
+    """Remove double quotation marks (straight, curly, guillemets) anywhere in a title; apostrophes are kept."""
+    if not t: return t
+    s = re.sub(r'["\u201c\u201d\u201e\u00ab\u00bb]', '', t)
+    return re.sub(r'\s{2,}', ' ', s).strip()
 
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}
