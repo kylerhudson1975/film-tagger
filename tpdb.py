@@ -144,6 +144,21 @@ def split_studio(text, folder=None):
     if m: return camel_split(m.group(1)), m.group(2)
     return (camel_split(folder) if folder and folder != "_No Studio" else None), t
 
+_STUDIO_CACHE = {}
+
+def studio_group(studio):
+    """[studio, its main name / other local aliases] from the studio_aliases table (cached for a minute)."""
+    import time
+    if not studio: return []
+    k = nrm(studio); hit = _STUDIO_CACHE.get(k)
+    if hit and time.time() - hit[0] < 60: return hit[1]
+    try:
+        import db
+        names = list(dict.fromkeys([studio] + db.studio_names(studio)))
+    except Exception: names = [studio]
+    _STUDIO_CACHE[k] = (time.time(), names)
+    return names
+
 ALIAS_SOURCE = None  # set by the app: callable returning db.alias_nrm_map(...)
 _ALIAS_CACHE = {"at": 0, "map": {}}
 
@@ -164,7 +179,7 @@ def score(scene, studio, date, text, aliases=()):
         if isinstance(site.get(k), dict): names.add(nrm(site[k].get("name")))
     names.discard("")
     s, why = 0, []
-    keys = {nrm(studio)} | {nrm(a) for a in aliases}; keys.discard("")  # the filename's studio and its ThePornDB spellings
+    keys = {nrm(studio)} | {nrm(a) for a in aliases} | {nrm(a) for a in studio_group(studio)}; keys.discard("")  # the filename's studio and its ThePornDB spellings
     if any(n == sk or (len(n) > 4 and len(sk) > 4 and (n in sk or sk in n)) for n in names for sk in keys): s += 3; why.append("studio")
     rd = (scene.get("date") or "")[:10]
     if date and rd:
@@ -310,11 +325,15 @@ def resolve_site(fetch, studio, cache=None):
     k = nrm(studio)
     if cache is not None and k in cache: return cache[k]
     out = []
-    try:
-        for r in (fetch("/sites", q=studio).get("data") or [])[:10]:
-            for nm in (r.get("name"), r.get("short_name")):
-                if nm and nrm(nm) == k: out.append(r.get("name"))
-    except Exception: pass
+    names = studio_group(studio)  # the studio and its local aliases ('Angels Love' / 'angels.love')
+    keys = {nrm(n) for n in names}
+    for q in names:
+        try:
+            for r in (fetch("/sites", q=q).get("data") or [])[:10]:
+                for nm in (r.get("name"), r.get("short_name")):
+                    if nm and nrm(nm) in keys: out.append(r.get("name"))
+        except Exception: pass
+        if out: break
     out = list(dict.fromkeys(out))
     if cache is not None: cache[k] = out
     return out

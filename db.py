@@ -142,6 +142,81 @@ def person_in_any(field, names):
     want = {norm_person(x) for x in names.split(ALIAS_SEP)}
     return 1 if any(norm_person(x) in want for x in field.split(",")) else 0
 
+# ---------- studio aliases: hidden spellings (e.g. 'angels.love') -> one main name ('Angels Love') ----------
+def studio_key(s):
+    """Case-, accent- and punctuation-insensitive studio key: 'angels.love' == 'Angels Love' == 'ANGELS-LOVE'."""
+    return re.sub(r"[^0-9a-z]", "", fold(s or ""))
+
+_SA = {"key": None, "map": {}}
+
+def studio_alias_map(c=None):
+    """studio_key(alias) -> canonical name. Cached; reloaded when the table changes."""
+    own = c is None
+    if own: c = connect()
+    try:
+        try: key = tuple(c.execute("SELECT COUNT(*), COALESCE(SUM(LENGTH(alias_key)+LENGTH(canonical)),0) FROM studio_aliases").fetchone())
+        except sqlite3.Error: return {}
+        if _SA["key"] != key:
+            _SA.update(key=key, map={r[0]: r[1] for r in c.execute("SELECT alias_key, canonical FROM studio_aliases")})
+        return _SA["map"]
+    finally:
+        if own: c.close()
+
+def canon_studio(v, c=None):
+    """Map every entry of a comma-separated studio value to its main name (unknown names unchanged)."""
+    if not v or not isinstance(v, str): return v
+    m = studio_alias_map(c)
+    if not m: return v
+    parts = [x for x in v.split(",") if x.strip()]
+    if not any(studio_key(x) in m for x in parts): return v  # no alias involved: leave the value exactly as it is
+    out = [m.get(studio_key(x), x.strip()) for x in parts]
+    return ", ".join(dict.fromkeys(out)) or None
+
+def studio_names(name, c=None):
+    """A studio's main name followed by all its aliases (for search and ThePornDB matching)."""
+    m = studio_alias_map(c); k = studio_key(name)
+    main = m.get(k, name.strip() if name else name)
+    mk = studio_key(main)
+    rows = [main]
+    if c is None: c2 = connect()
+    else: c2 = c
+    try: rows += [r[0] for r in c2.execute("SELECT alias FROM studio_aliases WHERE canonical=? OR alias_key=?", (main, mk))]
+    except sqlite3.Error: pass
+    finally:
+        if c is None: c2.close()
+    return list(dict.fromkeys(x for x in rows if x))
+
+def studio_alias_search(text, c=None):
+    """Main names of studios with an alias whose key contains the search text's key (e.g. 'angels.love')."""
+    k = studio_key(text)
+    if len(k) < 3: return []
+    return sorted({main for ak, main in studio_alias_map(c).items() if k in ak or k in studio_key(main)}, key=fold)
+
+def add_studio_alias(c, alias, canonical, apply=True):
+    """Make `alias` a hidden spelling of `canonical`; optionally rewrite existing films. Returns films updated."""
+    import time as _t
+    alias, canonical = " ".join((alias or "").split()), " ".join((canonical or "").split())
+    ak, ck = studio_key(alias), studio_key(canonical)
+    if not ak or not ck: raise ValueError("Both names are required")
+    if alias == canonical: raise ValueError("Those are the same studio name")
+    if ak != ck: c.execute("DELETE FROM studio_aliases WHERE alias_key=?", (ck,))  # the new main name is no longer an alias
+    c.execute("UPDATE studio_aliases SET canonical=? WHERE canonical=? OR alias_key IN (SELECT alias_key FROM studio_aliases WHERE canonical=?)", (canonical, alias, alias))
+    c.execute("INSERT OR REPLACE INTO studio_aliases(alias_key, alias, canonical) VALUES(?,?,?)", (ak, alias, canonical))
+    _SA["key"] = None
+    n = 0
+    if apply:
+        now = _t.time()  # numeric, like every other updated_at
+        for fid, st in c.execute("SELECT id, studio FROM films WHERE studio IS NOT NULL AND studio<>''").fetchall():
+            new = canon_studio(st, c)
+            if new != st:
+                c.execute("UPDATE films SET studio=?, updated_at=? WHERE id=?", (new, now, fid)); n += 1
+    c.commit()
+    return n
+
+def remove_studio_alias(c, alias):
+    """Forget a studio alias (films keep their current main name)."""
+    c.execute("DELETE FROM studio_aliases WHERE alias_key=?", (studio_key(alias),)); c.commit(); _SA["key"] = None
+
 def tag_norm(s):
     """Spelling-tolerant tag key: casefold, strip accents, drop spaces/hyphens/underscores, and drop one trailing
     's' when at least 4 chars remain. 'Cum play' == 'cumplay' == 'Cum-Play'; 'Cumshots' == 'Cumshot';
@@ -188,6 +263,7 @@ def connect():
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
     if "studio" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio TEXT")  # comma-separated production company names
     if "studio_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio_checked INTEGER")  # backfill tried
+    c.execute("CREATE TABLE IF NOT EXISTS studio_aliases(alias_key TEXT PRIMARY KEY, alias TEXT NOT NULL, canonical TEXT NOT NULL)")  # hidden studio spellings
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
     if "primary_genre" not in cols: c.execute("ALTER TABLE films ADD COLUMN primary_genre TEXT")  # single main genre; hand edits protected
@@ -290,7 +366,7 @@ def new_scene(c, p, size, root, now):
     n = tpdb.parse_name(p)
     t = tpdb.default_title(n) or os.path.splitext(os.path.basename(p))[0]
     cur = c.execute("INSERT INTO films(title,year,release_date,studio,cast_,storage,kind,primary_genre,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (t, int(n["date"][:4]) if n["date"] else None, n["date"], n["studio"], ", ".join(n["performers"]) or None,
+                    (t, int(n["date"][:4]) if n["date"] else None, n["date"], canon_studio(n["studio"], c), ", ".join(n["performers"]) or None,
                      os.path.splitdrive(p)[0] or root, "scene", "Hardcore", now, now))
     c.execute("INSERT INTO files(film_id,path,size) VALUES(?,?,?)", (cur.lastrowid, p, size))
     return cur.lastrowid

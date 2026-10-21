@@ -7,7 +7,7 @@ import subtitles as submod
 import tpdb
 import focus as focusmod
 
-APP_VERSION = "1.0.45"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.0.46"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -72,8 +72,12 @@ def build_query(q):
                 tw.append(f"({TITLEQ} OR f.director LIKE ? OR f.cast_ LIKE ? OR f.plot LIKE ? OR f.notes LIKE ? OR f.country LIKE ? OR fold_in(f.studio, ?) OR f.resolution LIKE ? OR f.subtitles LIKE ? OR CAST(f.year AS TEXT)=? OR {PATHQ} OR {TAGQ})")
                 ta += [w, like, like, like, like, like, w, like, like, w, like, like, w]
         als = db.search_alias_names(C(), text) if field in ("cast", "people", "all") else []
-        if als:  # performer aliases: 'Erica Black' also finds scenes credited to 'Daphne Klyde'
-            where.append("((" + " AND ".join(tw) + ") OR person_in_any(f.cast_, ?))"); args += ta + [db.ALIAS_SEP.join(als)]
+        sts = [n for m in db.studio_alias_search(text) for n in db.studio_names(m)] if field in ("studio", "cast", "all") else []
+        ors, oa = [], []
+        if als: ors.append("person_in_any(f.cast_, ?)"); oa.append(db.ALIAS_SEP.join(als))  # performer aliases: 'Erica Black' also finds 'Daphne Klyde'
+        if sts: ors.append("person_in_any(f.studio, ?)"); oa.append(db.ALIAS_SEP.join(sts))  # studio aliases: 'angels.love' finds 'Angels Love'
+        if ors:
+            where.append("((" + " AND ".join(tw) + ") OR " + " OR ".join(ors) + ")"); args += ta + oa
         else:
             where += tw; args += ta
     for key, col, op in [("year_min", "year", ">="), ("year_max", "year", "<="), ("rating_min", "rating", ">="),
@@ -122,7 +126,7 @@ def build_query(q):
     for cn in split_list(q.get("country")):  # exact country name (one entry of the comma-separated list)
         where.append("person_in(f.country, ?)"); args.append(cn)
     for st in split_list(q.get("studio")):  # exact studio name (one entry of the comma-separated list)
-        where.append("person_in(f.studio, ?)"); args.append(st)
+        where.append("person_in_any(f.studio, ?)"); args.append(db.ALIAS_SEP.join(db.studio_names(st)))
     rs = split_list(q.get("res"))
     if rs:  # OR across resolutions; "(none)" = not set
         parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
@@ -184,6 +188,25 @@ def decades():
 def resolutions():
     n = dict(C().execute("SELECT COALESCE(resolution,''), COUNT(*) FROM films GROUP BY 1").fetchall())
     return jsonify([dict(name=r, n=n.get(r, 0)) for r in resmod.CHOICES] + [dict(name="(none)", n=n.get("", 0))])
+
+@app.get("/api/studio-aliases")
+def studio_aliases_list():
+    c = C()
+    return jsonify(aliases=[dict(alias=r[0], canonical=r[1]) for r in c.execute("SELECT alias, canonical FROM studio_aliases ORDER BY canonical COLLATE FOLD, alias COLLATE FOLD")])
+
+@app.post("/api/studio-aliases")
+def studio_aliases_add():
+    """{alias: 'angels.love', canonical: 'Angels Love'}: merge a studio spelling into a main name (updates films)."""
+    d = request.json or {}; c = C()
+    try: n = db.add_studio_alias(c, d.get("alias"), d.get("canonical"))
+    except ValueError as e: return jsonify(error=str(e)), 400
+    return jsonify(ok=True, updated=n)
+
+@app.delete("/api/studio-aliases")
+def studio_aliases_remove():
+    a = (request.args.get("alias") or (request.get_json(silent=True) or {}).get("alias") or "").strip()
+    if not a: return jsonify(error="alias required"), 400
+    db.remove_studio_alias(C(), a); return jsonify(ok=True)
 
 @app.get("/api/studios")
 def studios():
@@ -326,6 +349,7 @@ def clean(d):
                 if k == "rating" and v is not None: v = max(1, min(10, v))
             if k == "watched": v = 1 if v in (True, 1, "1", "true") else 0
             if k in ("country", "studio"): v = ", ".join(dict.fromkeys(split_list(v or ""))) or None
+            if k == "studio": v = db.canon_studio(v)  # hidden studio aliases -> main name
             if k == "primary_genre": v = " ".join((v or "").split()) or None
             if k == "aznude_status": v = db.norm_aznude_status(v)
             if k == "subtitles": v = " ".join((v or "").split()) or None
@@ -808,7 +832,7 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
         if countries_of(m): upd["country"] = countries_of(m)
         upd["country_checked"] = 1
     if "production_companies" in m:
-        if studios_of(m): upd["studio"] = studios_of(m)
+        if studios_of(m): upd["studio"] = db.canon_studio(studios_of(m), c)
         upd["studio_checked"] = 1
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
     upd = {k: v for k, v in upd.items() if k not in ed and k not in TMDB_NEVER and k not in set(keep)}
@@ -1014,7 +1038,7 @@ def run_studio_job(key, ids):
             if JOB["cancel"]: break
             try:
                 rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
-                st = studios_of(m)
+                st = db.canon_studio(studios_of(m), c)
                 cur = c.execute("UPDATE films SET studio=? WHERE id=? AND (studio IS NULL OR studio='') AND COALESCE(edited_fields,'') NOT LIKE '%\"studio\"%'", (st, fid)) if st else None
                 if cur is not None and cur.rowcount: JOB["matched"] += 1
                 else: JOB["skipped"] += 1
@@ -1113,7 +1137,7 @@ def bulk_studio():
     try: ids = [int(i) for i in d.get("film_ids", [])]
     except (TypeError, ValueError): return jsonify(error="bad film_ids"), 400
     v = ", ".join(dict.fromkeys(split_list(d.get("studio") or ""))) or None
-    c = C(); now = time.time(); n = 0
+    c = C(); now = time.time(); n = 0; v = db.canon_studio(v, c)
     try:
         for fid in ids:
             r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
@@ -1570,6 +1594,7 @@ def apply_scene(c, fid, s, keep=()):
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]")) | set(keep)
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
     if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
+    if upd.get("studio"): upd["studio"] = db.canon_studio(upd["studio"], c)  # 'angels.love' -> 'Angels Love'
     upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
     c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
