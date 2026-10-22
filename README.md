@@ -7,7 +7,15 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.1.1](#whats-new-in-v111) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.1.2
+- **Studio click fixed:** clicking a studio finds all its scenes, including names with apostrophes, spelling variants and scenes matched only by folder.
+- **Removed stays removed after moves:** a removed scene is recognised by name + size even after its file moves to another folder or drive.
+- **Better removed-items list:** sorted by studio, then first performer, then date, and showing studio and performers. Removing a scene now saves its studio, cast and date.
+- **Scans fill a blank studio** from the folder the scene is in.
+- **Sturdier gallery downloads:** downloads keep going past failed images, retry only the failed links, de-duplicate sets that were posted twice, show an accurate failed count and skip dead image hosts.
+- **Real Porn Scenes screenshots** in the README, captured and censored by the author.
 
 ## What's new in v1.1.1
 A reliability and polish release for Scenes libraries, focused on Find Gallery, gallery downloads and studios.
@@ -18,7 +26,7 @@ A reliability and polish release for Scenes libraries, focused on Find Gallery, 
 - **Smarter search order:** each performer **alone** first (thread titles often leave out co-stars), then their **aliases** (from your library or ThePornDB), then **performers + studio**, and finally a **last-name fallback** with the studio prefix, labelled *last-name match* and ranked below full-name hits.
 - **Never searches by title**, and scenes without a ThePornDB match use only performer names you already know.
 
-<p align="center"><img src="docs/screenshots/11-find-gallery.png" alt="Find Gallery panel with ranked results " width="900"></p>
+<p align="center"><img src="docs/screenshots/scenes-06-find-gallery.jpg" alt="Find Gallery results" width="900"></p>
 
 ### ⬇️ Gallery downloads that finish
 - **gallery-dl runs as a separate process with a log file**, which fixes the freeze where a download stalled at 0 files.
@@ -27,14 +35,14 @@ A reliability and polish release for Scenes libraries, focused on Find Gallery, 
 - **Dead image hosts are skipped:** hosts that no longer resolve (DNS failure) are left out and the rest of the set is still downloaded, with a note naming the skipped hosts.
 - When it finishes, the scene's 📷 badge and **From Gallery** poster picker update straight away.
 
-<p align="center"><img src="docs/screenshots/12-gallery-download.png" alt="Gallery download with live file count and Cancel " width="900"></p>
+<p align="center"><img src="docs/screenshots/scenes-07-gallery-downloading.jpg" alt="Gallery downloading" width="900"></p>
 
-<p align="center"><img src="docs/screenshots/12b-from-gallery.png" alt="From Gallery poster picker with placeholder photos " width="900"></p>
+<p align="center"><img src="docs/screenshots/scenes-08-gallery-done.jpg" alt="Freshly downloaded gallery" width="900"></p>
 
 ### 🎯 ThePornDB Fetch on matched scenes shows choices
 Clicking **Fetch from ThePornDB** on a scene that is already matched no longer silently re-applies the match. It shows the candidates with your **current match** marked at the top, so you can keep it or switch with **Use**.
 
-<p align="center"><img src="docs/screenshots/13-tpdb-fetch-choices.png" alt="Fetch choices with the current match marked " width="900"></p>
+<p align="center"><img src="docs/screenshots/scenes-05-tpdb-choices.jpg" alt="ThePornDB choices" width="900"></p>
 
 ### 🏷️ Related studios
 In **Library & Settings → Related studios**, link a sub-label to its parent studio (e.g. *Northwind Classics* ⇐ *Northwind Pictures*). ThePornDB matching counts either as the same studio, a match never changes your studio to the other label, and nothing is renamed.
@@ -46,7 +54,7 @@ In **Library & Settings → Related studios**, link a sub-label to its parent st
 - **Performer names on cards**, under the title.
 - **Studio click fixed:** clicking a studio finds all its scenes even with apostrophes, spelling variants or scenes that only match by folder.
 
-<p align="center"><img src="docs/screenshots/14-studio-sort-performers.png" alt="Studio sort with performer names on cards " width="900"></p>
+<p align="center"><img src="docs/screenshots/scenes-02-one-studio.jpg" alt="One studio (scenes sorted by performer)" width="900"></p>
 
 ### 💽 Multiple scene roots, one library
 - Scene folders on several drives (e.g. `D:\Porn Scenes` and `L:\Porn Scenes`) are shown as **one library**, with studio sub-folders merged.
@@ -56,7 +64,7 @@ In **Library & Settings → Related studios**, link a sub-label to its parent st
 
 <p align="center"><img src="docs/screenshots/16-multi-root-library.png" alt="Library picker showing multiple scene roots as one library " width="900"></p>
 
-> v1.1.1 screenshots come from a separate demo instance with network access off. Scene posters, thumbnails and gallery photos are generated placeholder cards; studio, performer and scene names are real. Search results and downloads are simulated, so no real forum results or images are shown.
+> The Porn Scenes screenshots were captured and censored by the author from his own library. The settings and library-picker screenshots come from a demo instance with network access off.
 
 ## At a glance
 | | |
@@ -123,9 +131,44 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
   - **Bring your own key:** connect any OpenAI-compatible API (OpenAI, OpenRouter, xAI, or local Ollama / LM Studio) for one-click "Tag now".
 - **AZNude Status** per film (see below).
 
+## Porn Scenes features
+Screenshots captured and censored by the author from his own Porn Scenes library.
+
+**Home screen**
+
+![Home screen](docs/screenshots/scenes-01-home.jpg)
+
+**One studio (scenes sorted by performer)**
+
+![One studio (scenes sorted by performer)](docs/screenshots/scenes-02-one-studio.jpg)
+
+**Smart crop (performer automatically centered)**
+
+![Smart crop (performer automatically centered)](docs/screenshots/scenes-03-smart-crop.jpg)
+
+**Scene edit window**
+
+![Scene edit window](docs/screenshots/scenes-04-edit-window.jpg)
+
+**ThePornDB choices**
+
+![ThePornDB choices](docs/screenshots/scenes-05-tpdb-choices.jpg)
+
+**Find Gallery results**
+
+![Find Gallery results](docs/screenshots/scenes-06-find-gallery.jpg)
+
+**Gallery downloading**
+
+![Gallery downloading](docs/screenshots/scenes-07-gallery-downloading.jpg)
+
+**Freshly downloaded gallery**
+
+![Freshly downloaded gallery](docs/screenshots/scenes-08-gallery-done.jpg)
+
 ## Screenshots
 v1.1.1 screenshots are shown in [What's new](#whats-new-in-v111) above.
-Film screenshots show real mainstream titles and their TMDB posters from the author's own Movies library, copied into a separate demo instance (no adult titles). Scene screenshots use real studio, performer and scene names, but every poster, thumbnail and gallery photo is a generated placeholder card; no adult images are shown, and Find Gallery results and downloads are simulated with network access switched off. The smart-crop screenshots (v1.0.43) use made-up titles and abstract artwork.
+Movie screenshots show real mainstream titles and their TMDB posters from the author's own Movies library, copied into a separate demo instance (no adult titles). The Porn Scenes screenshots were captured and censored by the author. The smart-crop screenshots (v1.0.43) use made-up titles and abstract artwork.
 
 ![Plain centre crop (top) vs Film Tagger smart crop (bottom)](docs/screenshots/0-smart-crop-before-after.png)
 
@@ -146,10 +189,6 @@ Table view with tags, genre, studio, resolution and MPAA columns:
 Edit window for a film:
 
 ![Edit window](docs/screenshots/4-edit-film.png)
-
-Edit window for a scene with the ThePornDB candidate picker (placeholder cards):
-
-![Candidate picker](docs/screenshots/3-edit-picker.png)
 
 AI tag review: suggestions wait for your approval:
 
