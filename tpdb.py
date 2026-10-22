@@ -154,7 +154,7 @@ def studio_group(studio):
     if hit and time.time() - hit[0] < 60: return hit[1]
     try:
         import db
-        names = list(dict.fromkeys([studio] + db.studio_names(studio)))
+        names = list(dict.fromkeys([studio] + db.studio_names(studio) + db.related_studios(studio)))  # + linked sub-labels/parents
     except Exception: names = [studio]
     _STUDIO_CACHE[k] = (time.time(), names)
     return names

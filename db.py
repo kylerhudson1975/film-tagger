@@ -186,6 +186,36 @@ def studio_names(name, c=None):
         if c is None: c2.close()
     return list(dict.fromkeys(x for x in rows if x))
 
+def studio_key_in(value, keys):
+    """True when any entry of a comma-separated studio value has one of the '|'-joined studio keys."""
+    ks = set((keys or "").split("|")) - {""}
+    return 1 if value and any(studio_key(x) in ks for x in value.split(",")) else 0
+
+def folder_studio(path, roots):
+    """The <Studio> folder name of <scene root>/<Studio>/... (None for root-level files and '_' folders)."""
+    for r in roots:
+        if under(path, r):
+            parts = re.split(r"[\\/]", path[len(r.rstrip("\\/")) + 1:])
+            if len(parts) > 1 and parts[0] and not parts[0].startswith("_"): return parts[0]
+    return None
+
+def path_studio_key(path, roots):
+    """studio_key of a file's <Studio> folder under any of the '|'-joined scene roots ('' if none)."""
+    f = folder_studio(path or "", [r for r in (roots or "").split("|") if r])
+    return studio_key(f) if f else ""
+
+def fill_folder_studios(c):
+    """Add-only: scenes with a blank studio get it from their <scene root>/<Studio> folder (hand-edited studios untouched)."""
+    roots = scene_roots(c); n = 0
+    if not roots: return 0
+    for fid, path, ef in c.execute("""SELECT f.id, fi.path, f.edited_fields FROM films f JOIN files fi ON fi.film_id=f.id
+                                      WHERE f.kind='scene' AND COALESCE(TRIM(f.studio),'')='' ORDER BY fi.id""").fetchall():
+        if ef and "studio" in ef: continue
+        st = folder_studio(path, roots)
+        if st and c.execute("UPDATE films SET studio=?, updated_at=? WHERE id=? AND COALESCE(TRIM(studio),'')=''",
+                            (canon_studio(st, c), time.time(), fid)).rowcount: n += 1
+    c.commit(); return n
+
 def studio_alias_search(text, c=None):
     """Main names of studios with an alias whose key contains the search text's key (e.g. 'angels.love')."""
     k = studio_key(text)
@@ -216,6 +246,39 @@ def add_studio_alias(c, alias, canonical, apply=True):
 def remove_studio_alias(c, alias):
     """Forget a studio alias (films keep their current main name)."""
     c.execute("DELETE FROM studio_aliases WHERE alias_key=?", (studio_key(alias),)); c.commit(); _SA["key"] = None
+
+# ---------- related studios: Kyle-defined 'sub-label of' links (e.g. 'Out of the Family' -> "Devil's Film") ----------
+def _links_table(c):
+    c.execute("CREATE TABLE IF NOT EXISTS studio_links(child_key TEXT PRIMARY KEY, child TEXT NOT NULL, parent TEXT NOT NULL)")
+
+def studio_links(c=None):
+    own = c is None
+    if own: c = connect()
+    try:
+        _links_table(c)
+        return [dict(child=r[0], parent=r[1]) for r in c.execute("SELECT child, parent FROM studio_links ORDER BY parent COLLATE NOCASE, child COLLATE NOCASE")]
+    finally:
+        if own: c.close()
+
+def related_studios(name, c=None):
+    """Studios linked to `name` as sub-label or parent (one level each way), for ThePornDB matching only."""
+    if not name: return []
+    keys = {studio_key(n) for n in studio_names(name, c)}
+    out = []
+    for l in studio_links(c):
+        if studio_key(l["parent"]) in keys: out.append(l["child"])
+        if studio_key(l["child"]) in keys: out.append(l["parent"])
+    return list(dict.fromkeys(out))
+
+def add_studio_link(c, child, parent):
+    child, parent = " ".join((child or "").split()), " ".join((parent or "").split())
+    if not studio_key(child) or not studio_key(parent): raise ValueError("Both studio names are required")
+    if studio_key(child) == studio_key(parent): raise ValueError("Those are the same studio")
+    _links_table(c)
+    c.execute("INSERT OR REPLACE INTO studio_links(child_key, child, parent) VALUES(?,?,?)", (studio_key(child), child, parent)); c.commit()
+
+def remove_studio_link(c, child):
+    _links_table(c); c.execute("DELETE FROM studio_links WHERE child_key=?", (studio_key(child),)); c.commit()
 
 def tag_norm(s):
     """Spelling-tolerant tag key: casefold, strip accents, drop spaces/hyphens/underscores, and drop one trailing
@@ -259,6 +322,8 @@ def connect():
     c.create_function("person_in", 2, person_in, deterministic=True)
     c.create_function("person_in_any", 2, person_in_any, deterministic=True)
     c.create_function("fold_in", 2, fold_in, deterministic=True)
+    c.create_function("studio_key_in", 2, studio_key_in, deterministic=True)
+    c.create_function("path_studio_key", 2, path_studio_key, deterministic=True)
     if "country" not in cols: c.execute("ALTER TABLE films ADD COLUMN country TEXT")  # comma-separated country names
     if "country_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN country_checked INTEGER")  # backfill tried
     if "studio" not in cols: c.execute("ALTER TABLE films ADD COLUMN studio TEXT")  # comma-separated production company names
@@ -347,16 +412,36 @@ def exclude_film(c, fid):
     return n
 
 def is_excluded(c, p, size):
-    """Same path, or same size + OpenSubtitles hash (renamed or moved copy)."""
+    """Same path, same file name + size (moved), or same size + OpenSubtitles hash (renamed or moved copy)."""
     if c.execute("SELECT 1 FROM excluded WHERE path=? COLLATE NOCASE", (p,)).fetchone(): return True
     if size:
-        hs = [r[0] for r in c.execute("SELECT oshash FROM excluded WHERE size=? AND oshash IS NOT NULL", (size,))]
+        rows = c.execute("SELECT path, oshash FROM excluded WHERE size=?", (size,)).fetchall()
+        name = os.path.basename(p).lower()
+        if any(os.path.basename((r[0] or "").replace("\\", "/")).lower() == name for r in rows): return True  # moved: same file name + size
+        hs = [r[1] for r in rows if r[1]]
         if hs and file_hash(p) in hs: return True
     return False
 
 # ---------- scanning (read-only) ----------
 def scene_roots(c):
     return [r.rstrip("\\/") for r in (get_setting(c, "scene_roots", []) or []) if r and r.strip()]
+
+def same_drive(a, b):
+    """True when both paths are on the same drive/share (moves never cross drives)."""
+    da, dbb = os.path.splitdrive(os.path.abspath(a))[0], os.path.splitdrive(os.path.abspath(b))[0]
+    return os.path.normcase(da) == os.path.normcase(dbb)
+
+def lib_prefixes(c, lib):
+    """A library filter value -> path prefixes. All scene roots form ONE library: picking any scene root (or a
+    studio folder under one) matches the same place under every scene root."""
+    lib = (lib or "").strip().rstrip("\\/")
+    if not lib: return []
+    for sr in scene_roots(c):
+        if os.path.normcase(lib) == os.path.normcase(sr): return scene_roots(c)
+        if under(lib, sr):
+            rel = lib[len(sr) + 1:]
+            return [r + ("\\" if "\\" in r or re.match(r"^[A-Za-z]:", r) else "/") + rel for r in scene_roots(c)]
+    return [lib]
 
 def under(path, root):
     p, r = os.path.normcase(path), os.path.normcase(root.rstrip("\\/"))
@@ -368,7 +453,7 @@ def new_scene(c, p, size, root, now):
     n = tpdb.parse_name(p)
     t = tpdb.default_title(n) or os.path.splitext(os.path.basename(p))[0]
     cur = c.execute("INSERT INTO films(title,year,release_date,studio,cast_,storage,kind,primary_genre,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (t, int(n["date"][:4]) if n["date"] else None, n["date"], canon_studio(n["studio"], c), ", ".join(n["performers"]) or None,
+                    (t, int(n["date"][:4]) if n["date"] else None, n["date"], canon_studio(n["studio"] or folder_studio(p, scene_roots(c)), c), ", ".join(n["performers"]) or None,
                      os.path.splitdrive(p)[0] or root, "scene", "Hardcore", now, now))
     c.execute("INSERT INTO files(film_id,path,size) VALUES(?,?,?)", (cur.lastrowid, p, size))
     return cur.lastrowid
@@ -391,6 +476,7 @@ def scan(c, roots, progress=None):
     now = time.time(); added = 0; seen = set(); errors = []
     for root in roots:
         if not os.path.isdir(root):
+            if any(os.path.normcase(root.rstrip("\\/")) == os.path.normcase(sr) for sr in sroots): continue  # scene root not created yet
             errors.append(f"Not a folder or not reachable: {root}"); continue
         for dp, dns, fns in os.walk(root, onerror=lambda e: errors.append(str(e))):
             dns[:] = [d for d in dns if not d.startswith(("$", ".")) and not is_gallery_dir(d)]  # photo galleries are never catalogue items
@@ -429,6 +515,8 @@ def scan(c, roots, progress=None):
                 c.execute("UPDATE files SET missing=1 WHERE id=?", (r["id"],)); missing += 1
     c.execute("UPDATE films SET missing = CASE WHEN EXISTS(SELECT 1 FROM files f WHERE f.film_id=films.id AND f.missing=0) THEN 0 ELSE 1 END WHERE EXISTS(SELECT 1 FROM files f WHERE f.film_id=films.id)")
     c.commit()
+    try: fill_folder_studios(c)  # add-only studio from the <Studio> folder
+    except sqlite3.Error as e: errors.append(f"studio from folder: {e}")
     return {"added": added, "found": len(seen), "missing_files": missing, "errors": errors[:50]}
 
 # ---------- tags ----------

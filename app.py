@@ -8,7 +8,7 @@ import tpdb
 import focus as focusmod
 import gallery as gallerymod
 
-APP_VERSION = "1.1.0"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.1.1"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -109,9 +109,11 @@ def build_query(q):
         where.append("(" + parts[0] + ")"); args += args_mp
     lib = (q.get("lib") or "").strip().rstrip("\\/")
     if lib:
-        esc_ = lib.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where.append("f.id IN (SELECT film_id FROM files WHERE LOWER(path) LIKE ? ESCAPE '\\' OR LOWER(path) LIKE ? ESCAPE '\\')")
-        args += [esc_ + "\\\\%", esc_ + "/%"]
+        likes = []
+        for pre in db.lib_prefixes(C(), lib):  # all scene roots count as one 'Porn Scenes' library
+            esc_ = pre.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            likes += ["LOWER(path) LIKE ? ESCAPE '\\'", "LOWER(path) LIKE ? ESCAPE '\\'"]; args += [esc_ + "\\\\%", esc_ + "/%"]
+        where.append("f.id IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")")
     if q.get("nompaa") in ("1", 1): where.append("f.tmdb_id IS NOT NULL AND COALESCE(f.mpaa,'')=''")
     if q.get("needs_tmdb") in ("1", 1): where.append("f.tmdb_status='needs_match'")
     person = (q.get("person") or "").strip()
@@ -127,7 +129,9 @@ def build_query(q):
     for cn in split_list(q.get("country")):  # exact country name (one entry of the comma-separated list)
         where.append("person_in(f.country, ?)"); args.append(cn)
     for st in split_list(q.get("studio")):  # exact studio name (one entry of the comma-separated list)
-        where.append("person_in_any(f.studio, ?)"); args.append(db.ALIAS_SEP.join(db.studio_names(st)))
+        keys = "|".join(sorted({db.studio_key(x) for x in db.studio_names(st)} - {""}))  # spelling variants + aliases
+        where.append("(studio_key_in(f.studio, ?) OR f.id IN (SELECT film_id FROM files WHERE path_studio_key(path, ?) IN (SELECT value FROM json_each(?))))")
+        args += [keys, "|".join(db.scene_roots(C())), json.dumps(keys.split("|"))]
     rs = split_list(q.get("res"))
     if rs:  # OR across resolutions; "(none)" = not set
         parts = ["f.resolution IN (" + ",".join("?" * len([x for x in rs if x != "(none)"])) + ")"] if [x for x in rs if x != "(none)"] else []
@@ -151,6 +155,9 @@ def build_query(q):
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
+# Studio sort: within a studio, first billed performer A-Z (case/accent folded; none last), then newest release, then id.
+FIRST_PERFORMER = "NULLIF(TRIM(substr(COALESCE(f.cast_,''), 1, instr(COALESCE(f.cast_,'') || ',', ',') - 1)), '')"
+STUDIO_TIE = f"{FIRST_PERFORMER} IS NULL, {FIRST_PERFORMER} COLLATE FOLD, f.release_date IS NULL, f.release_date DESC, "
 SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
          "added": "f.added_at", "edited": "COALESCE(f.updated_at, f.added_at)", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
 
@@ -175,7 +182,8 @@ def list_films():
     sort = SORTS.get(q.get("sort"), SORTS["title"]); order = "DESC" if q.get("order") == "desc" else "ASC"
     limit = min(int(q.get("limit", 200)), 20000); offset = int(q.get("offset", 0))
     total = c.execute(f"SELECT COUNT(*) FROM films f {where}", args).fetchone()[0]
-    rows = [dict(r) for r in c.execute(f"SELECT f.* FROM films f {where} ORDER BY {sort} IS NULL, {sort} {order}, f.id LIMIT ? OFFSET ?", args + [limit, offset])]
+    tie = STUDIO_TIE if q.get("sort") == "studio" else ""
+    rows = [dict(r) for r in c.execute(f"SELECT f.* FROM films f {where} ORDER BY {sort} IS NULL, {sort} {order}, {tie}f.id LIMIT ? OFFSET ?", args + [limit, offset])]
     if q.get("ids_only"):
         return jsonify(ids=[r[0] for r in c.execute(f"SELECT f.id FROM films f {where}", args)], total=total)
     return jsonify(total=total, films=attach(c, rows))
@@ -208,6 +216,24 @@ def studio_aliases_remove():
     a = (request.args.get("alias") or (request.get_json(silent=True) or {}).get("alias") or "").strip()
     if not a: return jsonify(error="alias required"), 400
     db.remove_studio_alias(C(), a); return jsonify(ok=True)
+
+@app.get("/api/studio-links")
+def studio_links_list():
+    return jsonify(links=db.studio_links(C()))
+
+@app.post("/api/studio-links")
+def studio_links_add():
+    """{child: 'Out of the Family', parent: "Devil's Film"}: a sub-label counts as its parent studio in ThePornDB matching."""
+    d = request.json or {}
+    try: db.add_studio_link(C(), d.get("child"), d.get("parent"))
+    except ValueError as e: return jsonify(error=str(e)), 400
+    tpdb._STUDIO_CACHE.clear(); return jsonify(ok=True)
+
+@app.delete("/api/studio-links")
+def studio_links_remove():
+    ch = (request.args.get("child") or "").strip()
+    if not ch: return jsonify(error="child required"), 400
+    db.remove_studio_link(C(), ch); tpdb._STUDIO_CACHE.clear(); return jsonify(ok=True)
 
 @app.get("/api/studios")
 def studios():
@@ -700,17 +726,19 @@ def scan_cancel(): SCAN["cancel"] = True; return jsonify(SCAN)
 @app.get("/api/libraries")
 def libraries():
     """Configured roots plus top-level subfolders (derived from catalogued paths, so works offline)."""
-    c = C(); roots = db.get_setting(c, "roots", []); out = []
+    c = C(); sr = db.scene_roots(c); out = []
+    roots = [r for r in db.get_setting(c, "roots", []) if not any(os.path.normcase(r.rstrip("\\/")) == os.path.normcase(x) for x in sr)]
     paths = [r[0] for r in c.execute("SELECT path FROM files")]
+    if sr: roots.append(sr[0])  # every scene root shows as ONE library under the first root's path
     for root in roots:
         rp = root.rstrip("\\/"); low = rp.lower(); subs = {}; n = 0
         for p in paths:
-            pl = p.lower()
-            if pl.startswith(low) and len(p) > len(rp) and p[len(rp)] in "\\/":
-                n += 1; rest = p[len(rp) + 1:]; parts = _re.split(r"[\\/]", rest)
+            hit = next((x for x in (sr if sr and root == sr[0] else [rp]) if db.under(p, x)), None)
+            if hit:
+                n += 1; rest = p[len(hit) + 1:]; parts = _re.split(r"[\\/]", rest)
                 if len(parts) > 1: subs[parts[0].lower()] = (parts[0], subs.get(parts[0].lower(), (0, 0))[1] + 1)
         sep = "\\" if "\\" in rp or _re.match(r"^[A-Za-z]:", rp) else "/"
-        out.append(dict(path=rp, count=n, subfolders=sorted([dict(name=v[0], path=rp + sep + v[0], count=v[1]) for v in subs.values()], key=lambda x: x["name"].lower())))
+        out.append(dict(path=rp, count=n, roots=(sr if sr and root == sr[0] else [rp]), subfolders=sorted([dict(name=v[0], path=rp + sep + v[0], count=v[1]) for v in subs.values()], key=lambda x: x["name"].lower())))
     return jsonify(out)
 
 @app.get("/api/jobs")
@@ -1596,6 +1624,17 @@ def is_scene(c, fid):
     r = c.execute("SELECT kind FROM films WHERE id=?", (fid,)).fetchone()
     return bool(r) and r[0] == "scene"
 
+def keep_parent_studio(c, fid, s, new):
+    """True if the film already has a studio and ThePornDB's studio is a sub-label/parent of it (Kyle's link, or the
+    site's parent/network on ThePornDB), so the film keeps its own studio (e.g. folder "Devil's Film")."""
+    cur = (c.execute("SELECT COALESCE(studio,'') FROM films WHERE id=?", (fid,)).fetchone() or [""])[0].strip()
+    if not cur or db.studio_key(cur) == db.studio_key(new): return False
+    ck = {db.studio_key(n) for n in db.studio_names(cur, c)}
+    if db.studio_key(new) in {db.studio_key(x) for x in db.related_studios(cur, c)}: return True
+    site = (s or {}).get("site") or {}
+    fam = [site.get(k, {}).get("name") for k in ("parent", "network") if isinstance(site.get(k), dict)]
+    return any(db.studio_key(x) in ck for x in fam if x)
+
 def apply_scene(c, fid, s, keep=()):
     """Apply a ThePornDB scene to a film. Hand-edited fields (edited_fields) and `keep` are never replaced; tags are only added."""
     f = tpdb.scene_fields(s)
@@ -1603,6 +1642,7 @@ def apply_scene(c, fid, s, keep=()):
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
     if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
     if upd.get("studio"): upd["studio"] = db.canon_studio(upd["studio"], c)  # 'angels.love' -> 'Angels Love'
+    if upd.get("studio") and keep_parent_studio(c, fid, s, upd["studio"]): upd.pop("studio")  # never swap Kyle's studio for a sub-label
     upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
     c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
@@ -1622,13 +1662,38 @@ def tpdb_candidates(fid):
     if not is_scene(c, fid): return jsonify(error="Not a scene"), 400
     q = (request.args.get("q") or "").strip() or None
     p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
-    key = (fid, q)
+    f = c.execute("SELECT studio, release_date, cast_, title, COALESCE(tpdb_id,'') tid FROM films WHERE id=?", (fid,)).fetchone()
+    cur_id = f["tid"].strip()
+    src = p[0] if p else ""
+    if not q and cur_id:  # already matched: search from the DB fields, with the studio given as the folder (like a fresh file)
+        src = scene_query(f)
+    key = (fid, q, cur_id, src)
     if key not in TPC or request.args.get("refresh"):
-        try: TPC[key] = tpdb.candidates(token, p[0] if p else "", query=q, limit=int(request.args.get("limit", 8)))
-        except Exception as e: return jsonify(error=tpdb_err(e)), 502
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(2) as ex:  # current match by id and the candidate search run in parallel
+            fc = ex.submit(tpdb.get_scene, token, cur_id) if cur_id else None
+            fs = ex.submit(tpdb.candidates, token, src, query=q, limit=int(request.args.get("limit", 8)))
+            try: r = fs.result()
+            except Exception as e: return jsonify(error=tpdb_err(e)), 502
+            cur = None
+            if fc:
+                try: cur = fc.result() or None
+                except Exception: cur = None
+        TPC[key] = dict(r, current=cur)
     r = TPC[key]; img = not is_review(c, fid)
-    return jsonify(query=r["query"], review=not img, file=os.path.basename(p[0]) if p else None,
-                   results=[dict(tpdb.brief(e["scene"], img), score=e["score"], why=e["why"], confident=e["confident"]) for e in r["results"]])
+    res = [dict(tpdb.brief(e["scene"], img), score=e["score"], why=e["why"], confident=e["confident"]) for e in r["results"]]
+    if cur_id:
+        res = [x for x in res if str(x.get("id")) != cur_id]
+        if r.get("current"): res.insert(0, dict(tpdb.brief(r["current"], img), score="", why=["current match"], confident=False, current=True))
+        else: res.insert(0, dict(id=cur_id, title="(current match could not be loaded from ThePornDB)", performers=[], current=True, score="", why=[], confident=False))
+    return jsonify(query=r["query"], review=not img, file=os.path.basename(p[0]) if p else None, matched=bool(cur_id), results=res)
+
+def scene_query(f):
+    """Pseudo path for a matched scene from its DB fields: '<Studio>/<YYYY-MM-DD> <performers> <title>.mp4'
+    (candidates() takes the studio from the folder, so names like 'Cum 4K' survive the file-name cleaning)."""
+    perf = " ".join(split_list(f["cast_"] or "")[:3])
+    stem = " ".join(x for x in [f["release_date"] or "", perf, (f["title"] or "").replace("/", " ")] if x).strip()
+    return f"{(f['studio'] or '').replace('/', ' ')}/{stem}.mp4" if f["studio"] else f"{stem}.mp4"
 
 @app.get("/api/tpdb/unmatched")
 def tpdb_unmatched():
@@ -1702,6 +1767,7 @@ def plan_scene_rename(c, fid):
             new = f"{base} ({n}){ext}"; n += 1
         taken.add(os.path.normcase(new))
         gk, gd = gallerymod.find(old, db.VIDEO_EXT)  # the photo gallery moves with the video (legacy 'gallery' -> canonical)
+        if not db.same_drive(old, new): continue  # never plan a cross-drive move
         gal = None
         if gd:
             gnew = gallerymod.canonical_dir(new)
@@ -1723,6 +1789,9 @@ def do_scene_moves(c, moves):
     for m in moves:
         old, new = m["old"], m["new"]
         if os.path.exists(new) and os.path.normcase(new) != os.path.normcase(old): continue  # appeared since planning
+        g0 = m.get("gallery")
+        if not db.same_drive(old, new) or any(not db.same_drive(a, b) for a, b in m["sidecars"]) or (g0 and not db.same_drive(*g0)):
+            continue  # guard: refuse any cross-drive move
         os.makedirs(os.path.dirname(new), exist_ok=True)
         pairs = ([(old, new)] if new != old else []) + [(a, b) for a, b in m["sidecars"] if os.path.exists(a) and not os.path.exists(b)]
         g = m.get("gallery")
@@ -1852,13 +1921,77 @@ def _fg_scene(fid):
     p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
     return (c, f, p[0] if p else None), None
 
-def _fg_parts(f):
+FG_KNOWN = {}  # fold(name) -> bool: ThePornDB performer lookups for unmatched scenes (this session)
+
+def fg_known_name(c, name):
+    """True if `name` is a known performer: in people (name or alias), in the cast of a ThePornDB-matched scene,
+    or an exact ThePornDB performer (name or alias). Used so title words never become search keywords."""
+    k = db.fold(" ".join(name.split()))
+    if len(k.split()) < 2: return False
+    if k in db.alias_groups(c): return True
+    try:
+        if c.execute("SELECT 1 FROM people WHERE name_norm=? LIMIT 1", (k,)).fetchone(): return True
+    except Exception: pass
+    if c.execute("SELECT 1 FROM films WHERE COALESCE(tpdb_id,'')<>'' AND person_in_any(cast_, ?) LIMIT 1", (" ".join(name.split()),)).fetchone(): return True
+    if k not in FG_KNOWN:
+        FG_KNOWN[k] = False
+        token = db.get_setting(c, "tpdb_key", "")
+        if token:
+            try: FG_KNOWN[k] = bool(peoplemod.pick_performer(tpdb.call("/performers", token, q=name).get("data") or [], name))
+            except Exception: FG_KNOWN.pop(k, None)
+    return FG_KNOWN.get(k, False)
+
+def _fg_parts(f, c=None):
+    """Performer names to search with (never title words) and the studio's names.
+    Matched scenes (tpdb_id) trust their cast. Otherwise each cast entry must be a known performer; a run-on cast
+    ('Cum4K Chloe Rose Come Fuck Me') keeps only its leading word pairs that are known performers ('Chloe Rose')."""
     studios = db.studio_names(f["studio"]) if f["studio"] else []
-    perfs = split_list(f["cast_"] or "")
-    if len(perfs) <= 1:  # unlinked scene: cast is one run-on string, or empty -> guess names from cast/title
-        g = fgmod.guess_names(perfs[0] if perfs else (f["title"] or ""), studios)
-        if len(g) > len(perfs): perfs = g
-    return perfs, studios
+    cast = split_list(f["cast_"] or "")
+    try: matched = bool((f["tpdb_id"] or "").strip())
+    except (IndexError, KeyError): matched = False
+    if matched or c is None: return cast, studios
+    out = []
+    for entry in cast:
+        if len(entry.split()) <= 3 and fg_known_name(c, entry): out.append(entry); continue
+        words = fgmod.guess_names(entry, studios)  # studio words and numbers dropped
+        w = " ".join(words).split()
+        i = 0
+        while i + 1 < len(w) and w[i][:1].isupper() and w[i + 1][:1].isupper():
+            pair = f"{w[i]} {w[i + 1]}"
+            if not fg_known_name(c, pair): break
+            out.append(pair); i += 2
+    return list(dict.fromkeys(out)), studios
+
+FG_ALIAS = {}  # fold(name) -> (aliases, source): ThePornDB lookups made by Find Gallery this session
+
+def fg_aliases(c, name):
+    """Multi-word aliases of a performer for Find Gallery: people.aliases (and merges) from the DB; if none, ThePornDB's
+    performer aliases, cached into people.aliases add-only (nothing Kyle set is removed). -> (aliases, 'db'|'tpdb'|None)."""
+    k = db.fold(" ".join(name.split()))
+    c.executescript(peoplemod.PEOPLE_SCHEMA); peoplemod.migrate(c)
+    al = [a for a in db.expand_person(c, name)[1:] if db._alias_ok(a)]
+    if al: return al, "db"
+    if k in FG_ALIAS: return FG_ALIAS[k]
+    out = ([], None)
+    token = db.get_setting(c, "tpdb_key", "")
+    if token:
+        try:
+            hit = peoplemod.pick_performer(tpdb.call("/performers", token, q=name).get("data") or [], name)
+            tal = [" ".join(a.split()) for a in (hit or {}).get("aliases") or [] if isinstance(a, str) and a.strip()]
+            if tal:
+                row = c.execute("SELECT id, aliases FROM people WHERE name_norm=?", (k,)).fetchone()
+                try: cur = json.loads(row["aliases"] or "[]") if row else []
+                except ValueError: cur = []
+                have = {db.fold(x) for x in cur}
+                merged = cur + [a for a in tal if db.fold(a) not in have and db.fold(a) != k]
+                if row: c.execute("UPDATE people SET aliases=? WHERE id=?", (json.dumps(merged), row["id"]))
+                else: c.execute("INSERT INTO people(name, name_norm, aliases) VALUES(?,?,?)", (" ".join(name.split()), k, json.dumps(merged)))
+                c.commit()
+                out = ([a for a in tal if db._alias_ok(a) and db.fold(a) != k], "tpdb")
+        except Exception:
+            pass
+    FG_ALIAS[k] = out
+    return out
 
 @app.post("/api/films/<int:fid>/findgallery/search")
 def findgallery_search(fid):
@@ -1866,36 +1999,64 @@ def findgallery_search(fid):
     g, err = _fg_scene(fid)
     if err: return err
     c, f, _ = g; d = request.json or {}
-    perfs, studios = _fg_parts(f)
+    perfs, studios = _fg_parts(f, c)
     default_q = " ".join(perfs + studios[:1]).strip()
     try: plist = fgmod.prefixes(os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "vg_prefixes.json"))
     except Exception: plist = []
     prefix = fgmod.match_prefix(studios, plist) if studios else None
     q = (d.get("query") or "").strip(); tried = []
+    alias_map, alias_src = {}, {}
+    for one in perfs[:3]:
+        alias_map[one], alias_src[one] = fg_aliases(c, one) if not q else ([], None)
+    # planned steps (at most fgmod.MAX_STEPS forum searches): each (query, prefix); stop at the first with results
+    if q:
+        steps = [(q, prefix if d.get("prefix", True) else None)]
+    else:
+        if not perfs: return jsonify(error="No known performers for this scene: add performers or type a name", default_query="", hint="add performers or type a name"), 400
+        # Thread titles often leave out co-stars (e.g. the male performer), and vBulletin ANDs every keyword, so search
+        # one performer at a time (first billed first), then their aliases. Last step: performers + studio, no prefix.
+        # Every step stays in Adult Photo Sets (+ subforums); there is no all-forums search.
+        head = [(one, prefix) for one in perfs[:2]] if prefix else []
+        lead_al = [(a, prefix) for a in alias_map[perfs[0]]] if prefix else []
+        co_al = [(a, prefix) for one in perfs[1:2] for a in alias_map[one]] if prefix else []
+        plain = [(default_q, None)]
+        # last resort: the lead performer's last name (and each alias's last word) alone, only with a studio prefix
+        lasts = []
+        if prefix:
+            for n in [perfs[0]] + alias_map[perfs[0]]:
+                w = n.split()[-1] if len(n.split()) > 1 else ""
+                if len(w) >= 3 and db.fold(w) not in {db.fold(x) for x in lasts}: lasts.append(w)
+        last = [(w, prefix, False, "last") for w in lasts]
+        room = fgmod.MAX_STEPS - len(head) - len(plain) - len(last)
+        mid = (lead_al + co_al)[:max(0, room)]  # co-star aliases are trimmed first, then the lead's
+        steps = head + mid + plain + last
+        steps = steps[:fgmod.MAX_STEPS]
+    steps = [tuple(x) + (False, "")[len(x) - 2:] for x in steps]
+    steps = list(dict.fromkeys(steps))[:fgmod.MAX_STEPS]
+    res, pref_used, t0, last_name = [], False, time.time(), False
+    fgmod.SEARCH.update(started=t0, n=len(steps), step="")
     try:
-        if q:  # Kyle's own query; the studio prefix is used unless switched off
-            use = prefix if d.get("prefix", True) else None
-            res, cached = fgmod.search(q, use); tried.append(dict(query=q, prefix=use, n=len(res), cached=cached)); pref_used = bool(use)
-        else:
-            if not perfs: return jsonify(error="This scene has no performers to search for; type a query", default_query=default_q), 400
-            res, pref_used = [], False
-            if prefix:
-                res, cached = fgmod.search(" ".join(perfs), prefix); pref_used = True
-                tried.append(dict(query=" ".join(perfs), prefix=prefix, n=len(res), cached=cached))
-            if not res and prefix and len(perfs) > 1:  # fewer ANDed keywords: one performer at a time
-                for one in perfs[:2]:
-                    res, cached = fgmod.search(one, prefix, block=True)
-                    tried.append(dict(query=one, prefix=prefix, n=len(res), cached=cached))
-                    if res: break
-            if not res:
-                res, cached = fgmod.search(default_q, None, block=bool(tried)); pref_used = False
-                tried.append(dict(query=default_q, prefix=None, n=len(res), cached=cached))
+        for k, (sq, sp, wide, kind) in enumerate(steps):
+            if k and time.time() - t0 > fgmod.SEARCH_BUDGET_S:
+                tried.append(dict(query=sq, prefix=sp, n=0, skipped="time limit")); break
+            fgmod.SEARCH["step"] = f"Step {k + 1} of {len(steps)}: “{sq}”" + (f" with prefix {sp}" if sp else "") + (" in all forums" if wide else "")
+            res, cached = fgmod.search(sq, sp, block=k > 0, all_forums=wide)
+            tried.append(dict(query=sq, prefix=sp, n=len(res), cached=cached, all_forums=wide, last_name=kind == "last")); pref_used = bool(sp)
+            last_name = kind == "last"
+            if res: break
     except fgmod.Busy as b:
-        return jsonify(error=f"Another search ran just now; try again in {b.seconds:.0f} s", wait=round(b.seconds), default_query=default_q), 429
+        return jsonify(error=f"Another search ran just now; try again in {b.seconds:.0f} s", wait=round(b.seconds), default_query=default_q, tried=tried), 429
     except Exception as e:
-        return jsonify(error=f"Search failed ({type(e).__name__})", default_query=default_q), 502
-    res = fgmod.rank([dict(r) for r in res], perfs, studios, f["release_date"], pref_used)
-    return jsonify(default_query=default_q, prefix=prefix, tried=tried, results=res[:60])
+        msg = "the forum did not answer in time" if "timed out" in str(e).lower() or isinstance(e, TimeoutError) else type(e).__name__
+        return jsonify(error=f"Search failed: {msg}", default_query=default_q, tried=tried), 502
+    finally:
+        fgmod.SEARCH.update(step="", started=0.0)
+    names = [[p] + (alias_map.get(p) or fg_aliases(c, p)[0]) for p in perfs]
+    res = fgmod.rank([dict(r) for r in res], names, studios, f["release_date"], pref_used)
+    if last_name:  # found only by a last name: labelled, and ranked below any full-name match
+        for r in res: r.update(last_name_match=True, score=round(r["score"] - 1, 2))
+    return jsonify(default_query=default_q, prefix=prefix, tried=tried, results=res[:60],
+                   aliases={p: dict(names=alias_map.get(p) or [], source=alias_src.get(p)) for p in perfs[:3]})
 
 @app.post("/api/films/<int:fid>/findgallery/download")
 def findgallery_download(fid):
@@ -1919,8 +2080,10 @@ def findgallery_download(fid):
 
 @app.get("/api/findgallery/status")
 def findgallery_status():
-    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at")}
+    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at", "last_msg")}
     j["dest"] = os.path.basename(fgmod.DL.get("dest") or "")
+    st = fgmod.SEARCH
+    j["search"] = dict(step=st["step"], secs=round(time.time() - st["started"]) if st["started"] else 0) if st["step"] else None
     return jsonify(j)
 
 @app.post("/api/findgallery/cancel")

@@ -2,44 +2,81 @@
 
 # Film Tagger
 
-**A private, local web app for cataloguing and richly tagging your own film collection.**
+**A private, local web app for cataloguing and richly tagging your own film and scene collection.**
 Point it at the folders where your video files live. It builds a searchable catalogue with posters and metadata, and lets you tag films in as much detail as you like, by hand or with help from AI. It runs entirely on your own computer. It is a catalogue, not a video player.
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-## New in v1.1.0
-- **Scene photo galleries:** put a scene's photo set in a folder named `<video stem> - GALLERY` beside the video and Film Tagger links it to the scene. Scenes with a gallery show a 📷 badge with the photo count, and the Edit window's **📷 From Gallery** picker lets you use any photo as the poster. *Fix all* file names moves a gallery folder along with its video, and scans never catalogue gallery photos as films.
-- **Gallery re-check:** opening a scene's Edit window looks for its gallery again, so a folder added or removed outside the app is picked up straight away.
-- **🔎 Find Gallery:** searches ViperGirls as a guest (no login) by the scene's performers plus the studio's prefix tag, falling back to one performer at a time and then performers plus studio as plain text. Results are text only, ranked by how many performers and the studio appear plus a small boost for a close release date. The query is editable and you can paste a thread or post link. Searches are throttled (one at a time, at least 20 s apart) and cached. Nothing downloads until you click **Download**, which runs [gallery-dl](https://github.com/mikf/gallery-dl) into the scene's gallery folder with a file count and **Cancel**, removes placeholder/tiny files and asks before adding to an existing gallery. Scenes marked *Review by hand* are blocked from searching and downloading.
-- **Remove from catalog** keeps your scroll position.
+**Contents:** [What's new in v1.1.1](#whats-new-in-v111) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
 
-## New in v1.0.46
-- **Studio aliases:** the same studio often turns up under different spellings (e.g. *angels.love* from ThePornDB and *Angels Love* from file names). Map any spelling to one main name; case, accents and punctuation are ignored. The alias stays hidden but still works: studio filters and searches for it find the main name, ThePornDB matching treats it as the same studio, and every write (ThePornDB fetch, manual and bulk edits, TMDB studio fill, scans) saves the main name, so a later fetch never undoes the merge.
-- **Studio aliases in Library & Settings:** type the alias and the main name and click *Merge studio*. After a confirmation, existing scenes are updated. Each alias is listed with a *remove* link (scenes keep the main name).
-- **Tidy folders with Fix all:** after a merge, the scene renamer's *Fix all* preview shows matched scenes moving from the old spelling's folder into the main studio folder (e.g. `angels.love\` to `Angels Love\`). Nothing moves until you apply it.
+## What's new in v1.1.1
+A reliability and polish release for Scenes libraries, focused on Find Gallery, gallery downloads and studios.
 
-## New in v1.0.45
-- **Performer aliases everywhere:** performers often work under different names at different studios. Cast, People and Everything searches now match any of a performer's aliases (from ThePornDB or added by you), and a person page includes scenes and films credited under every alias.
-- **+ Alias:** add another name for a person straight from their page. Hand-added aliases are kept when the profile is refreshed.
-- **Merge with undo:** found the same performer twice? *⇄ Merge…* folds one person into the other after a confirmation. The other name becomes an alias, cast credits keep working, your files and cast lists are not changed, and each merge can be undone from the person page.
-- **Alias-aware ThePornDB matching:** a file name that credits a performer under an alias now counts as a performer match.
+### 🔎 Find Gallery that never hangs
+- **Hang fix:** every forum request has a timeout, the panel shows live progress (*Step 2 of 5: "Ava Stone" with prefix…*, with a seconds counter), a **Retry** button appears on any failure, and the whole search gives up cleanly after **3 minutes**.
+- **Searches ViperGirls' *Adult Photo Sets* only** (and its sub-forums), never the whole site.
+- **Smarter search order:** each performer **alone** first (thread titles often leave out co-stars), then their **aliases** (from your library or ThePornDB), then **performers + studio**, and finally a **last-name fallback** with the studio prefix, labelled *last-name match* and ranked below full-name hits.
+- **Never searches by title**, and scenes without a ThePornDB match use only performer names you already know.
 
-## New in v1.0.44
-- **Much faster ThePornDB matching:** searches now run in parallel, so finding a scene takes seconds instead of close to a minute.
-- **ThePornDB search box always visible** in the scene edit window, prefilled with the title: tweak it and press Enter.
-- **Smarter default sort:** picking the Porn Scenes library sorts by Studio; other libraries sort by Title.
-- **Cleaner titles:** double quotation marks (straight, curly and « ») are removed anywhere in a scene title; apostrophes are kept.
+<p align="center"><img src="docs/screenshots/11-find-gallery.png" alt="Find Gallery panel with ranked results (demo data)" width="900"></p>
 
-## ✨ New in v1.0.43: smart-crop posters
-Most library apps squeeze a wide cover into a poster slot with a blind centre crop, so the people end up cut in half. Film Tagger looks at the picture first.
-- **Smart-crop posters for Scenes:** Film Tagger takes the full-width studio cover, finds the faces with an on-device face detector (YuNet, MIT licence; falls back to a person detector, then to the most detailed area) and centres the 2:3 poster on the people. It runs in the background whenever a cover changes; on the author's own library it re-centred 545 posters automatically. Images are analysed in memory only, nothing leaves your computer.
-- **Focus slider with live preview:** not happy with a crop? Drag the Left/Right slider in the edit window and the poster updates live, in the dialog and in the grid behind it. *Auto* re-detects, *Reset* centres, and your hand-set value is never overwritten.
-- **Sort: Last edited:** jump straight back to whatever you touched most recently, whether that was a tag edit, a poster change or a metadata refresh.
-- Scene titles wrapped in quotation marks are cleaned up automatically, and the smart-tag prompt no longer adds Cum/Semen to all-girl films.
+### ⬇️ Gallery downloads that finish
+- **gallery-dl runs as a separate process with a log file**, which fixes the freeze where a download stalled at 0 files.
+- **Post links are normalised** to `threads/<id>?p=<post>`; if a reply post has no images, the **whole thread** is tried automatically.
+- **Dead sets are detected** (only "image removed" placeholders) and stopped early; placeholder and tiny files are cleaned up.
+- **Dead image hosts are skipped:** hosts that no longer resolve (DNS failure) are left out and the rest of the set is still downloaded, with a note naming the skipped hosts.
+- When it finishes, the scene's 📷 badge and **From Gallery** poster picker update straight away.
 
-<p align="center"><img src="docs/screenshots/0-smart-crop-before-after.png" alt="Plain centre crop vs Film Tagger smart crop" width="900"></p>
+<p align="center"><img src="docs/screenshots/12-gallery-download.png" alt="Gallery download with live file count and Cancel (demo data)" width="900"></p>
 
-## Features
+<p align="center"><img src="docs/screenshots/12b-from-gallery.png" alt="From Gallery poster picker with placeholder photos (demo data)" width="900"></p>
+
+### 🎯 ThePornDB Fetch on matched scenes shows choices
+Clicking **Fetch from ThePornDB** on a scene that is already matched no longer silently re-applies the match. It shows the candidates with your **current match** marked at the top, so you can keep it or switch with **Use**.
+
+<p align="center"><img src="docs/screenshots/13-tpdb-fetch-choices.png" alt="Fetch choices with the current match marked (demo data)" width="900"></p>
+
+### 🏷️ Related studios
+In **Library & Settings → Related studios**, link a sub-label to its parent studio (e.g. *Northwind Classics* ⇐ *Northwind Pictures*). ThePornDB matching counts either as the same studio, a match never changes your studio to the other label, and nothing is renamed.
+
+<p align="center"><img src="docs/screenshots/15-related-studios.png" alt="Related studios in Library & Settings (demo data)" width="900"></p>
+
+### 🎬 Porn Scenes library
+- **Studio sort** groups by studio, then the **first performer**, then **newest first**.
+- **Performer names on cards**, under the title.
+- **Studio click fixed:** clicking a studio finds all its scenes even with apostrophes, spelling variants or scenes that only match by folder.
+
+<p align="center"><img src="docs/screenshots/14-studio-sort-performers.png" alt="Studio sort with performer names on cards (demo data)" width="900"></p>
+
+### 💽 Multiple scene roots, one library
+- Scene folders on several drives (e.g. `D:\Porn Scenes` and `L:\Porn Scenes`) are shown as **one library**, with studio sub-folders merged.
+- **Cross-drive move guard:** renames never move a file to another drive.
+- **Removed stays removed after a move:** a removed scene is recognised by name + size even after it moves to another folder or drive.
+- **Scans fill a blank studio from the folder** the scene sits in.
+
+<p align="center"><img src="docs/screenshots/16-multi-root-library.png" alt="Library picker showing multiple scene roots as one library (demo data)" width="900"></p>
+
+> All v1.1.1 screenshots come from a separate demo instance with a made-up library (fictional titles, performers and studios, abstract placeholder art). Search results and downloads in them are simulated; no real forum results or images are shown.
+
+## At a glance
+| | |
+|---|---|
+| 📚 **Catalogue** | Recursive scans of any folders or drives, posters, rich metadata, grid and table views, fast with 10,000+ items |
+| 🏷️ **Tags** | Unlimited tags in your own categories, ALL / ANY / NOT search, primary genres, saved searches |
+| 🎞️ **Scenes** | ThePornDB matching, standard file names, Fix all, studio and performer aliases, related studios |
+| 📷 **Galleries** | `<video> - GALLERY` folders, From Gallery posters, Find Gallery search and gallery-dl downloads |
+| 🧠 **AI** | Optional smart tagging with any chatbot (no key) or any OpenAI-compatible API |
+| 🖼️ **Smart crop** | On-device face detection centres 2:3 posters on the people |
+| 🔒 **Private** | One local SQLite file, localhost only, no account or telemetry |
+
+## Quick start
+1. Install (Windows: run `FilmTaggerSetup.exe`; see [Install](#install)) and open http://localhost:5050.
+2. **Library & Settings → Library folders:** add your film folders and click *Save & scan*.
+3. Optional: add a free **TMDB key** for film posters and metadata, and a **ThePornDB token** plus **Scenes libraries** for adult scenes.
+4. Tag away: open any title, add tags, or queue titles for **Smart tagging**.
+5. For scenes: **Fetch from ThePornDB**, then **🔎 Find Gallery** to find and download a photo set into the scene's gallery folder.
+
+## Feature guide
 ### Library
 - **Library scan:** recursively finds video files (mkv, mp4, avi, mov, wmv, m4v, mpg, ts, webm, vob, …) in any folders or drives and guesses the title and year from file or folder names. Rescans add new files and flag missing ones. Film libraries are **read-only**: those files are never moved, renamed or deleted. (Scenes libraries can rename files; see below.)
 - **Removed items stay removed:** deleting a film or scene from the catalogue remembers it, so rescans skip it even if the file is later renamed or moved. *Show removed items* in Library & Settings lists them and can bring them back. The files themselves are never touched.
@@ -64,6 +101,15 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Standard file names:** on *Use*, *Fetch*/*Load* and on **Save** (when studio, date, performers or title changed), the file and its same-name sidecars move to `<Studio>\<Studio> - YYYY-MM-DD - <Performers> - <Title>.<ext>`. Windows-illegal characters are removed, nothing is overwritten (` (2)` is appended), junk double extensions like `.mp4 - EPORN.mp4` are cleaned, the catalogue path is updated, an emptied old studio folder is removed (never `_No Studio`) and every move is logged to `_filmtagger_renames.csv` in the scenes folder. Scenes missing studio, date or title are left alone with a note.
 - **Fix all file names** (Library & Settings) shows every planned rename (current → new) with a count first, then applies them with the same rules. Scenes with **`[Hold rename]`** in their notes are skipped (useful for shaky matches); remove the marker to include them again.
 
+### Scene photo galleries and Find Gallery
+- **Galleries:** a folder named `<video stem> - GALLERY` beside a scene's video is its photo gallery. Scenes with one show a 📷 badge with the photo count; **📷 From Gallery** in the Edit window uses any photo as the poster. *Fix all* moves the gallery with its video and scans never catalogue gallery photos as films.
+- **Find Gallery** (🔎 in the Edit window) searches ViperGirls' *Adult Photo Sets* as a guest (no login). Searches are throttled (one at a time, at least 20 s apart), cached, time-limited (3 minutes) and shown step by step. Results are text only, ranked by performers and studio found plus a small boost for a close release date. You can edit the query, untick the studio prefix or paste a thread or post link.
+- **Downloads** run [gallery-dl](https://github.com/mikf/gallery-dl) into the gallery folder with a live file count and **Cancel**. Nothing downloads until you click **Download**; adding to an existing gallery asks first. Scenes marked *Review by hand* are blocked from searching and downloading.
+
+### Libraries on several drives
+- Several Scenes library folders (e.g. on `D:` and `L:`) appear as one library in the picker and filters.
+- Renames stay on the drive the file is on; removed scenes stay removed even after they move (matched by name + size); scans fill an empty studio from the folder name.
+
 ### People
 - **Person profiles** for every actor, director, writer, producer, cinematographer and composer: photo, dates, bio and full filmography. Mainstream people come from TMDB ("You have 23 of 87", *Only films I have*); adult performers from ThePornDB (aliases, measurements, career, links), with the TMDB filmography kept when one exists.
 - **Complete scene lists:** a performer's ThePornDB scenes are loaded page by page in the background (with progress) and cached, so performers with thousands of scenes show the true total. All your own scenes for that person are listed first as **In library**, linked by name, ThePornDB alias or scene id; the rest show 200 at a time with *Load more*. Scenes have their own *Only scenes I have* toggle.
@@ -78,6 +124,7 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **AZNude Status** per film (see below).
 
 ## Screenshots
+v1.1.1 screenshots are shown in [What's new](#whats-new-in-v111) above.
 All screenshots use a demo library of public-domain classic films and fictional placeholder people; the v1.0.43 screenshots use made-up titles and studios, AI-generated covers of fictional people, and abstract placeholder artwork.
 
 ![Plain centre crop (top) vs Film Tagger smart crop (bottom)](docs/screenshots/0-smart-crop-before-after.png)
@@ -150,11 +197,49 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
 - Network requests only happen when **you** use them:
   - TMDB lookups, if you add a TMDB key;
   - ThePornDB lookups for Scenes libraries and adult performers, if you add a ThePornDB token;
+  - ViperGirls (guest search) and the image hosts of a set, only when you use Find Gallery or click Download;
   - your chosen AI provider, if you set one up. Only the film's title, year, director, file path, a short plot and its existing tags are sent.
 - API keys are stored only in your local database.
 
 ## Tech
 Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
+
+## Release history
+<details><summary>Older release notes (v1.0.43 to v1.1.0)</summary>
+
+### New in v1.1.0
+- **Scene photo galleries:** put a scene's photo set in a folder named `<video stem> - GALLERY` beside the video and Film Tagger links it to the scene. Scenes with a gallery show a 📷 badge with the photo count, and the Edit window's **📷 From Gallery** picker lets you use any photo as the poster. *Fix all* file names moves a gallery folder along with its video, and scans never catalogue gallery photos as films.
+- **Gallery re-check:** opening a scene's Edit window looks for its gallery again, so a folder added or removed outside the app is picked up straight away.
+- **🔎 Find Gallery:** searches ViperGirls as a guest (no login) by the scene's performers plus the studio's prefix tag, falling back to one performer at a time and then performers plus studio as plain text. Results are text only, ranked by how many performers and the studio appear plus a small boost for a close release date. The query is editable and you can paste a thread or post link. Searches are throttled (one at a time, at least 20 s apart) and cached. Nothing downloads until you click **Download**, which runs [gallery-dl](https://github.com/mikf/gallery-dl) into the scene's gallery folder with a file count and **Cancel**, removes placeholder/tiny files and asks before adding to an existing gallery. Scenes marked *Review by hand* are blocked from searching and downloading.
+- **Remove from catalog** keeps your scroll position.
+
+### New in v1.0.46
+- **Studio aliases:** the same studio often turns up under different spellings (e.g. *angels.love* from ThePornDB and *Angels Love* from file names). Map any spelling to one main name; case, accents and punctuation are ignored. The alias stays hidden but still works: studio filters and searches for it find the main name, ThePornDB matching treats it as the same studio, and every write (ThePornDB fetch, manual and bulk edits, TMDB studio fill, scans) saves the main name, so a later fetch never undoes the merge.
+- **Studio aliases in Library & Settings:** type the alias and the main name and click *Merge studio*. After a confirmation, existing scenes are updated. Each alias is listed with a *remove* link (scenes keep the main name).
+- **Tidy folders with Fix all:** after a merge, the scene renamer's *Fix all* preview shows matched scenes moving from the old spelling's folder into the main studio folder (e.g. `angels.love\` to `Angels Love\`). Nothing moves until you apply it.
+
+### New in v1.0.45
+- **Performer aliases everywhere:** performers often work under different names at different studios. Cast, People and Everything searches now match any of a performer's aliases (from ThePornDB or added by you), and a person page includes scenes and films credited under every alias.
+- **+ Alias:** add another name for a person straight from their page. Hand-added aliases are kept when the profile is refreshed.
+- **Merge with undo:** found the same performer twice? *⇄ Merge…* folds one person into the other after a confirmation. The other name becomes an alias, cast credits keep working, your files and cast lists are not changed, and each merge can be undone from the person page.
+- **Alias-aware ThePornDB matching:** a file name that credits a performer under an alias now counts as a performer match.
+
+### New in v1.0.44
+- **Much faster ThePornDB matching:** searches now run in parallel, so finding a scene takes seconds instead of close to a minute.
+- **ThePornDB search box always visible** in the scene edit window, prefilled with the title: tweak it and press Enter.
+- **Smarter default sort:** picking the Porn Scenes library sorts by Studio; other libraries sort by Title.
+- **Cleaner titles:** double quotation marks (straight, curly and « ») are removed anywhere in a scene title; apostrophes are kept.
+
+### ✨ New in v1.0.43: smart-crop posters
+Most library apps squeeze a wide cover into a poster slot with a blind centre crop, so the people end up cut in half. Film Tagger looks at the picture first.
+- **Smart-crop posters for Scenes:** Film Tagger takes the full-width studio cover, finds the faces with an on-device face detector (YuNet, MIT licence; falls back to a person detector, then to the most detailed area) and centres the 2:3 poster on the people. It runs in the background whenever a cover changes; on the author's own library it re-centred 545 posters automatically. Images are analysed in memory only, nothing leaves your computer.
+- **Focus slider with live preview:** not happy with a crop? Drag the Left/Right slider in the edit window and the poster updates live, in the dialog and in the grid behind it. *Auto* re-detects, *Reset* centres, and your hand-set value is never overwritten.
+- **Sort: Last edited:** jump straight back to whatever you touched most recently, whether that was a tag edit, a poster change or a metadata refresh.
+- Scene titles wrapped in quotation marks are cleaned up automatically, and the smart-tag prompt no longer adds Cum/Semen to all-girl films.
+
+<p align="center"><img src="docs/screenshots/0-smart-crop-before-after.png" alt="Plain centre crop vs Film Tagger smart crop" width="900"></p>
+
+</details>
 
 ## License
 [MIT](LICENSE) © 2026 Kyle R. Hudson & Grok Bot
