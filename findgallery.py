@@ -242,6 +242,53 @@ def dead_host_msg(hosts):
 def input_file_cmd(path, dest):
     return [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, "-i", path]
 
+POST_RE = re.compile(r'<div id="post_message_(\d+)">(.*?)</blockquote>', re.S)
+LINK_RE = re.compile(r'<a href="(https?://[^"]+)"[^>]*>\s*<img\s', re.I)
+
+def parse_posts(page):
+    """Thread page -> [(post id, [image-host page links])] for posts with linked thumbnails, in order.
+    Only <a href> around an <img> counts (the host page, which gallery-dl resolves to the full-size image); bare
+    <img src> (promo/banner pictures) and forum links are left out; repeated links are kept once."""
+    out = []
+    for pid, body in POST_RE.findall(page or ""):
+        seen, links = set(), []
+        for u in LINK_RE.findall(body):
+            u = html.unescape(u)
+            if "vipergirls.to" in u or u in seen: continue
+            seen.add(u); links.append(u)
+        if links: out.append((pid, links))
+    return out
+
+def set_links(url):
+    """(main links, alternate links) for a thread/post URL: the first image post (or the linked post) is the set;
+    a later post with the same number of images is the same set uploaded again (thread 7285707: 75 + 75), used only to
+    fill photos that fail in the main one, by position. ([], []) when the page can't be read."""
+    m = re.match(r"(https://vipergirls\.to/threads/\d+)(?:\?p=(\d+))?", url or "")
+    if not m: return [], []
+    try: posts = parse_posts(http(m.group(1) + (f"?p={m.group(2)}" if m.group(2) else "")))
+    except Exception: return [], []
+    if not posts: return [], []
+    i = next((k for k, (pid, _) in enumerate(posts) if pid == m.group(2)), 0)
+    main = posts[i][1]
+    # match by the set's main host (thread 7285707: post 1 = 75 vipr.im + 1 imgbox cover, post 2 = 75 vipr.im)
+    host = lambda u: urllib.parse.urlsplit(u).hostname or ""
+    hosts = [host(u) for u in main]; top = max(set(hosts), key=hosts.count)
+    mains = [u for u in main if host(u) == top]
+    other = next((l for pid, l in posts[i + 1:] if len(l) >= len(mains) and sum(host(u) == host(l[0]) for u in l) == len(mains)), None)
+    if not other: return main, []
+    oth = [u for u in other if host(u) == host(other[0])]; it = iter(oth)
+    alt = [next(it) if host(u) == top else "" for u in main]  # same position in the set; "" = no counterpart
+    return main, alt
+
+def links_cmd(path, dest, err, slow=False):
+    return [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, "-e", err] + \
+        (["--sleep-request", RETRY_SLEEP_S, "-R", "2", "--http-timeout", "20"] if slow else []) + ["-i", path]
+
+def read_lines(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f: return [x.strip() for x in f if x.strip()]
+    except OSError: return []
+
 def count_files(d):
     try: return sum(1 for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)) and not n.endswith((".part", ".tmp")))
     except OSError: return 0
@@ -289,6 +336,29 @@ def missing_count(path):
         return len(re.findall(r"NotFoundError|could not be found|404 Not Found", t))
     except (OSError, TypeError): return 0
 
+FAIL_RE = re.compile(r"\]\[error\] ")
+RETRY_PASSES = 2       # extra passes over the same links when some images failed but others downloaded
+RETRY_SLEEP_S = "1.0"  # gallery-dl --sleep-request on retry passes (vipr.im answers 'not found' when hit fast)
+
+def failed_count(path):
+    """How many images gallery-dl reported as failed ([error] lines: not found, HTTP error, timeout). Text only."""
+    try:
+        with open(path, "rb") as f: return len(FAIL_RE.findall(f.read().decode("utf-8", "replace")))
+    except (OSError, TypeError): return 0
+
+def expected_count(url):
+    """Photo count from the thread title ('... 75x 1620x1080 ...'), or None. One guest page fetch; patched in tests."""
+    m = re.match(r"(https://vipergirls\.to/threads/\d+)", url or "")
+    if not m: return None
+    try: t = re.search(r"<title>(.*?)</title>", http(m.group(1)), re.S | re.I)
+    except Exception: return None
+    n = re.search(r"(?<![\dx])(\d{1,4})\s*x(?!\d)", html.unescape(t.group(1))) if t else None
+    return int(n.group(1)) if n else None
+
+def failed_msg(n, log_path):
+    why = "image removed from host" if missing_count(log_path) >= n else "image removed or host error"
+    return f"{n} failed ({why})"
+
 def log_tail(path, n=300):
     """Last non-empty line of gallery-dl's log (text only)."""
     try:
@@ -300,7 +370,7 @@ def log_tail(path, n=300):
 def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
     popen = popen or subprocess.Popen; log = None; log_path = ""
     os.makedirs(dest, exist_ok=True)
-    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set())
+    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None)
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         # gallery-dl's messages go to a log file, never a pipe: an unread pipe fills up (~4 KB on Windows) and
@@ -310,10 +380,32 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
         # so if a post link yields nothing, retry with the whole thread.
         tm = re.match(r"(https://vipergirls\.to/threads/\d+)\?p=\d+", url)
         tries = [url] + ([tm.group(1)] if tm else [])
+        # Link mode: download the set's host-page links ourselves (one gallery-dl run with a URL file), so only the
+        # links that fail are retried and a set posted twice is downloaded once. Falls back to the whole URL.
+        main, alt = set_links(url) if url.startswith(BASE) else ([], [])
+        tmpd = tempfile.gettempdir(); LK = {"main": main, "alt": alt, "todo": list(range(len(main))), "used_alt": False}
+        if main:
+            DL["expected"] = len(main); tries = ["&"] + tries
+        def write_links(urls, name):
+            lf = os.path.join(tmpd, name)
+            with open(lf, "w", encoding="utf-8") as f: f.write("\n".join(urls) + "\n")
+            return lf
         for k, u in enumerate(tries):
-            if k and not u.startswith("@"): DL.update(url=u, last_msg="That post has no images; trying the whole thread")
+            if k and not u.startswith(("@", "%", "&")): DL.update(url=u, last_msg="That post has no images; trying the whole thread")
             log = open(log_path, "wb"); DL["log"] = log_path
-            p = popen(input_file_cmd(u[1:], dest) if u.startswith("@") else gallery_dl_cmd(u, dest), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, creationflags=flags)
+            err = os.path.join(tmpd, "filmtagger_gallerydl_failed.txt")
+            if u.startswith("&"):  # link mode: LK['todo'] = positions still to get; '&&' = from the alternate post
+                src = LK["alt"] if u.startswith("&&") else LK["main"]
+                urls = [src[i] for i in LK["todo"] if src[i]]
+                if not urls: break
+                try: os.remove(err)
+                except OSError: pass
+                cmd = links_cmd(write_links(urls, "filmtagger_gallerydl_urls.txt"), dest, err, slow=LK.get("passes_done", 0) > 0)
+                LK["passes_done"] = LK.get("passes_done", 0) + 1
+            else:
+                uu = u.lstrip("%"); cmd = input_file_cmd(uu[1:], dest) if uu.startswith("@") else gallery_dl_cmd(uu, dest)
+                if u.startswith("%"): cmd = cmd[:-1] + ["--sleep-request", RETRY_SLEEP_S] + cmd[-1:]
+            p = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, creationflags=flags)
             DL["pid"] = getattr(p, "pid", None)
             while p.poll() is None:
                 DL["files"] = count_files(dest); DL["last_msg"] = log_tail(log_path)
@@ -322,7 +414,7 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
                     p.terminate(); DL["error"] = MISSING_MSG; break
                 if DL["files"] >= DEAD_SET_N and len(placeholders(dest)) >= DL["files"]:  # only placeholder images so far
                     p.terminate(); DL["error"] = MISSING_MSG; break
-                if DL["files"] == 0 and not str(u).startswith("@") and dns_failed_hosts(log_path):  # dead host: stop, skip it
+                if DL["files"] == 0 and not str(u).startswith(("@", "&")) and dns_failed_hosts(log_path):  # dead host: stop, skip it
                     p.terminate(); DL["dead"] = dns_failed_hosts(log_path); break
                 if time.time() - DL["started_at"] > timeout: p.terminate(); DL["error"] = "timed out"; break
                 time.sleep(1)
@@ -332,7 +424,24 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
                 except Exception: pass
             DL["rc"] = p.returncode
             log.close(); log = None
-            if p.returncode not in (0, None) and not DL["error"] and not (DL.get("dead") and not u.startswith("@")):
+            if u.startswith("&") and not DL["error"] and not DL["cancel"]:
+                src = LK["alt"] if u.startswith("&&") else LK["main"]
+                before = len(LK["todo"])
+                bad = set(read_lines(err)); LK["todo"] = [i for i in LK["todo"] if src[i] in bad or not src[i]]
+                stuck = LK.get("passes_done", 0) > 1 and len(LK["todo"]) == before  # a slow retry got nothing back
+                if not LK["todo"]: break
+                if count_files(dest) == 0 and not u.startswith("&&"):  # nothing at all from the links: old way
+                    DL["expected"] = None; continue
+                if u.count("&") == 1 and LK.get("passes_done", 0) < 1 + RETRY_PASSES and not stuck:
+                    DL["passes"] = LK["passes_done"]
+                    DL["last_msg"] = f"{len(LK['todo'])} images failed; retrying just those (pass {DL['passes']})"
+                    tries.insert(k + 1, "&"); continue
+                if LK["alt"] and not u.startswith("&&"):
+                    DL["last_msg"] = f"{len(LK['todo'])} images failed; trying the same photos from the thread's other upload"
+                    tries.insert(k + 1, "&&"); continue
+                break
+            # gallery-dl exits non-zero when any image failed; that is only an error when nothing was saved
+            if p.returncode not in (0, None) and not DL["error"] and not count_files(dest) and not (DL.get("dead") and not u.startswith("@")):
                 DL["error"] = log_tail(log_path) or f"gallery-dl exit code {p.returncode}"
             if DL.get("dead") and not DL["error"] and not str(u).startswith("@"):
                 # Posts often embed promo images from a host that is gone (thread 2358460: images.passionhdfan.com,
@@ -346,6 +455,16 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
                 lf = os.path.join(tempfile.gettempdir(), "filmtagger_gallerydl_urls.txt")
                 with open(lf, "w", encoding="utf-8") as f: f.write("\n".join(keep) + "\n")
                 tries.insert(k + 1, "@" + lf); continue
+            # Some images failed but others downloaded: gallery-dl already went on past each error, but the host often
+            # answers 'not found' only because it was hit fast (thread 7285707: 37 of 75 vipr.im pages). Go over the
+            # same links again, slower; files already saved are skipped by gallery-dl.
+            if DL.get("expected") is None and count_files(dest) and failed_count(log_path): DL["expected"] = expected_count(url) or 0
+            if not DL["error"] and not DL["cancel"] and count_files(dest) and failed_count(log_path) and \
+                    not (DL.get("expected") and count_files(dest) >= DL["expected"]) and \
+                    DL.get("passes", 0) < RETRY_PASSES:
+                DL["passes"] = DL.get("passes", 0) + 1
+                DL["last_msg"] = f"{failed_count(log_path)} images failed; retrying them (pass {DL['passes']})"
+                tries.insert(k + 1, "%" + u.lstrip("%")); continue
             if DL["error"] or DL["cancel"] or count_files(dest) or missing_count(log_path): break
     except Exception as e:
         DL["error"] = f"{type(e).__name__}: {e}"
@@ -353,6 +472,17 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
         try: log and log.close()
         except Exception: pass
         DL["removed"] = cleanup(dest); DL["files"] = count_files(dest)
+        if main and DL["files"] and not DL.get("error") and DL.get("expected"):  # link mode: exact unique count
+            DL["failed"] = min(len(LK["todo"]), max(0, len(main) - DL["files"]))
+            t = expected_count(url) if DL["failed"] else None  # title photo count, when given, caps it (a cover link is extra)
+            if t: DL["failed"] = min(DL["failed"], max(0, t - DL["files"]))
+            if DL["failed"]: DL["error"] = f"{DL['failed']} failed (image removed from host)"
+        elif DL["files"] and not DL.get("error") and failed_count(log_path):  # partial set: say how many failed
+            # threads often post the set twice (two hosts), so a failed link may be a photo already saved from the
+            # other post: with a photo count in the title, failed = expected - kept
+            n = failed_count(log_path); e = DL.get("expected") or 0
+            DL["failed"] = max(0, e - DL["files"]) if e else n
+            if DL["failed"]: DL["error"] = failed_msg(DL["failed"], log_path) if not e else f"{DL['failed']} failed (image removed from host)"
         if DL["files"] == 0 and DL.get("dead") and not DL.get("error"): DL["error"] = dead_host_msg(DL["dead"])
         if DL["files"] == 0 and DL.get("error") != "cancelled" and not (DL.get("dead") and DL.get("error") == dead_host_msg(DL["dead"])):
             DL["error"] = MISSING_MSG if (DL.get("error") == MISSING_MSG or missing_count(log_path) or DL["removed"]) else \

@@ -5,6 +5,7 @@ if "FILMTAGGER_DB" not in os.environ: os.environ["FILMTAGGER_DB"] = os.path.join
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 import app, db, findgallery as fg, gallery
+REAL_EXPECTED = fg.expected_count; REAL_SET_LINKS = fg.set_links
 
 FORM = '''<form id="searchform"><select class="primary" id="prefixchoice" name="prefixchoice[]" multiple>
 <option value="" selected>(any prefix)</option><option value="SunsetStudios_com" class="" >SunsetStudios</option>
@@ -20,6 +21,8 @@ RESULTS = ("<html>" + post(111, 9001, "2024.03.09 - Ann Example &amp; Bea Sample
 def reset(monkeypatch):
     fg._CACHE.clear(); fg._STATE["last"] = 0; fg._PREFIX.update(at=0, list=[], forum=None); fg.DL.clear(); fg.DL["running"] = False
     monkeypatch.setattr(fg, "MIN_GAP_S", 0)
+    monkeypatch.setattr(fg, "expected_count", lambda url: None)  # no real forum fetch from downloads
+    monkeypatch.setattr(fg, "set_links", lambda url: ([], []))
     import tpdb; monkeypatch.setattr(tpdb, "call", lambda *a, **k: {"data": []})  # never reach the real ThePornDB
     app.FG_KNOWN.clear(); app.FG_ALIAS.clear()
     pf = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "vg_prefixes.json")
@@ -478,3 +481,90 @@ def test_only_dead_host_clear_message(monkeypatch, tmp_path):
 def test_live_urls_filters_unresolvable():
     keep, dead = fg.live_urls(["http://x.dead/1.jpg", "https://imx.to/i.html"], ok=lambda h: h == "imx.to")
     assert keep == ["https://imx.to/i.html"] and dead == {"x.dead"}
+
+# Thread 7285707: vipr.im answered 'not found' for 37 of 75 pages; the set must continue past each failure, the failed
+# ones are retried (slower), the dead-set stop only applies while nothing is saved, and the panel says how many failed.
+def test_failures_after_successes_retried_and_counted(monkeypatch, tmp_path):
+    script = ("import sys,os\nd=sys.argv[1]; slow='--sleep-request' in sys.argv; os.makedirs(d, exist_ok=True)\n"
+              "for i in range(75):\n"
+              " bad = (i%2 and not slow) or i in (40,50,60)\n"
+              " if bad: sys.stderr.write('[vipr][error] NotFoundError: Requested image could not be found\\n')\n"
+              " elif not os.path.exists(os.path.join(d,'%d.jpg'%i)): open(os.path.join(d,'%d.jpg'%i),'wb').write(bytes([i+1])*20000)\n"
+              "sys.exit(4)\n")
+    cmds = []
+    monkeypatch.setattr(fg, "gallery_dl_cmd", lambda url, dest: [sys.executable, "-c", script, dest, url])
+    real = fg.subprocess.Popen
+    monkeypatch.setattr(fg.subprocess, "Popen", lambda c, **k: cmds.append(c) or real(c, **k))
+    fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
+    assert fg.DL["files"] == 72 and fg.DL["failed"] == 3 and fg.DL["error"] == "3 failed (image removed from host)"
+    assert len(cmds) == 3 and "--sleep-request" in cmds[1]
+
+def test_partial_set_not_stopped_as_dead(monkeypatch, tmp_path):
+    script = ("import sys,os\nd=sys.argv[1]; os.makedirs(d, exist_ok=True)\n"
+              "for i in range(3): open(os.path.join(d,'%d.jpg'%i),'wb').write(bytes([i+1])*20000)\n"
+              "for i in range(30): sys.stderr.write('[vipr][error] NotFoundError: Requested image could not be found\\n')\n"
+              "open(os.path.join(d,'last.jpg'),'wb').write(b'z'*20000)\n")
+    monkeypatch.setattr(fg, "gallery_dl_cmd", lambda url, dest: [sys.executable, "-c", script, dest])
+    fg.run_download("https://vipergirls.to/threads/1", str(tmp_path / "g"), timeout=60)
+    assert fg.DL["files"] == 4 and fg.DL["error"] == "30 failed (image removed from host)"
+
+def test_expected_count_from_title(monkeypatch):
+    monkeypatch.setattr(fg, "expected_count", REAL_EXPECTED)
+    for title, n in [("BadMILFS JC Wilds - Keeping Her Happy 75x 1620x1080 08-17-2022", 75), ("Janice - 250x - 1500px", 250), ("x 1620x1080", None)]:
+        monkeypatch.setattr(fg, "http", lambda url, data=None, timeout=None, t=title: f"<title>{t}</title>")
+        assert fg.expected_count("https://vipergirls.to/threads/7285707") == n
+
+# Thread 7285707 posts the 75 photos twice: failed links whose photo came from the other post are not 'failed'.
+def test_failed_counted_against_title_count(monkeypatch, tmp_path):
+    script = ("import sys,os\nd=sys.argv[1]; os.makedirs(d, exist_ok=True)\n"
+              "for i in range(74): open(os.path.join(d,'%d.jpg'%i),'wb').write(bytes([i+1])*20000)\n"
+              "for i in range(41): sys.stderr.write('[vipr][error] NotFoundError: Requested image could not be found\\n')\nsys.exit(4)\n")
+    n = []
+    monkeypatch.setattr(fg, "gallery_dl_cmd", lambda url, dest: n.append(1) or [sys.executable, "-c", script, dest])
+    monkeypatch.setattr(fg, "expected_count", lambda url: 75)
+    fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
+    assert fg.DL["files"] == 74 and fg.DL["failed"] == 1 and fg.DL["error"] == "1 failed (image removed from host)" and len(n) == 3
+
+# Link mode (thread 7285707, set posted twice): only failed links are retried, the second upload fills gaps by
+# position, and the failed count is unique photos still missing.
+def _post(pid, links): return f'<div id="post_message_{pid}"><blockquote>' + "".join(f'<a href="{u}" target="_blank"><img src="t.jpg" /></a>' for u in links) + '<img src="http://promo.dead/x.jpg" /><a href="https://vipergirls.to/x"><img src="y" /></a></blockquote>'
+
+def test_parse_posts_and_set_links(monkeypatch):
+    page = _post(1, ["https://vipr.im/a", "https://vipr.im/b", "https://vipr.im/a"]) + _post(2, []) + _post(3, ["https://vipr.im/c", "https://vipr.im/d"])
+    assert fg.parse_posts(page) == [("1", ["https://vipr.im/a", "https://vipr.im/b"]), ("3", ["https://vipr.im/c", "https://vipr.im/d"])]
+    monkeypatch.setattr(fg, "set_links", REAL_SET_LINKS); monkeypatch.setattr(fg, "http", lambda url, data=None, timeout=None: page)
+    assert fg.set_links("https://vipergirls.to/threads/7") == (["https://vipr.im/a", "https://vipr.im/b"], ["https://vipr.im/c", "https://vipr.im/d"])
+    assert fg.set_links("https://vipergirls.to/threads/7?p=3#post3") == (["https://vipr.im/c", "https://vipr.im/d"], [])
+    page2 = _post(1, ["https://imgbox.com/cover", "https://vipr.im/a", "https://vipr.im/b"]) + _post(2, ["https://vipr.im/c", "https://vipr.im/d"])
+    monkeypatch.setattr(fg, "http", lambda url, data=None, timeout=None: page2)
+    assert fg.set_links("https://vipergirls.to/threads/7")[1] == ["", "https://vipr.im/c", "https://vipr.im/d"]
+
+def test_link_mode_retries_only_failed(monkeypatch, tmp_path):
+    main = [f"https://vipr.im/m{i}" for i in range(75)]; alt = [f"https://vipr.im/a{i}" for i in range(75)]
+    monkeypatch.setattr(fg, "set_links", lambda url: (main, alt))
+    # host: main links fail on odd i the first time; m10, m20, m30 always fail; alt fills a10, a20 (a30 also gone)
+    script = ("import sys,os\na=sys.argv; d=a[a.index('-D')+1]; e=a[a.index('-e')+1]; urls=open(a[a.index('-i')+1]).read().split()\n"
+              "slow='--sleep-request' in a; os.makedirs(d, exist_ok=True); bad=[]\n"
+              "for u in urls:\n i=int(u.rsplit('/',1)[1][1:]); m=u.rsplit('/',1)[1][0]=='m'\n"
+              " if (m and (i in (10,20,30) or (i%2 and not slow))) or (not m and i==30): bad.append(u); continue\n"
+              " open(os.path.join(d,'%d.jpg'%i),'wb').write(bytes([i+1])*20000)\n"
+              "open(e,'w').write('\\n'.join(bad)+('\\n' if bad else ''))\nsys.exit(4 if bad else 0)\n")
+    runs = []
+    def lc(path, dest, err, slow=False): runs.append(len(open(path).read().split())); return [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path] + (["--sleep-request", "1"] if slow else [])
+    monkeypatch.setattr(fg, "links_cmd", lc)
+    fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
+    assert runs == [75, 40, 3, 3]  # (2nd retry still recovers nothing here, but the 1st did)  # all, then only the failed ones, then the other upload for the 3 still missing
+    assert fg.DL["files"] == 74 and fg.DL["failed"] == 1 and fg.DL["error"] == "1 failed (image removed from host)"
+
+def test_stuck_retry_stops_and_title_caps(monkeypatch, tmp_path):
+    main = ["https://imgbox.com/cover"] + [f"https://vipr.im/m{i}" for i in range(75)]
+    monkeypatch.setattr(fg, "set_links", lambda url: (main, [""] + [f"https://vipr.im/a{i}" for i in range(75)]))
+    monkeypatch.setattr(fg, "expected_count", lambda url: 75)
+    script = ("import sys,os\na=sys.argv; d=a[a.index('-D')+1]; e=a[a.index('-e')+1]; urls=open(a[a.index('-i')+1]).read().split()\n"
+              "os.makedirs(d, exist_ok=True); bad=[u for u in urls if 'cover' in u or u.endswith(('m5','a5','m6'))]\n"
+              "[open(os.path.join(d,u.rsplit('/',1)[1][1:]+'.jpg'),'wb').write(b'q'*20000+u.encode()) for u in urls if u not in bad]\n"
+              "open(e,'w').write('\\n'.join(bad)+'\\n')\n")
+    runs = []
+    monkeypatch.setattr(fg, "links_cmd", lambda path, dest, err, slow=False: runs.append(len(open(path).read().split())) or [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path])
+    fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
+    assert runs == [76, 3, 2] and fg.DL["files"] == 74 and fg.DL["error"] == "1 failed (image removed from host)"

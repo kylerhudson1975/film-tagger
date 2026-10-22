@@ -306,6 +306,9 @@ def connect():
     c.executescript(SCHEMA)
     c.execute("CREATE TABLE IF NOT EXISTS excluded(id INTEGER PRIMARY KEY, path TEXT, size INTEGER, oshash TEXT, title TEXT, kind TEXT, removed_at REAL)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_excluded_size ON excluded(size)")
+    xcols = {r[1] for r in c.execute("PRAGMA table_info(excluded)")}
+    for col in ("studio", "cast_", "release_date"):  # shown and sorted in Settings > Removed items
+        if col not in xcols: c.execute(f"ALTER TABLE excluded ADD COLUMN {col} TEXT")
     cols = {r[1] for r in c.execute("PRAGMA table_info(films)")}
     if "edited_fields" not in cols: c.execute("ALTER TABLE films ADD COLUMN edited_fields TEXT")
     if "tmdb_status" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_status TEXT")
@@ -398,15 +401,16 @@ def file_hash(p):
 
 def exclude_film(c, fid):
     """Remember a film's files before it is removed from the library, so later scans skip them (also after a rename/move)."""
-    f = c.execute("SELECT title, kind FROM films WHERE id=?", (fid,)).fetchone()
+    f = c.execute("SELECT title, kind, studio, cast_, release_date FROM films WHERE id=?", (fid,)).fetchone()
     if not f: return 0
     n = 0
     for x in c.execute("SELECT path, size FROM files WHERE film_id=?", (fid,)).fetchall():
         size = x["size"]
         try: size = os.path.getsize(x["path"])
         except OSError: pass
-        c.execute("INSERT INTO excluded(path,size,oshash,title,kind,removed_at) VALUES(?,?,?,?,?,?)",
-                  (x["path"], size, file_hash(x["path"]) if os.path.exists(x["path"]) else None, f["title"], f["kind"], time.time())); n += 1
+        c.execute("INSERT INTO excluded(path,size,oshash,title,kind,removed_at,studio,cast_,release_date) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (x["path"], size, file_hash(x["path"]) if os.path.exists(x["path"]) else None, f["title"], f["kind"], time.time(),
+                   f["studio"], f["cast_"], f["release_date"])); n += 1
     c.execute("DELETE FROM files WHERE film_id=?", (fid,))
     c.execute("DELETE FROM films WHERE id=?", (fid,))
     return n

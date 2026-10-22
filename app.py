@@ -565,8 +565,25 @@ def bulk_delete():
 
 @app.get("/api/excluded")
 def excluded_list():
-    rows = C().execute("SELECT id, path, size, title, kind, removed_at, oshash IS NOT NULL hashed FROM excluded ORDER BY removed_at DESC").fetchall()
-    return jsonify(items=[dict(r) | {"exists": os.path.exists(r["path"])} for r in rows])
+    c = C(); sr = db.scene_roots(c)
+    rows = c.execute("SELECT id, path, size, title, kind, removed_at, oshash IS NOT NULL hashed, studio, cast_ FROM excluded").fetchall()
+    return jsonify(items=sort_excluded([excluded_item(dict(r), sr) for r in rows]))
+
+def excluded_item(r, sr):
+    """Studio and performers: stored at removal, else from the <Studio> folder / file name (scene roots only)."""
+    import tpdb
+    in_scenes = any(db.under(r["path"], x) for x in sr)
+    n = tpdb.parse_name(r["path"]) if in_scenes else {}
+    st = (r.get("studio") or "").strip() or (db.folder_studio(r["path"], sr) if in_scenes else None) or n.get("studio") or ""
+    if st.startswith("_"): st = ""  # '_No Studio' / '_Duplicates' folders are not studios
+    perf = [x.strip() for x in (r.get("cast_") or "").split(",") if x.strip()] or n.get("performers") or []
+    r.update(studio=st, performers=perf, exists=os.path.exists(r["path"])); r.pop("cast_", None)
+    return r
+
+def sort_excluded(items):
+    """Studio A-Z (no studio last), then first performer A-Z (none last), then newest removal first."""
+    return sorted(items, key=lambda x: (not x["studio"], db.fold(x["studio"]), not x["performers"],
+                                        db.fold(x["performers"][0]) if x["performers"] else "", -(x["removed_at"] or 0)))
 
 @app.post("/api/excluded/<int:xid>/restore")
 def excluded_restore(xid):
