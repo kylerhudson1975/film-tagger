@@ -7,7 +7,15 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.2.1
+### ✂ Poster editor
+- **Edit any poster in place:** open a film or scene (Movies, Classic Porn, Porn Scenes) and click **✂ Edit poster** under the poster.
+- **Crop** with a draggable, resizable box, **locked to 2:3** by default (untick *Lock 2:3* for a free crop, or pick *Whole image*). **Rotate** 90° left or right and **flip** left-right.
+- **Live size readout** of the result in pixels of the full-size original, with a **warning when it is under 600 px wide**.
+- **High-quality save:** the edit is redone on the full-resolution original (JPEG quality 95, PNG stays PNG); only results over 2000 px on the long side are shrunk.
+- The result is a **hand-edited custom poster**, so TMDB/ThePornDB fetches never replace it. The previous poster is kept in `posters/backup/`, and **↶ Restore previous** puts it back. *Cancel* changes nothing.
 
 ## What's new in v1.2.0
 Better posters for Movies, a Find Gallery that learns from you, and gallery downloads that cope with the real world.
