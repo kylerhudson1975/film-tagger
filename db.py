@@ -247,6 +247,38 @@ def remove_studio_alias(c, alias):
     """Forget a studio alias (films keep their current main name)."""
     c.execute("DELETE FROM studio_aliases WHERE alias_key=?", (studio_key(alias),)); c.commit(); _SA["key"] = None
 
+# ---------- learned ViperGirls rules (Find Gallery): learned only from thread URLs Kyle pastes by hand ----------
+VG_SCHEMA = ("CREATE TABLE IF NOT EXISTS vg_learned(studio_key TEXT PRIMARY KEY, studio TEXT, prefix TEXT, prefix_label TEXT, "
+             "names_in_title INTEGER, notes TEXT, source_url TEXT, created REAL)")
+
+def vg_learned_list(c):
+    c.execute(VG_SCHEMA)
+    return [dict(r) for r in c.execute("SELECT * FROM vg_learned ORDER BY studio COLLATE NOCASE")]
+
+def vg_learned_get(c, names):
+    """The learned rule for a studio (any of its names/aliases, case and punctuation ignored), or None."""
+    c.execute(VG_SCHEMA)
+    for n in names or []:
+        k = studio_key(n)
+        if not k: continue
+        r = c.execute("SELECT * FROM vg_learned WHERE studio_key=?", (k,)).fetchone()
+        if r: return dict(r)
+    return None
+
+def vg_learned_set(c, studio, prefix, prefix_label, names_in_title, notes, source_url):
+    """Store (replace) the rule for `studio`: the latest hand-pasted URL always wins."""
+    import time as _t
+    k = studio_key(studio)
+    if not k: raise ValueError("studio required")
+    c.execute(VG_SCHEMA)
+    c.execute("INSERT OR REPLACE INTO vg_learned(studio_key, studio, prefix, prefix_label, names_in_title, notes, source_url, created) "
+              "VALUES(?,?,?,?,?,?,?,?)", (k, " ".join(studio.split()), prefix, prefix_label,
+                                          None if names_in_title is None else int(bool(names_in_title)), notes, source_url, _t.time()))
+    c.commit()
+
+def vg_learned_delete(c, key):
+    c.execute(VG_SCHEMA); n = c.execute("DELETE FROM vg_learned WHERE studio_key=?", (studio_key(key),)).rowcount; c.commit(); return n
+
 # ---------- related studios: Kyle-defined 'sub-label of' links (e.g. 'Out of the Family' -> "Devil's Film") ----------
 def _links_table(c):
     c.execute("CREATE TABLE IF NOT EXISTS studio_links(child_key TEXT PRIMARY KEY, child TEXT NOT NULL, parent TEXT NOT NULL)")
@@ -334,6 +366,7 @@ def connect():
     if "gallery_path" not in cols: c.execute("ALTER TABLE films ADD COLUMN gallery_path TEXT")  # scene photo gallery folder (gallery.py)
     if "gallery_count" not in cols: c.execute("ALTER TABLE films ADD COLUMN gallery_count INTEGER")
     c.execute("CREATE TABLE IF NOT EXISTS studio_aliases(alias_key TEXT PRIMARY KEY, alias TEXT NOT NULL, canonical TEXT NOT NULL)")  # hidden studio spellings
+    c.execute(VG_SCHEMA)  # learned ViperGirls rules (Find Gallery)
     for col, typ in (("resolution", "TEXT"), ("res_width", "INTEGER"), ("res_height", "INTEGER"), ("res_checked", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # nullable; existing rows untouched
     if "primary_genre" not in cols: c.execute("ALTER TABLE films ADD COLUMN primary_genre TEXT")  # single main genre; hand edits protected

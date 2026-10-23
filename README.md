@@ -7,7 +7,32 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.2.0
+Better posters for Movies, a Find Gallery that learns from you, and gallery downloads that cope with the real world.
+
+### 🖼 Find Posters
+- **Browse every TMDB poster** for a Movies or Classic Porn film: open the film and click **🖼 Find Posters**. English and no-language posters come first, then the best-rated, with language, size and votes under each one. It uses the film's existing TMDB id, so there is no searching and only one TMDB request.
+- **Click a poster to use it.** The full-size image is downloaded and saved as a **hand edit**, so later TMDB fetches never replace it.
+- **↶ Restore previous poster** puts back what the film had before your last pick. Nothing is deleted: replaced posters are kept in `posters/backup/`.
+
+<p align="center"><img src="docs/screenshots/18-find-posters.png" alt="Find Posters showing every TMDB poster for The Lady Eve (1941)" width="900"></p>
+
+### 🧠 Find Gallery learns from the threads you paste
+- When you **paste a ViperGirls thread URL** and click **Download**, Film Tagger reads that thread once and learns how ViperGirls posts the studio: the **prefix** it really uses, and whether its **thread titles leave performer names out**.
+- Later searches for that studio try the learned prefix first (then the usual one), and for studios whose titles skip names they move straight to **prefix + last names** and aliases. The search panel shows the rule it used.
+- Rules are learned **only from links you paste by hand**, never from automatic results, and a newer link replaces the old rule. View and delete them in **Library & Settings → Learned ViperGirls rules**.
+
+### ⬇️ Gallery downloads that survive hiccups
+- **Per-file hiccups no longer stop a download:** a photo that vanishes or is renamed while the folder is being checked is skipped, and gallery-dl is never left running on its own after an error.
+- **Long folder names are shortened safely:** when `<video name> - GALLERY` would get close to the Windows 260-character path limit, the gallery gets a shortened, stable name (`<start of name>~<short hash> - GALLERY`). Existing long-named galleries are still found and used.
+- **Resume by re-pasting the thread:** paste the same link again and choose to download into the existing gallery. Photos you already have are kept and the missing ones are added.
+
+### 📷 Huge photos as posters
+**Use this image** (From Gallery) and **poster upload** now accept big camera photos up to 200 MB. Anything over 15 MB is saved as a **2000 px JPEG copy** (aspect ratio kept); the original file is never changed.
+
+> The Find Posters screenshot comes from a demo instance with one mainstream film, *The Lady Eve* (1941), and its real TMDB posters.
 
 ## What's new in v1.1.2
 - **Studio click fixed:** clicking a studio finds all its scenes, including names with apostrophes, spelling variants and scenes matched only by folder.
@@ -113,10 +138,15 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Galleries:** a folder named `<video stem> - GALLERY` beside a scene's video is its photo gallery. Scenes with one show a 📷 badge with the photo count; **📷 From Gallery** in the Edit window uses any photo as the poster. *Fix all* moves the gallery with its video and scans never catalogue gallery photos as films.
 - **Find Gallery** (🔎 in the Edit window) searches ViperGirls' *Adult Photo Sets* as a guest (no login). Searches are throttled (one at a time, at least 20 s apart), cached, time-limited (3 minutes) and shown step by step. Results are text only, ranked by performers and studio found plus a small boost for a close release date. You can edit the query, untick the studio prefix or paste a thread or post link.
 - **Downloads** run [gallery-dl](https://github.com/mikf/gallery-dl) into the gallery folder with a live file count and **Cancel**. Nothing downloads until you click **Download**; adding to an existing gallery asks first. Scenes marked *Review by hand* are blocked from searching and downloading.
+- **Learned ViperGirls rules:** a thread link you paste teaches Find Gallery the studio's real prefix and whether its titles name performers; manage the rules in Library & Settings. Long gallery folder names are shortened safely, and re-pasting a thread resumes a download.
 
 ### Libraries on several drives
 - Several Scenes library folders (e.g. on `D:` and `L:`) appear as one library in the picker and filters.
 - Renames stay on the drive the file is on; removed scenes stay removed even after they move (matched by name + size); scans fill an empty studio from the folder name.
+
+### Posters
+- **🖼 Find Posters** lists every TMDB poster for a Movies or Classic Porn film; your pick is a protected hand edit, with **↶ Restore previous poster** to undo.
+- **Custom posters** by upload, URL, drag and drop or **From Gallery**; photos over 15 MB are saved as a 2000 px copy.
 
 ### People
 - **Person profiles** for every actor, director, writer, producer, cinematographer and composer: photo, dates, bio and full filmography. Mainstream people come from TMDB ("You have 23 of 87", *Only films I have*); adult performers from ThePornDB (aliases, measurements, career, links), with the TMDB filmography kept when one exists.
@@ -167,7 +197,7 @@ Screenshots captured and censored by the author from his own Porn Scenes library
 ![Freshly downloaded gallery](docs/screenshots/scenes-08-gallery-done.jpg)
 
 ## Screenshots
-v1.1.1 screenshots are shown in [What's new](#whats-new-in-v111) above.
+The v1.2.0 Find Posters screenshot is in [What's new in v1.2.0](#whats-new-in-v120) and the v1.1.1 screenshots in [What's new in v1.1.1](#whats-new-in-v111) above.
 Movie screenshots show real mainstream titles and their TMDB posters from the author's own Movies library, copied into a separate demo instance (no adult titles). The Porn Scenes screenshots were captured and censored by the author. The smart-crop screenshots (v1.0.43) use made-up titles and abstract artwork.
 
 ![Plain centre crop (top) vs Film Tagger smart crop (bottom)](docs/screenshots/0-smart-crop-before-after.png)

@@ -195,6 +195,65 @@ def normalize_url(u):
     if pid and pid.isdigit(): return post_link(m.group(1), pid)  # one post = one photo set
     return BASE + "threads/" + m.group(1)
 
+# ---------- learning from a hand-pasted thread URL ----------
+def thread_url(u):
+    """Normalized thread/post URL -> the thread page URL (no post id), or None."""
+    m = re.match(r"(https://vipergirls\.to/threads/\d+)", u or "")
+    return m.group(1) if m else None
+
+def thread_info(page):
+    """Thread page -> dict(title, slug, forums) (text only). title is the thread title as shown (prefix included);
+    slug is the URL slug (vBulletin leaves the prefix out of it); forums are the breadcrumb forum names. None if unreadable."""
+    page = page or ""
+    m = re.search(r'<span class="threadtitle"><a href="threads/\d+-?([^"?#]*)[^"]*"[^>]*>([^<]*)</a>', page)
+    if m: slug, title = m.group(1), m.group(2)
+    else:
+        t = re.search(r"<title>(.*?)</title>", page, re.S | re.I)
+        if not t: return None
+        slug, title = "", t.group(1)
+    title = " ".join(html.unescape(title).split())
+    if not title: return None
+    forums = [" ".join(html.unescape(x).split()) for x in re.findall(r'<li class="navbit"><a href="forums/[^"]*">([^<]*)</a>', page)]
+    return dict(title=title, slug=urllib.parse.unquote(slug), forums=forums)
+
+def title_prefix(title, slug, plist):
+    """The forum prefix a thread was posted under -> (value, label) or None. The prefix is the title's leading text that
+    the slug leaves out ('BadMILFS JC Wilds, ...' vs slug 'JC-Wilds-...'); else the longest prefix label the title starts with."""
+    words = (title or "").split(); sk = key(slug.replace("-", " "))[:12]
+    if sk:
+        for i in range(1, min(len(words), 6)):
+            if key(" ".join(words[i:])).startswith(sk):
+                v = match_prefix([" ".join(words[:i])], plist)
+                if v: return v, dict(plist).get(v, v)
+                break
+    tk = key(title)
+    for v, label in sorted(plist, key=lambda x: -len(key(x[1]))):
+        if key(label) and tk.startswith(key(label)): return v, label
+    return None
+
+def names_in_title(title, performers):
+    """True if any performer (or alias) appears in the title, False if none do, None if the scene has no performers."""
+    groups = [[n] if isinstance(n, str) else list(n) for n in performers]
+    groups = [[x for x in g if x and x.strip()] for g in groups]; groups = [g for g in groups if g]
+    if not groups: return None
+    t, tk = db.fold(title), key(title)
+    return any(db.fold(" ".join(n.split())) in t or key(n) in tk for g in groups for n in g)
+
+def learn(page, studio, performers, plist):
+    """Rule learned from a hand-pasted thread page for `studio` -> dict(prefix, prefix_label, names_in_title, notes) or None.
+    Only threads in Adult Photo Sets (or its subforums) count, since searches only look there. Nothing here builds a search."""
+    info = thread_info(page)
+    if not info or not studio: return None
+    if info["forums"] and not any(f.lower() == FORUM_NAME.lower() for f in info["forums"]): return None
+    pre = title_prefix(info["title"], info["slug"], plist)
+    nit = names_in_title(info["title"], performers)
+    if not pre and nit is not False: return None
+    notes = []
+    if pre: notes.append(f"{studio} threads are posted under prefix '{pre[1]}'")
+    if nit is False: notes.append("thread titles leave performer names out, so searches lean on the prefix + last names and aliases")
+    return dict(prefix=pre[0] if pre else None, prefix_label=pre[1] if pre else None, names_in_title=nit,
+                notes="; ".join(notes)[:1].upper() + "; ".join(notes)[1:] + ".")
+
 # ---------- download (gallery-dl as a separate process) ----------
 DL = {"running": False}
 
@@ -293,6 +352,11 @@ def count_files(d):
     try: return sum(1 for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)) and not n.endswith((".part", ".tmp")))
     except OSError: return 0
 
+def _size(p):
+    """File size, or None if it is gone/unreadable (gallery-dl renames 'x.jpg.part' -> 'x.jpg' while we look)."""
+    try: return os.path.getsize(p) if os.path.isfile(p) else None
+    except OSError: return None
+
 DUP_N = 3  # this many byte-identical files in one set = a host placeholder, not photos
 
 def placeholders(d):
@@ -303,8 +367,8 @@ def placeholders(d):
     except OSError: return []
     for x in names:
         p = os.path.join(d, x)
-        if not os.path.isfile(p): continue
-        sz = os.path.getsize(p)
+        sz = _size(p)
+        if sz is None: continue
         if sz < MIN_FILE_BYTES or sz in PLACEHOLDER_SIZES or x.endswith((".part", ".tmp")): out.append(p)
         else: by_size.setdefault(sz, []).append(p)
     for group in by_size.values():
@@ -368,7 +432,7 @@ def log_tail(path, n=300):
     except OSError: return ""
 
 def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
-    popen = popen or subprocess.Popen; log = None; log_path = ""
+    popen = popen or subprocess.Popen; log = None; log_path = ""; p = None
     os.makedirs(dest, exist_ok=True)
     DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None)
     try:
@@ -408,11 +472,16 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
             p = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, creationflags=flags)
             DL["pid"] = getattr(p, "pid", None)
             while p.poll() is None:
-                DL["files"] = count_files(dest); DL["last_msg"] = log_tail(log_path)
                 if DL["cancel"]: p.terminate(); DL["error"] = "cancelled"; break
+                try:  # watching the folder must never end the download: a file can vanish/rename between list and stat
+                    DL["files"] = count_files(dest); DL["last_msg"] = log_tail(log_path)
+                    ph = len(placeholders(dest)) if DL["files"] >= DEAD_SET_N else 0
+                except OSError as e:
+                    log_w = globals()["log"]; log_w.warning("Find Gallery: folder check skipped: %s", type(e).__name__)
+                    time.sleep(1); continue
                 if DL["files"] == 0 and missing_count(log_path) >= DEAD_SET_N:  # dead set: stop early
                     p.terminate(); DL["error"] = MISSING_MSG; break
-                if DL["files"] >= DEAD_SET_N and len(placeholders(dest)) >= DL["files"]:  # only placeholder images so far
+                if DL["files"] >= DEAD_SET_N and ph >= DL["files"]:  # only placeholder images so far
                     p.terminate(); DL["error"] = MISSING_MSG; break
                 if DL["files"] == 0 and not str(u).startswith(("@", "&")) and dns_failed_hosts(log_path):  # dead host: stop, skip it
                     p.terminate(); DL["dead"] = dns_failed_hosts(log_path); break
@@ -468,6 +537,10 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
             if DL["error"] or DL["cancel"] or count_files(dest) or missing_count(log_path): break
     except Exception as e:
         DL["error"] = f"{type(e).__name__}: {e}"
+        # never leave gallery-dl running on its own (it would keep writing while cleanup() removes its .part files)
+        try:
+            if p and p.poll() is None: p.terminate(); p.wait(timeout=20)
+        except Exception: pass
     finally:
         try: log and log.close()
         except Exception: pass

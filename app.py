@@ -8,7 +8,7 @@ import tpdb
 import focus as focusmod
 import gallery as gallerymod
 
-APP_VERSION = "1.1.2"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.2.0"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -286,6 +286,32 @@ def people():
 # ---------- custom poster art (stored in films.custom_poster; TMDB code only ever writes films.poster) ----------
 POSTERS_DIR = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "posters")
 POSTER_MAX = 15 * 1024 * 1024
+POSTER_SRC_MAX = 200 * 1024 * 1024   # absolute cap on a source photo we will read and shrink
+POSTER_SRC_PIXELS = 250_000_000      # absolute cap on decoded pixels (about 15800 x 15800)
+POSTER_FIT_PX = 2000                 # long side of a shrunk poster
+POSTER_FIT_Q = 90
+
+def fit_poster(data):
+    """Bytes of a too-big image -> (jpeg bytes, 'jpg') downscaled to POSTER_FIT_PX on the long side, keeping the
+    aspect ratio, or (None, error). Images already <= POSTER_MAX are not passed here (kept as-is)."""
+    if len(data) > POSTER_SRC_MAX: return None, "Image is too large (max 200 MB)"
+    try:
+        import cv2, numpy as np
+        buf = np.frombuffer(data, np.uint8)
+        img = None
+        for flag in (cv2.IMREAD_REDUCED_COLOR_4, cv2.IMREAD_REDUCED_COLOR_2, cv2.IMREAD_COLOR):
+            img = cv2.imdecode(buf, flag)
+            if img is None: return None, "That file is not a valid JPG, PNG or WebP image"
+            h, w = img.shape[:2]
+            if max(h, w) >= POSTER_FIT_PX or flag == cv2.IMREAD_COLOR: break
+        if h * w > POSTER_SRC_PIXELS: return None, "Image has too many pixels"
+        s = POSTER_FIT_PX / max(h, w)
+        if s < 1: img = cv2.resize(img, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
+        ok, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, POSTER_FIT_Q])
+        if not ok: return None, "Could not re-encode that image"
+        return out.tobytes(), "jpg"
+    except Exception:
+        return None, "Could not read that image"
 POSTER_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
 
 def sniff_image(b):
@@ -317,15 +343,17 @@ def poster_file(name):
 def set_poster(fid):
     c = C()
     if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
-    if request.content_length and request.content_length > POSTER_MAX + 64 * 1024:
-        return jsonify(error="Image is too large (max 15 MB)"), 413
+    if request.content_length and request.content_length > POSTER_SRC_MAX + 64 * 1024:
+        return jsonify(error="Image is too large (max 200 MB)"), 413
     up = request.files.get("file")
     if up:
         if (up.mimetype or "").lower() not in POSTER_TYPES: return jsonify(error="Only JPG, PNG or WebP images are allowed"), 415
-        data = up.read(POSTER_MAX + 1)
-        if len(data) > POSTER_MAX: return jsonify(error="Image is too large (max 15 MB)"), 413
+        data = up.read(POSTER_SRC_MAX + 1)
         ext = sniff_image(data)
         if not ext: return jsonify(error="That file is not a valid JPG, PNG or WebP image"), 415
+        if len(data) > POSTER_MAX:
+            data, ext = fit_poster(data)
+            if data is None: return jsonify(error=ext), 413
         val = _save_poster(c, fid, data, ext); note = "uploaded"
     else:
         url = ((request.json or {}).get("url") or "").strip() if request.is_json else ""
@@ -350,6 +378,137 @@ def remove_poster(fid):
     c = C(); _drop_local_poster(c, fid)
     c.execute("UPDATE films SET custom_poster=NULL, updated_at=? WHERE id=?", (time.time(), fid)); c.commit(); kick_focus()
     return get_film(fid)
+
+# ---------- Find Posters: pick any TMDB poster for a mainstream movie (stored as a hand-set custom_poster) ----------
+POSTER_BACKUP_DIR = os.path.join(POSTERS_DIR, "backup")
+TMDB_IMG = "https://image.tmdb.org/t/p/"
+FP_LANGS = ("en,null,de,fr,es,it,pt,nl,sv,da,no,fi,is,pl,cs,sk,hu,ro,bg,el,tr,ru,uk,sr,hr,sl,lt,lv,et,he,ar,fa,hi,"
+            "th,vi,id,ms,ja,ko,zh,ca,eu,gl,ka")
+import re as _fp_re
+FP_PATH_RE = _fp_re.compile(r"^/[A-Za-z0-9_\-]+\.(jpg|jpeg|png|webp)$")
+
+def fp_sort(posters):
+    """English and no-language posters first, then by vote_average, then vote_count (both high first)."""
+    return sorted(posters, key=lambda p: (0 if p.get("iso_639_1") in ("en", None, "") else 1,
+                                          -(p.get("vote_average") or 0), -(p.get("vote_count") or 0)))
+
+def _fp_prev_key(fid): return f"poster_prev:{fid}"
+
+def _fp_backup_current(c, fid):
+    """Keep the film's current custom poster: a local file is moved to posters/backup/ (never deleted).
+    Returns the value to restore later (/posters/backup/<name>, a URL, or None for 'no custom poster')."""
+    r = c.execute("SELECT custom_poster FROM films WHERE id=?", (fid,)).fetchone()
+    v = (r and r[0]) or None
+    if v and v.startswith("/posters/") and not v.startswith("/posters/backup/"):
+        src = os.path.join(POSTERS_DIR, os.path.basename(v))
+        if os.path.exists(src):
+            os.makedirs(POSTER_BACKUP_DIR, exist_ok=True)
+            name = os.path.basename(v)
+            if os.path.exists(os.path.join(POSTER_BACKUP_DIR, name)): name = f"{int(time.time())}-{name}"
+            os.replace(src, os.path.join(POSTER_BACKUP_DIR, name))
+            return "/posters/backup/" + name
+        return None
+    return v
+
+def _fp_restore_value(v):
+    """Backup value -> custom_poster value (a backed-up local file is moved back into posters/)."""
+    if v and v.startswith("/posters/backup/"):
+        name = os.path.basename(v); src = os.path.join(POSTER_BACKUP_DIR, name)
+        if not os.path.exists(src): return None, "The backed-up poster file is missing"
+        os.makedirs(POSTERS_DIR, exist_ok=True)
+        os.replace(src, os.path.join(POSTERS_DIR, name)); return "/posters/" + name, None
+    return v, None
+
+def _fp_movie(c, fid):
+    r = c.execute("SELECT id, kind, tmdb_id FROM films WHERE id=?", (fid,)).fetchone()
+    if not r: return None, (jsonify(error="not found"), 404)
+    if r["kind"] == "scene": return None, (jsonify(error="Find Posters is only for movies, not scenes"), 400)
+    return r, None
+
+def _fp_err(e):
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code == 401: return "TMDB rejected the API key (401)", 502
+        if e.code == 404: return "TMDB has no such movie (404)", 404
+        if e.code == 429: return "TMDB is rate limiting; try again in a moment", 429
+        return f"TMDB error {e.code}", 502
+    return f"Network/TMDB error: {type(e).__name__}", 502  # never str(e): keep any URL (and key) out of replies/logs
+
+@app.get("/api/films/<int:fid>/findposters")
+def findposters(fid):
+    """All TMDB posters for the film's existing TMDB id (one /movie/{id}/images request), best first."""
+    c = C(); r, bad = _fp_movie(c, fid)
+    if bad: return bad
+    can_restore = db.get_setting(c, _fp_prev_key(fid)) is not None
+    if not r["tmdb_id"]: return jsonify(matched=False, error="Not matched on TMDB", posters=[], can_restore=can_restore)
+    key = db.get_setting(c, "tmdb_key", "")
+    if not key: return jsonify(error="No TMDB API key set in Settings"), 400
+    try: m = tmdb(f"movie/{r['tmdb_id']}/images", key, include_image_language=FP_LANGS)
+    except Exception as e:
+        msg, code = _fp_err(e); return jsonify(error=msg), code
+    out = []
+    for p in fp_sort(m.get("posters") or []):
+        fp = p.get("file_path") or ""
+        if not FP_PATH_RE.match(fp): continue
+        out.append(dict(file_path=fp, thumb=TMDB_IMG + "w342" + fp, lang=p.get("iso_639_1") or None,
+                        width=p.get("width"), height=p.get("height"),
+                        vote_average=p.get("vote_average"), vote_count=p.get("vote_count")))
+    return jsonify(matched=True, tmdb_id=r["tmdb_id"], posters=out, can_restore=can_restore)
+
+def _fp_download(fp):
+    """Original size first, then w780. Returns (bytes, ext) or (None, error)."""
+    last = "Could not download that poster"
+    for size in ("original", "w780"):
+        try:
+            req = urllib.request.Request(TMDB_IMG + size + fp, headers={"User-Agent": "FilmTagger", "Accept": "image/*"})
+            with urllib.request.urlopen(req, timeout=30) as resp: data = resp.read(POSTER_SRC_MAX + 1)
+        except Exception as e:
+            last = f"Could not download that poster ({type(e).__name__})"; continue
+        if len(data) > POSTER_SRC_MAX: last = "Image is too large (max 200 MB)"; continue
+        ext = sniff_image(data)
+        if not ext: last = "TMDB did not return an image"; continue
+        if len(data) > POSTER_MAX:
+            data, ext = fit_poster(data)
+            if data is None: last = ext; continue
+        return data, ext
+    return None, last
+
+@app.post("/api/films/<int:fid>/findposters/set")
+def findposters_set(fid):
+    """{file_path:"/abc.jpg"} - download that TMDB poster and make it the film's custom (hand-set) poster.
+    The previous custom poster is backed up and can be put back with /findposters/restore."""
+    c = C(); r, bad = _fp_movie(c, fid)
+    if bad: return bad
+    if not r["tmdb_id"]: return jsonify(error="Not matched on TMDB"), 400
+    fp = ((request.json or {}).get("file_path") or "").strip() if request.is_json else ""
+    if not FP_PATH_RE.match(fp): return jsonify(error="Not a TMDB poster path"), 400
+    data, ext = _fp_download(fp)
+    if data is None: return jsonify(error=ext), 502
+    prev = _fp_backup_current(c, fid)
+    os.makedirs(POSTERS_DIR, exist_ok=True)  # same folder + naming as uploads (old file already moved to backup)
+    name = f"film-{fid}-{int(time.time())}.{ext}"
+    if os.path.exists(os.path.join(POSTERS_DIR, name)) or os.path.exists(os.path.join(POSTER_BACKUP_DIR, name)):
+        name = f"film-{fid}-{int(time.time() * 1000)}.{ext}"
+    with open(os.path.join(POSTERS_DIR, name), "wb") as fh: fh.write(data)
+    val = "/posters/" + name
+    db.set_setting(c, _fp_prev_key(fid), {"value": prev, "at": time.time()})
+    ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")); ed.add("custom_poster")
+    c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", (val, json.dumps(sorted(ed)), time.time(), fid))
+    c.commit(); kick_focus()
+    return jsonify(dict(get_film(fid).json, poster_note="set from TMDB (previous poster backed up)", can_restore=True))
+
+@app.post("/api/films/<int:fid>/findposters/restore")
+def findposters_restore(fid):
+    """Put back the poster that was there before the last Find Posters pick (the picked one is backed up too)."""
+    c = C()
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    b = db.get_setting(c, _fp_prev_key(fid))
+    if b is None: return jsonify(error="No previous poster to restore"), 400
+    val, err = _fp_restore_value(b.get("value"))
+    if err: return jsonify(error=err), 410
+    _fp_backup_current(c, fid)  # the poster being replaced is kept in posters/backup too
+    c.execute("DELETE FROM settings WHERE key=?", (_fp_prev_key(fid),))
+    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
+    return jsonify(dict(get_film(fid).json, poster_note="previous poster restored", can_restore=False))
 
 @app.get("/api/films/<int:fid>")
 def get_film(fid):
@@ -1919,10 +2078,13 @@ def gallery_poster(fid):
     if err: return err
     c = g[0]; p = gallerymod.safe_name(g[2], (request.json or {}).get("name"))
     if not p: return jsonify(error="not found"), 404
-    if os.path.getsize(p) > POSTER_MAX: return jsonify(error="Image is too large (max 15 MB)"), 413
-    with open(p, "rb") as fh: data = fh.read()
+    if os.path.getsize(p) > POSTER_SRC_MAX: return jsonify(error="Image is too large (max 200 MB)"), 413
+    with open(p, "rb") as fh: data = fh.read()  # read only; the gallery file is never changed
     ext = sniff_image(data)
     if not ext: return jsonify(error="That file is not a JPG, PNG or WebP image"), 415
+    if len(data) > POSTER_MAX:  # big camera photos: save a downscaled JPEG copy as the poster
+        data, ext = fit_poster(data)
+        if data is None: return jsonify(error=ext), 413
     val = _save_poster(c, fid, data, ext)
     c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note="from gallery"))
@@ -2020,7 +2182,11 @@ def findgallery_search(fid):
     default_q = " ".join(perfs + studios[:1]).strip()
     try: plist = fgmod.prefixes(os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "vg_prefixes.json"))
     except Exception: plist = []
-    prefix = fgmod.match_prefix(studios, plist) if studios else None
+    old_prefix = fgmod.match_prefix(studios, plist) if studios else None
+    rule = db.vg_learned_get(c, studios) if studios else None  # learned from a thread URL Kyle pasted by hand
+    prefix = (rule or {}).get("prefix") or old_prefix  # learned prefix first, then the old one
+    alt_prefix = old_prefix if old_prefix and old_prefix != prefix else None
+    no_names = bool(rule) and rule.get("names_in_title") == 0  # this studio's thread titles leave performer names out
     q = (d.get("query") or "").strip(); tried = []
     alias_map, alias_src = {}, {}
     for one in perfs[:3]:
@@ -2044,9 +2210,11 @@ def findgallery_search(fid):
                 w = n.split()[-1] if len(n.split()) > 1 else ""
                 if len(w) >= 3 and db.fold(w) not in {db.fold(x) for x in lasts}: lasts.append(w)
         last = [(w, prefix, False, "last") for w in lasts]
-        room = fgmod.MAX_STEPS - len(head) - len(plain) - len(last)
+        alt = [(one, alt_prefix) for one in perfs[:1]] if alt_prefix else []  # the old prefix, after the learned one
+        room = fgmod.MAX_STEPS - len(head) - len(alt) - len(plain) - len(last)
         mid = (lead_al + co_al)[:max(0, room)]  # co-star aliases are trimmed first, then the lead's
-        steps = head + mid + plain + last
+        # learned: titles leave names out -> prefix + last names right after the full names, before aliases
+        steps = head + last + mid + alt + plain if no_names else head + mid + alt + plain + last
         steps = steps[:fgmod.MAX_STEPS]
     steps = [tuple(x) + (False, "")[len(x) - 2:] for x in steps]
     steps = list(dict.fromkeys(steps))[:fgmod.MAX_STEPS]
@@ -2072,7 +2240,9 @@ def findgallery_search(fid):
     res = fgmod.rank([dict(r) for r in res], names, studios, f["release_date"], pref_used)
     if last_name:  # found only by a last name: labelled, and ranked below any full-name match
         for r in res: r.update(last_name_match=True, score=round(r["score"] - 1, 2))
-    return jsonify(default_query=default_q, prefix=prefix, tried=tried, results=res[:60],
+    learned = dict(studio=rule["studio"], prefix=rule.get("prefix"), prefix_label=rule.get("prefix_label"),
+                   names_in_title=rule.get("names_in_title"), notes=rule.get("notes")) if rule else None
+    return jsonify(default_query=default_q, prefix=prefix, tried=tried, results=res[:60], learned=learned,
                    aliases={p: dict(names=alias_map.get(p) or [], source=alias_src.get(p)) for p in perfs[:3]})
 
 @app.post("/api/films/<int:fid>/findgallery/download")
@@ -2084,16 +2254,46 @@ def findgallery_download(fid):
     if not path: return jsonify(error="This scene has no video file"), 400
     url = fgmod.normalize_url(d.get("url"))
     if not url: return jsonify(error="Paste a vipergirls.to thread link (https://vipergirls.to/threads/…); bare /posts/ links can't be downloaded"), 400
-    if fgmod.DL.get("running"): return jsonify(error="A gallery download is already running"), 409
-    dest = gallerymod.canonical_dir(path)
+    learned = fg_learn(c, f, url) if d.get("manual") else None  # only from URLs Kyle pastes by hand
+    if fgmod.DL.get("running"): return jsonify(error="A gallery download is already running", learned=learned), 409
     kind, cur = gallerymod.find(path, db.VIDEO_EXT)
+    dest = cur if kind == "canonical" else gallerymod.canonical_dir(path)  # an existing (even long-named) gallery is kept
     existing = len(gallerymod.images(cur)) if cur else 0
     if existing and not d.get("overwrite"):
-        return jsonify(error=f"This scene already has a gallery with {existing} photos", confirm=True, existing=existing), 409
+        return jsonify(error=f"This scene already has a gallery with {existing} photos", confirm=True, existing=existing, learned=learned), 409
     def done(): scene_gallery(C(), fid)
     fgmod.DL.update(running=True, film_id=fid, files=0, error=None)
     threading.Thread(target=fgmod.run_download, args=(url, dest, done), daemon=True).start()
-    return jsonify(ok=True, url=url, dest=os.path.basename(dest))
+    return jsonify(ok=True, url=url, dest=os.path.basename(dest), learned=learned)
+
+def fg_learn(c, f, url):
+    """Learn this studio's ViperGirls rule (prefix used, whether titles name performers) from a hand-pasted thread:
+    one guest page read of the thread. A hand-pasted URL always replaces the stored rule. -> the rule or None."""
+    if not f["studio"]: return None
+    tu = fgmod.thread_url(url)
+    if not tu: return None
+    try:
+        perfs, studios = _fg_parts(f, c)
+        try: plist = fgmod.prefixes(os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "vg_prefixes.json"))
+        except Exception: plist = []
+        names = [[p] + fg_aliases(c, p)[0] for p in perfs]
+        r = fgmod.learn(fgmod.http(tu), db.canon_studio(f["studio"], c) or f["studio"], names, plist)
+        if not r: return None
+        db.vg_learned_set(c, db.canon_studio(f["studio"], c) or f["studio"], r["prefix"], r["prefix_label"], r["names_in_title"], r["notes"], tu)
+        return r
+    except Exception as e:
+        fgmod.log.warning("Find Gallery: could not learn from %s: %s", tu, type(e).__name__)
+        return None
+
+@app.get("/api/vg-learned")
+def vg_learned_list():
+    return jsonify(rules=db.vg_learned_list(C()))
+
+@app.delete("/api/vg-learned")
+def vg_learned_remove():
+    k = (request.args.get("key") or "").strip()
+    if not k: return jsonify(error="key required"), 400
+    return jsonify(ok=True, removed=db.vg_learned_delete(C(), k))
 
 @app.get("/api/findgallery/status")
 def findgallery_status():

@@ -13,8 +13,26 @@ def is_gallery_dir(name):
     n = (name or "").strip().lower()
     return n == "gallery" or n.endswith(SUFFIX.lower())
 
-def canonical_dir(video_path):
+# Windows MAX_PATH is 260. Keep '<gallery folder>\\<photo file name>' (and gallery-dl's '.part' temp name) well under it:
+# the folder may be at most PATH_SAFE - NAME_RESERVE characters; a longer one gets a shortened, stable name.
+PATH_SAFE = 240
+NAME_RESERVE = 50
+
+def full_dir(video_path):
+    """The unshortened '<video stem> - GALLERY' folder (what older versions always used)."""
     return os.path.splitext(video_path)[0] + SUFFIX
+
+def short_dir(video_path, limit=PATH_SAFE - NAME_RESERVE):
+    """'<start of the video stem>~<6-char hash> - GALLERY' fitting in `limit` characters; same video path -> same name."""
+    stem = os.path.splitext(video_path)[0]; folder, name = os.path.split(stem)
+    h = hashlib.sha1(os.path.basename(stem).encode("utf-8")).hexdigest()[:6]
+    room = max(10, limit - len(folder) - 1 - len(SUFFIX) - 7)
+    return os.path.join(folder, name[:room].rstrip(" .,-") + "~" + h + SUFFIX)
+
+def canonical_dir(video_path):
+    """Where a scene's gallery goes: the full name, or short_dir() when the full one would risk MAX_PATH."""
+    d = full_dir(video_path)
+    return d if len(d) <= PATH_SAFE - NAME_RESERVE else short_dir(video_path)
 
 def _videos_in(folder, video_ext):
     try: names = os.listdir(folder)
@@ -25,8 +43,8 @@ def _videos_in(folder, video_ext):
 def find(video_path, video_ext):
     """-> (kind, folder) with kind 'canonical' or 'legacy', or (None, None)."""
     if not video_path: return None, None
-    cd = canonical_dir(video_path)
-    if os.path.isdir(cd): return "canonical", cd
+    for cd in dict.fromkeys((full_dir(video_path), canonical_dir(video_path))):  # existing long-named galleries still count
+        if os.path.isdir(cd): return "canonical", cd
     folder = os.path.dirname(video_path)
     try: subs = [d for d in os.listdir(folder) if d.lower() == "gallery" and os.path.isdir(os.path.join(folder, d))]
     except OSError: subs = []
