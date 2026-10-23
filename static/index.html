@@ -30,7 +30,7 @@ button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:v
 .b-ai{right:6px;background:var(--ai);color:#000}.b-q{left:6px;background:#e0b341;color:#000}.b-miss{left:6px;top:26px;background:var(--bad)}
 .b-w{right:6px;top:26px;background:var(--ok);color:#000}
 .b-g{left:6px;top:46px;background:#3a7bd5;color:#fff}
-#fgOv{position:fixed;inset:0;z-index:2000;background:#000e;display:none;flex-direction:column}#fgOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#fpOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:8px 12px;align-content:start}#fpOv .gg img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;cursor:pointer;background:#2228}#galOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#galOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#galOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px;padding:8px 12px}#galOv .gg img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;cursor:pointer;background:#2228}#galOv .gv{flex:1;display:none;align-items:center;justify-content:center;gap:8px;min-height:0;padding:8px}#galOv .gv img{max-width:calc(100% - 120px);max-height:100%;object-fit:contain}
+#fgOv{position:fixed;inset:0;z-index:2000;background:#000e;display:none;flex-direction:column}#fgOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#fpOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:8px 12px;align-content:start}#fpOv .gg img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;cursor:pointer;background:#2228}#peOv{position:fixed;inset:0;z-index:2100;background:#000e;display:none;flex-direction:column}#peOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff;flex-wrap:wrap}#peStage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}#peWrap{position:relative;line-height:0;overflow:hidden}#peBox{position:absolute;box-sizing:border-box;border:2px solid #fff;box-shadow:0 0 0 9999px #0009;cursor:move;touch-action:none}#peBox i{position:absolute;width:14px;height:14px;background:#fff;border-radius:2px}#peBox i[data-h=nw]{left:-8px;top:-8px;cursor:nwse-resize}#peBox i[data-h=ne]{right:-8px;top:-8px;cursor:nesw-resize}#peBox i[data-h=sw]{left:-8px;bottom:-8px;cursor:nesw-resize}#peBox i[data-h=se]{right:-8px;bottom:-8px;cursor:nwse-resize}#galOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#galOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#galOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px;padding:8px 12px}#galOv .gg img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;cursor:pointer;background:#2228}#galOv .gv{flex:1;display:none;align-items:center;justify-content:center;gap:8px;min-height:0;padding:8px}#galOv .gv img{max-width:calc(100% - 120px);max-height:100%;object-fit:contain}
 table{border-collapse:collapse;width:100%}th,td{padding:6px 8px;border-bottom:1px solid var(--b);text-align:left;vertical-align:top}
 th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none;color:var(--m)}tr.sel td{background:#1d2a40}tbody tr:hover td{background:var(--p2)}
 .tag{display:inline-block;background:var(--p2);border:1px solid var(--b);border-radius:12px;padding:1px 8px;margin:2px;font-size:12px}
@@ -300,7 +300,7 @@ async function review(fid,tagIds,action,refresh){await api('/api/pending/review'
 const posterOf=f=>f.custom_poster||(f.kind=='scene'&&f.poster_wide)||f.poster;
 function posterBoxHtml(f){return `${posterOf(f)?`<img src="${esc(posterOf(f))}" style="max-width:100%">`:'<div class=muted style="padding:30px 0">No poster</div>'}
  <div class=muted style="font-size:.85em">${f.custom_poster?'Custom poster (TMDB won\'t replace it)':'Drop an image here to use your own poster'}</div>
- <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"><button onclick="$('posterFile').click()" title="Upload a JPG, PNG or WebP (max 15 MB)">🖼 Upload…</button><button onclick="posterUrl(${f.id})" title="Use an image from the web">🔗 From URL…</button>${f.kind=='scene'&&f.gallery_count&&!/review by hand/i.test(f.notes||'')?`<button onclick="openGallery(${f.id})" title="Pick a poster from this scene's photo gallery">📷 From Gallery (${f.gallery_count})</button>`:''}${f.custom_poster?`<button onclick="removePoster(${f.id})" title="Go back to the TMDB poster">Remove custom poster</button>`:''}</div>${focusBoxHtml(f)}`}
+ <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"><button onclick="$('posterFile').click()" title="Upload a JPG, PNG or WebP (max 15 MB)">🖼 Upload…</button><button onclick="posterUrl(${f.id})" title="Use an image from the web">🔗 From URL…</button>${f.kind=='scene'&&f.gallery_count&&!/review by hand/i.test(f.notes||'')?`<button onclick="openGallery(${f.id})" title="Pick a poster from this scene's photo gallery">📷 From Gallery (${f.gallery_count})</button>`:''}${posterOf(f)&&!/review by hand/i.test(f.notes||'')?`<button onclick="openPosterEditor(${f.id})" title="Crop, rotate or flip this poster (done on the full-size image; the previous poster is backed up)">✂ Edit poster</button>`:''}${f.custom_poster?`<button onclick="removePoster(${f.id})" title="Go back to the TMDB poster">Remove custom poster</button>`:''}</div>${focusBoxHtml(f)}`}
 const focusStyle=f=>f.kind=='scene'&&f.poster_focus_x!=null?` style="object-position:${(+f.poster_focus_x*100).toFixed(1)}% 50%"`:'';
 const FOCM={faces:'centred on faces',person:'centred on people',energy:'centred on the busiest area',center:'centred (nothing detected)',manual:'set by hand',failed:'could not read the image',portrait:'portrait image, no crop'};
 function focusBoxHtml(f){if(f.kind!='scene'||!posterOf(f))return '';const x=f.poster_focus_x==null?0.5:+f.poster_focus_x,hand=JSON.stringify(f.edited_fields||'').includes('poster_focus_x');
@@ -320,6 +320,52 @@ function openFindPosters(id){let o=$('fpOv');if(!o){o=document.createElement('di
  S.fp={id};o.innerHTML=`<div class=gh><b>Find Posters</b><span class=muted>Every TMDB poster for this film (English and no-language first). Click one to make it this film's poster.</span><span style="flex:1"></span><span id=fpRestore></span><button onclick="fpClose()">✕ Close</button></div><div id=fpMsg class=muted style="padding:0 12px;color:#fff">Loading posters from TMDB…</div><div class=gg id=fpGrid></div>`;
  o.style.display='flex';fpLoad()}
 function fpClose(){const o=$('fpOv');if(o){o.style.display='none';o.innerHTML=''}S.fp=null}
+// ---------- Poster editor: crop (2:3 lock) / rotate / flip; the server redoes it on the full-size original ----------
+async function openPosterEditor(id){let d;try{d=await api(`/api/films/${id}/posteredit`)}catch(e){return}
+ let o=$('peOv');if(!o){o=document.createElement('div');o.id='peOv';document.body.appendChild(o)}
+ S.pe={id,W:d.width,H:d.height,ext:d.ext,max:d.max_px,small:d.small_w,rot:0,flip:false,lock:true,img:new Image()};
+ o.innerHTML=`<div class=gh><b>Edit poster</b><span class=muted>${d.width}×${d.height} ${esc(d.ext.toUpperCase())} original</span><span style="flex:1"></span>
+  <button onclick="peRot(-1)" title="Rotate 90° left">⟲ Left</button><button onclick="peRot(1)" title="Rotate 90° right">⟳ Right</button><button onclick="peFlip()" title="Mirror left-right">⇋ Flip</button>
+  <label style="display:inline-flex;gap:4px;align-items:center;margin:0"><input type=checkbox id=peLock checked onchange="peLockSet(this.checked)" style="width:auto">Lock 2:3</label><button onclick="peFull()" title="Select the whole image">Whole image</button>
+  ${d.can_restore?`<button onclick="peRestore()" title="Put back the poster this film had before the last edit or Find Posters pick">↶ Restore previous</button>`:''}<button onclick="peClose()">Cancel</button><button class=pri id=peSave onclick="peSave()">Save</button></div>
+  <div id=peMsg style="padding:0 12px;color:#fff"></div><div id=peStage><div id=peWrap><canvas id=peCv></canvas><div id=peBox><i data-h=nw></i><i data-h=ne></i><i data-h=sw></i><i data-h=se></i></div></div></div>`;
+ o.style.display='flex';$('peMsg').textContent='Loading…';
+ S.pe.img.onload=()=>{peReset();$('peBox').onpointerdown=peDown};S.pe.img.onerror=()=>$('peMsg').textContent='Could not load the poster';
+ S.pe.img.src=d.image+'?t='+Date.now()}
+function peClose(){const o=$('peOv');if(o){o.style.display='none';o.innerHTML=''}S.pe=null}
+const peOW=()=>S.pe.rot%2?S.pe.H:S.pe.W,peOH=()=>S.pe.rot%2?S.pe.W:S.pe.H;
+function peDefault(){const g=S.pe,W=peOW(),H=peOH();if(!g.lock)return{x:0,y:0,w:W,h:H};
+ let w=W,h=Math.round(W*1.5);if(h>H){h=H;w=Math.round(H/1.5)}return{x:Math.round((W-w)/2),y:Math.round((H-h)/2),w,h}}
+function peReset(){S.pe.crop=peDefault();peDraw()}
+function peRot(k){const g=S.pe;if(!g)return;g.rot=((g.rot+k)%4+4)%4;peReset()}
+function peFlip(){const g=S.pe;if(!g)return;g.flip=!g.flip;const c=g.crop;c.x=peOW()-c.x-c.w;peDraw()}
+function peFull(){const g=S.pe;g.lock=false;$('peLock').checked=false;peReset()}
+function peLockSet(on){const g=S.pe;g.lock=on;if(!on)return peDraw();const c=g.crop,cx=c.x+c.w/2,cy=c.y+c.h/2;let w=c.w,h=w*1.5;
+ if(h>peOH()){h=peOH();w=h/1.5}if(w>peOW()){w=peOW();h=w*1.5}g.crop={w:Math.round(w),h:Math.round(h),x:0,y:0};peMove(cx-w/2,cy-h/2)}
+function peMove(x,y){const c=S.pe.crop;c.x=Math.round(Math.min(Math.max(0,x),peOW()-c.w));c.y=Math.round(Math.min(Math.max(0,y),peOH()-c.h));peDraw()}
+function peDraw(){const g=S.pe,cv=$('peCv');if(!g||!cv)return;const st=$('peStage'),W=peOW(),H=peOH();
+ const k=Math.min((st.clientWidth-20)/W,(st.clientHeight-20)/H,1);g.k=k;const cw=Math.max(1,Math.round(W*k)),ch=Math.max(1,Math.round(H*k));
+ cv.width=cw;cv.height=ch;const x=cv.getContext('2d');x.save();if(g.flip){x.translate(cw,0);x.scale(-1,1)}
+ x.translate(cw/2,ch/2);x.rotate(g.rot*Math.PI/2);const iw=g.W*k,ih=g.H*k;x.drawImage(g.img,-iw/2,-ih/2,iw,ih);x.restore();
+ const c=g.crop,b=$('peBox');Object.assign(b.style,{left:c.x*k+'px',top:c.y*k+'px',width:c.w*k+'px',height:c.h*k+'px'});
+ const s=Math.min(1,g.max/Math.max(c.w,c.h)),rw=Math.max(1,Math.round(c.w*s)),rh=Math.max(1,Math.round(c.h*s));
+ $('peMsg').innerHTML=`Result: <b>${c.w}×${c.h}px</b>${s<1?` → saved as ${rw}×${rh}px (shrunk to ${g.max}px long side)`:''} · ${g.ext=='png'?'PNG':'JPEG q95'}${g.rot?` · rotated ${g.rot*90}°`:''}${g.flip?' · flipped':''}`+
+  (c.w<g.small?` <span style="color:#fc6">⚠ Under ${g.small}px wide: this poster will look soft when shown large.</span>`:'')}
+function peDown(e){const g=S.pe;if(!g)return;e.preventDefault();const h=e.target.dataset.h||'',c0={...g.crop},sx=e.clientX,sy=e.clientY,W=peOW(),H=peOH();
+ const mv=ev=>{const dx=(ev.clientX-sx)/g.k,dy=(ev.clientY-sy)/g.k;if(!h){g.crop={...c0};return peMove(c0.x+dx,c0.y+dy)}
+  // resize from a corner; the opposite corner stays put
+  const ax=h.includes('w')?c0.x+c0.w:c0.x,ay=h.includes('n')?c0.y+c0.h:c0.y;
+  let w=Math.abs((h.includes('w')?c0.x+dx:c0.x+c0.w+dx)-ax),hh=Math.abs((h.includes('n')?c0.y+dy:c0.y+c0.h+dy)-ay);
+  const mw=h.includes('w')?ax:W-ax,mh=h.includes('n')?ay:H-ay;w=Math.min(Math.max(w,20),mw);hh=Math.min(Math.max(hh,20),mh);
+  if(g.lock){hh=w*1.5;if(hh>mh){hh=mh;w=hh/1.5}}
+  w=Math.round(w);hh=Math.round(hh);g.crop={w,h:hh,x:h.includes('w')?ax-w:ax,y:h.includes('n')?ay-hh:ay};peDraw()};
+ const up=()=>{removeEventListener('pointermove',mv);removeEventListener('pointerup',up)};addEventListener('pointermove',mv);addEventListener('pointerup',up)}
+async function peSave(){const g=S.pe;if(!g||g.busy)return;g.busy=true;$('peSave').disabled=true;
+ try{const f=await api(`/api/films/${g.id}/posteredit`,{method:'POST',body:{rot:g.rot,flip:g.flip,crop:g.crop}});peClose();
+  if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Poster '+f.poster_note)}catch(e){g.busy=false;if($('peSave'))$('peSave').disabled=false}}
+async function peRestore(){const g=S.pe;if(!g||!confirm('Put back the previous poster?'))return;
+ try{const f=await api(`/api/films/${g.id}/findposters/restore`,{method:'POST',body:{}});peClose();if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Previous poster restored')}catch(e){}}
+addEventListener('resize',()=>{if(S.pe&&S.pe.crop)peDraw()});
 function fpRestoreBtn(on){const b=$('fpRestore');if(b)b.innerHTML=on?`<button title="Put back the poster this film had before the last Find Posters pick" onclick="fpRestore()">↶ Restore previous poster</button>`:''}
 async function fpLoad(){const g=S.fp;if(!g)return;let r,d;try{r=await fetch(`/api/films/${g.id}/findposters`);d=await r.json().catch(()=>({}))}catch(e){d={error:'Could not reach Film Tagger'};r={ok:false}}
  if(S.fp!==g)return;fpRestoreBtn(d.can_restore);

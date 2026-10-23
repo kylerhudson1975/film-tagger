@@ -1,4 +1,4 @@
-"""Film Tagger - local film library cataloging & tagging. Run: python app.py -> http://localhost:5050"""
+﻿"""Film Tagger - local film library cataloging & tagging. Run: python app.py -> http://localhost:5050"""
 import os, io, csv, json, time, urllib.request, urllib.parse, urllib.error
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response
 import db
@@ -509,6 +509,147 @@ def findposters_restore(fid):
     c.execute("DELETE FROM settings WHERE key=?", (_fp_prev_key(fid),))
     c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note="previous poster restored", can_restore=False))
+
+# ---------- Poster editor: crop / rotate / flip the current poster (done on the full-size original with OpenCV) ----------
+PE_Q = 95             # JPEG quality of an edited poster
+PE_SMALL_W = 600      # the editor warns when the result is narrower than this
+
+def _pe_current(c, fid):
+    """The poster the film shows now: custom poster, else (scenes) the wide cover, else the TMDB/TPDB poster."""
+    r = c.execute("SELECT kind, custom_poster, poster_wide, poster FROM films WHERE id=?", (fid,)).fetchone()
+    if not r: return None
+    return r["custom_poster"] or (r["kind"] == "scene" and r["poster_wide"]) or r["poster"] or None
+
+def _pe_load(v):
+    """Poster value -> (original bytes, ext) or (None, error). Local /posters/ files are read; http(s) is downloaded."""
+    if not v: return None, "This film has no poster to edit"
+    if v.startswith("/posters/"):
+        p = os.path.join(POSTER_BACKUP_DIR if v.startswith("/posters/backup/") else POSTERS_DIR, os.path.basename(v))
+        if not os.path.isfile(p): return None, "The poster file is missing"
+        if os.path.getsize(p) > POSTER_SRC_MAX: return None, "Image is too large (max 200 MB)"
+        with open(p, "rb") as fh: data = fh.read()
+    elif v.lower().startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(v, headers={"User-Agent": "Mozilla/5.0 FilmTagger", "Accept": "image/*"})
+            with urllib.request.urlopen(req, timeout=30) as resp: data = resp.read(POSTER_SRC_MAX + 1)
+        except Exception as e: return None, f"Could not download the poster ({type(e).__name__})"
+        if len(data) > POSTER_SRC_MAX: return None, "Image is too large (max 200 MB)"
+    else: return None, "Unsupported poster location"
+    ext = sniff_image(data)
+    if not ext: return None, "The poster is not a JPG, PNG or WebP image"
+    return data, ext
+
+def pe_decode(data):
+    """PNG keeps its alpha; JPG/WebP are decoded like browsers show them (EXIF orientation applied)."""
+    import cv2, numpy as np
+    flag = cv2.IMREAD_UNCHANGED if sniff_image(data) == "png" else cv2.IMREAD_COLOR
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), flag)
+    if img is None: return None
+    if img.ndim == 2: img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if img.dtype != np.uint8: img = (img / 257).astype(np.uint8) if img.dtype == np.uint16 else img.astype(np.uint8)
+    return img
+
+def pe_oriented_size(w, h, rot):
+    """Size of a w x h image after rot quarter-turns."""
+    return (h, w) if rot % 2 else (w, h)
+
+def pe_clamp_crop(crop, w, h):
+    """crop {x,y,w,h} in pixels of the rotated/flipped image -> integer (x, y, cw, ch) clamped inside w x h (None = whole)."""
+    if not crop: return 0, 0, w, h
+    x = int(round(float(crop.get("x", 0)))); y = int(round(float(crop.get("y", 0))))
+    cw = int(round(float(crop.get("w", w)))); ch = int(round(float(crop.get("h", h))))
+    x = min(max(0, x), w - 1); y = min(max(0, y), h - 1)
+    cw = min(max(1, cw), w - x); ch = min(max(1, ch), h - y)
+    return x, y, cw, ch
+
+def pe_result_size(w, h, rot, crop):
+    """Pixel size of the saved poster for an original w x h image (before any 2000px shrink, and after it)."""
+    ow, oh = pe_oriented_size(w, h, rot)
+    _, _, cw, ch = pe_clamp_crop(crop, ow, oh)
+    s = min(1.0, POSTER_FIT_PX / max(cw, ch))
+    return (cw, ch), ((max(1, round(cw * s)), max(1, round(ch * s))) if s < 1 else (cw, ch))
+
+def pe_apply(img, rot=0, flip=False, crop=None):
+    """Rotate by rot quarter-turns clockwise (negative = left), then flip horizontally, then crop. Order matches the editor."""
+    import cv2
+    k = rot % 4
+    if k == 1: img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    elif k == 2: img = cv2.rotate(img, cv2.ROTATE_180)
+    elif k == 3: img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if flip: img = cv2.flip(img, 1)
+    h, w = img.shape[:2]
+    x, y, cw, ch = pe_clamp_crop(crop, w, h)
+    img = img[y:y + ch, x:x + cw]
+    if max(cw, ch) > POSTER_FIT_PX:
+        s = POSTER_FIT_PX / max(cw, ch)
+        img = cv2.resize(img, (max(1, round(cw * s)), max(1, round(ch * s))), interpolation=cv2.INTER_AREA)
+    return img
+
+def pe_encode(img, src_ext):
+    import cv2
+    if src_ext == "png": ok, out = cv2.imencode(".png", img, [cv2.IMWRITE_PNG_COMPRESSION, 6]); ext = "png"
+    else:
+        if img.ndim == 3 and img.shape[2] == 4: img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        ok, out = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, PE_Q]); ext = "jpg"
+    return (out.tobytes(), ext) if ok else (None, None)
+
+def _pe_film(c, fid):
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    if is_review(c, fid): return jsonify(error="This scene is flagged for review by hand; its poster cannot be edited"), 403
+    return None
+
+@app.get("/api/films/<int:fid>/posteredit")
+def posteredit_info(fid):
+    """Size and type of the film's current poster at full resolution (the editor computes its readout from this)."""
+    c = C(); bad = _pe_film(c, fid)
+    if bad: return bad
+    data, ext = _pe_load(_pe_current(c, fid))
+    if data is None: return jsonify(error=ext), 400
+    img = pe_decode(data)
+    if img is None: return jsonify(error="Could not read the poster"), 400
+    h, w = img.shape[:2]
+    return jsonify(width=w, height=h, ext=ext, image=f"/api/films/{fid}/posteredit/image",
+                   max_px=POSTER_FIT_PX, small_w=PE_SMALL_W, can_restore=db.get_setting(c, _fp_prev_key(fid)) is not None)
+
+@app.get("/api/films/<int:fid>/posteredit/image")
+def posteredit_image(fid):
+    """The current poster's original bytes, served same-origin so the editor never depends on a remote host."""
+    c = C(); bad = _pe_film(c, fid)
+    if bad: return bad
+    data, ext = _pe_load(_pe_current(c, fid))
+    if data is None: return jsonify(error=ext), 400
+    return Response(data, mimetype={"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[ext], headers={"Cache-Control": "no-store"})
+
+@app.post("/api/films/<int:fid>/posteredit")
+def posteredit_save(fid):
+    """{rot: quarter-turns clockwise, flip: bool, crop: {x,y,w,h} in pixels of the rotated/flipped original}.
+    Saves the result as the film's protected custom poster; the previous one goes to posters/backup/ (Restore previous)."""
+    c = C(); bad = _pe_film(c, fid)
+    if bad: return bad
+    d = (request.json or {}) if request.is_json else {}
+    try:
+        rot = int(d.get("rot") or 0); flip = bool(d.get("flip")); crop = d.get("crop")
+        if crop is not None and not isinstance(crop, dict): raise ValueError
+        if crop: [float(crop[k]) for k in ("x", "y", "w", "h")]
+    except Exception: return jsonify(error="Bad edit parameters"), 400
+    data, ext = _pe_load(_pe_current(c, fid))
+    if data is None: return jsonify(error=ext), 400
+    img = pe_decode(data)
+    if img is None: return jsonify(error="Could not read the poster"), 400
+    if img.shape[0] * img.shape[1] > POSTER_SRC_PIXELS: return jsonify(error="Image has too many pixels"), 413
+    out, oext = pe_encode(pe_apply(img, rot, flip, crop), ext)
+    if out is None: return jsonify(error="Could not encode the edited poster"), 500
+    prev = _fp_backup_current(c, fid)
+    os.makedirs(POSTERS_DIR, exist_ok=True)
+    name = f"film-{fid}-{int(time.time())}.{oext}"
+    if os.path.exists(os.path.join(POSTERS_DIR, name)) or os.path.exists(os.path.join(POSTER_BACKUP_DIR, name)):
+        name = f"film-{fid}-{int(time.time() * 1000)}.{oext}"
+    with open(os.path.join(POSTERS_DIR, name), "wb") as fh: fh.write(out)
+    db.set_setting(c, _fp_prev_key(fid), {"value": prev, "at": time.time()})
+    ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")); ed.add("custom_poster")
+    c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", ("/posters/" + name, json.dumps(sorted(ed)), time.time(), fid))
+    c.commit(); kick_focus()
+    return jsonify(dict(get_film(fid).json, poster_note="edited (previous poster backed up)", can_restore=True))
 
 @app.get("/api/films/<int:fid>")
 def get_film(fid):
