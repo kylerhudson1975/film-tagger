@@ -1001,7 +1001,8 @@ def settings_get():
                    tpdb_key_set=bool(db.get_setting(c, "tpdb_key", "")), ai_key_hint=("…" + ak[-4:]) if len(ak) > 8 else ("set" if ak else ""),
                    queue=c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
                    pending=c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0],
-                   films=c.execute("SELECT COUNT(*) FROM films").fetchone()[0], db_path=db.DB_PATH)
+                   films=c.execute("SELECT COUNT(*) FROM films").fetchone()[0], db_path=db.DB_PATH,
+                   height_units=peoplemod.height_units(c))
 
 @app.put("/api/settings")
 def settings_put():
@@ -1013,6 +1014,9 @@ def settings_put():
     if d.get("tpdb_key") is not None and d.get("tpdb_key") != "":  # blank = keep existing; "-" = clear
         db.set_setting(c, "tpdb_key", "" if d["tpdb_key"].strip() == "-" else d["tpdb_key"].strip().strip('"').strip("'"))
     if "ai_model" in d: db.set_setting(c, "ai_model", d["ai_model"].strip())
+    if "height_units" in d:
+        if d["height_units"] not in peoplemod.HEIGHT_UNITS: return jsonify(error="height_units must be both, metric or imperial"), 400
+        db.set_setting(c, "height_units", d["height_units"])
     if d.get("ai_key") is not None and d.get("ai_key") != "":  # blank = keep existing; "-" = clear
         db.set_setting(c, "ai_key", "" if d["ai_key"].strip() == "-" else d["ai_key"].strip().strip('"').strip("'"))
     c.commit(); return settings_get()

@@ -10,6 +10,42 @@ CREATE TABLE IF NOT EXISTS people(
   known_for TEXT, credits_json TEXT, tmdb_manual INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ix_people_tmdb ON people(tmdb_person_id);
 """
+# ---------- height display (Settings -> Height units: metric / imperial / both) ----------
+HEIGHT_UNITS = ("both", "metric", "imperial")
+_H_CM = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(?:cm|centimet(?:er|re)s?)?\s*$", re.I)
+_H_M = re.compile(r"^\s*(\d(?:[.,]\d+)?)\s*(?:m|met(?:er|re)s?)\s*$", re.I)
+_H_FTIN = re.compile(r"^\s*(\d)\s*(?:'|′|’|ft\.?|feet|foot)\s*(?:(\d{1,2}(?:[.,]\d+)?)\s*(?:\"|″|”|''|′′|in\.?|inch(?:es)?)?)?\s*$", re.I)
+_H_IN = re.compile(r"^\s*(\d{2}(?:[.,]\d+)?)\s*(?:\"|″|in\.?|inch(?:es)?)\s*$", re.I)
+
+def parse_height_cm(v):
+    """Height as stored ('162cm', '162', 162, '1.62 m', '5\'4"', '5 ft 4 in', '64 in') -> centimetres (float) or None."""
+    if v is None or isinstance(v, bool): return None
+    if isinstance(v, (int, float)): cm = float(v)
+    else:
+        t = str(v).strip()
+        if not t: return None
+        m = _H_CM.match(t)
+        if m: cm = float(m.group(1).replace(",", "."))
+        elif _H_M.match(t): cm = float(_H_M.match(t).group(1).replace(",", ".")) * 100
+        elif _H_FTIN.match(t):
+            m = _H_FTIN.match(t); cm = (int(m.group(1)) * 12 + float((m.group(2) or "0").replace(",", "."))) * 2.54
+        elif _H_IN.match(t): cm = float(_H_IN.match(t).group(1).replace(",", ".")) * 2.54
+        else: return None
+    return cm if 50 <= cm <= 272 else None
+
+def fmt_height(v, units="both"):
+    """Display a height in the chosen units; anything that can't be read as a height is returned unchanged."""
+    cm = parse_height_cm(v)
+    if cm is None: return v if v is None or isinstance(v, str) else str(v)
+    inches = round(cm / 2.54)          # round the total first, so 5' 11.6" becomes 6' 0", never 5' 12"
+    ft, inch = divmod(inches, 12)
+    imp, met = f"{ft}\u2032{inch}\u2033", f"{round(cm)} cm"
+    return met if units == "metric" else imp if units == "imperial" else f"{imp} ({met})"
+
+def height_units(c):
+    u = db.get_setting(c, "height_units", "both")
+    return u if u in HEIGHT_UNITS else "both"
+
 ROLE_COLS = db.PEOPLE_ROLES  # role -> films column
 ROLE_DEPT = {"cast": "Acting", "director": "Directing", "writer": "Writing", "producer": "Production",
              "cinematographer": "Camera", "composer": "Sound"}
@@ -438,7 +474,7 @@ def init(app, tmdb, posters_dir):
             id=pid, name=row["name"], aka=[n for n in names if n != row["name"]], tmdb_person_id=tp, manual=bool(row["tmdb_manual"]),
             source=source, adult=adult, tpdb_performer_id=tpid, tpdb_manual=bool(row["tpdb_manual"]),
             tpdb_url=tpid and f"https://theporndb.net/performers/{tpid}", aliases=json.loads(row["aliases"] or "[]"),
-            nationality=row["nationality"], measurements=row["measurements"], height=row["height"], career=row["career"],
+            nationality=row["nationality"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
