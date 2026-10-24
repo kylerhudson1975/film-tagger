@@ -1,6 +1,7 @@
 """Delete files & remove from library: lists only the item's own video file(s) and gallery inside library roots,
-refuses anything else, recycles (mocked here) only what it listed, removes the item like Remove (stays on the removed
-list) after success, and keeps the item when any file fails. Temp folders only. Run: python tests/test_delete_files.py"""
+refuses anything else, permanently deletes only what it listed, removes the item like Remove (stays on the removed
+list), and on a failed deletion keeps the item only while its video still exists. Temp folders only.
+Run: python tests/test_delete_files.py"""
 import os, sys, tempfile, shutil
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -30,40 +31,38 @@ assert cl.get("/api/films/99999/deletefiles").status_code == 404
 # outside the roots / missing / shared with another item: listed but refused
 fo = add("Outside", [mk(os.path.join(outside, "O.mkv"))])
 x = cl.get(f"/api/films/{fo}/deletefiles").json["items"][0]; assert not x["ok"] and "library folder" in x["reason"]
-calls = []
-def fake_ok(paths): calls.append(list(paths)); [shutil.rmtree(p) if os.path.isdir(p) else os.remove(p) for p in paths]; return {p: None for p in paths}
-app.recycle = fake_ok
+real_delete = app.delete_paths; calls = []
+def spy(paths): calls.append(list(paths)); return real_delete(paths)
+app.delete_paths = spy
 assert cl.post(f"/api/films/{fo}/deletefiles", json={"keys": ["v0"]}).status_code == 400 and not calls and os.path.exists(os.path.join(outside, "O.mkv"))
 assert cl.post(f"/api/films/{fa}/deletefiles", json={"keys": ["v9"]}).status_code == 400 and not calls
 fm = add("Missing", [os.path.join(root, "gone.mkv")]); x = cl.get(f"/api/films/{fm}/deletefiles").json["items"][0]; assert not x["ok"]
 g2 = os.path.join(root, "G", "Gam (2003).mkv"); mk(g2); gg = os.path.join(root, "G", "Gam (2003) - GALLERY"); mk(os.path.join(gg, "clip.mp4"))
 fg = add("Gam", [g2]); x = [y for y in cl.get(f"/api/films/{fg}/deletefiles").json["items"] if y["kind"] == "gallery"][0]
 assert not x["ok"] and "video" in x["reason"]  # a gallery holding videos is never deleted
-# failure keeps the item (and its files table rows), nothing goes on the removed list
-app.recycle = lambda paths: {p: ("Access denied" if p == ga else None) for p in paths}
+db_ = lambda: db.connect()
+# failure while the video still exists -> item kept, nothing on the removed list
+app.delete_paths = lambda paths: {p: ("Access denied" if p == a else real_delete([p])[p]) for p in paths}
 r = cl.post(f"/api/films/{fa}/deletefiles", json={"keys": ["v0", "g0"]})
-assert r.status_code == 500 and r.json["failed"] == [{"path": ga, "error": "Access denied"}] and r.json["recycled"] == [a]
-c = db.connect(); assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fa,)).fetchone()[0] == 1
-assert c.execute("SELECT COUNT(*) FROM files WHERE film_id=?", (fa,)).fetchone()[0] == 1 and c.execute("SELECT COUNT(*) FROM excluded").fetchone()[0] == 0
-# success: only the ticked, listed paths are recycled; item removed and remembered; neighbour untouched
-app.recycle = fake_ok
-r = cl.post(f"/api/films/{fa}/deletefiles", json={"keys": ["v0", "g0"]}); assert r.status_code == 200, r.json
+assert r.status_code == 500 and r.json["failed"] == [{"path": a, "error": "Access denied"}] and r.json["deleted"] == [ga] and r.json["removed"] is False
+assert os.path.exists(a) and not os.path.exists(ga) and os.path.exists(b)
+c = db_(); assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fa,)).fetchone()[0] == 1 and c.execute("SELECT COUNT(*) FROM excluded").fetchone()[0] == 0
+# failure on the gallery after the video was deleted -> item removed (never points at a missing file)
+mk(os.path.join(ga, "1.jpg"))
+app.delete_paths = lambda paths: {p: ("In use" if p == ga else real_delete([p])[p]) for p in paths}
+r = cl.post(f"/api/films/{fa}/deletefiles", json={"keys": ["v0", "g0"]})
+assert r.status_code == 500 and r.json["removed"] is True and r.json["deleted"] == [a] and not os.path.exists(a) and os.path.isdir(ga)
+c = db_(); assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fa,)).fetchone()[0] == 0 and c.execute("SELECT COUNT(*) FROM excluded WHERE path=?", (a,)).fetchone()[0] == 1
+# success: real permanent delete of exactly the ticked, listed paths; neighbour in the same folder untouched
+mk(a, 100); fa2 = add("Alpha again", [a]); app.delete_paths = spy; calls.clear()
+r = cl.post(f"/api/films/{fa2}/deletefiles", json={"keys": ["v0", "g0"]}); assert r.status_code == 200 and r.json["removed"], r.json
 assert calls == [[a, ga]] and not os.path.exists(a) and not os.path.exists(ga) and os.path.exists(b)
-c = db.connect(); assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fa,)).fetchone()[0] == 0
-assert c.execute("SELECT COUNT(*) FROM excluded WHERE path=?", (a,)).fetchone()[0] == 1
-assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fb,)).fetchone()[0] == 1
+c = db_(); assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fa2,)).fetchone()[0] == 0 and c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fb,)).fetchone()[0] == 1
 # gallery unticked: video only
-mk(a, 100); mk(os.path.join(ga, "1.jpg")); fa2 = add("Alpha again", [a]); calls.clear()
-assert cl.post(f"/api/films/{fa2}/deletefiles", json={"keys": ["v0"]}).status_code == 200 and calls == [[a]] and os.path.isdir(ga)
-# Recycle Bin safety: never recycle where Windows would delete permanently
-R = app.rb_refusal
-assert R("D:\\", 10, False, 1000, False) is None
-assert "immediately" in R("D:\\", 10, True, 1000, False)          # NukeOnDelete=1 ("Don't move files to the Recycle Bin")
-assert "confirm" in R("D:\\", 10, None, None, False)              # unknown setting -> refuse
-assert "Too big" in R("D:\\", 2 * 1024 * 1024, False, 1, False)   # over MaxCapacity (MB)
-assert "policy" in R("D:\\", 10, False, 1000, True)
-# the real recycler (restored) refuses instead of deleting when there is no Recycle Bin (any non-Windows OS)
-import importlib; importlib.reload(app)
-if os.name != "nt":
-    p = mk(os.path.join(root, "keep.mkv")); assert app.recycle([p])[p] and os.path.exists(p)
+mk(a, 100); mk(os.path.join(ga, "1.jpg")); fa3 = add("Alpha third", [a]); calls.clear()
+assert cl.post(f"/api/films/{fa3}/deletefiles", json={"keys": ["v0"]}).status_code == 200 and calls == [[a]] and os.path.isdir(ga) and not os.path.exists(a)
+# delete_paths itself: file, folder, missing
+t = tempfile.mkdtemp(); f1 = mk(os.path.join(t, "f.bin")); d1 = os.path.join(t, "dir"); mk(os.path.join(d1, "x", "y.txt"))
+r = real_delete([f1, d1, os.path.join(t, "nope")]); assert r[f1] is None and r[d1] is None and r[os.path.join(t, "nope")] == "Not found"
+assert not os.path.exists(f1) and not os.path.exists(d1)
 print("OK test_delete_files")

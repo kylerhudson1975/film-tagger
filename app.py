@@ -766,7 +766,7 @@ def delete_film(fid):  # removes the library entry only; never touches files
     else: db.exclude_film(c, fid)  # remembered so scans never re-add it; the file itself is left alone
     c.commit(); return ok()
 
-# ---------- Delete files & remove from library: the item's own video file(s) + gallery go to the Recycle Bin ----------
+# ---------- Delete files & remove from library: the item's own video file(s) + gallery are deleted permanently ----------
 def _df_roots(c):
     rs = list(db.get_setting(c, "roots", []) or []) + list(db.get_setting(c, "scene_roots", []) or [])
     return [r for r in dict.fromkeys(rs) if r and str(r).strip()]
@@ -792,7 +792,7 @@ def _df_dir_size(d):
     return n, total
 
 def df_plan(c, fid):
-    """What 'Delete files' would recycle for an item: [{key, kind, path, size, count, ok, reason}]."""
+    """What 'Delete files' would delete for an item: [{key, kind, path, size, count, ok, reason}]."""
     roots = _df_roots(c); out = []
     mine = [r["path"] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY path", (fid,))]
     others = {_df_norm(r["path"]) for r in c.execute("SELECT path FROM files WHERE film_id<>? OR film_id IS NULL", (fid,))}
@@ -816,73 +816,18 @@ def df_plan(c, fid):
         out.append(gi)
     return out
 
-def rb_refusal(drive, size, nuke, max_mb, policy_off):
-    """Why moving `size` bytes on `drive` to the Recycle Bin would NOT be safe (Windows would delete permanently), or None.
-    nuke/max_mb come from the volume's BitBucket settings (None = unknown, treated as unsafe)."""
-    if policy_off: return f"Recycle Bin is turned off by policy, so nothing was deleted"
-    if nuke is None: return f"Could not confirm that {drive} has a Recycle Bin, so nothing was deleted"
-    if nuke: return (f"Windows is set to delete files on {drive} immediately instead of using the Recycle Bin, so nothing was deleted. "
-                     "Turn it on in Recycle Bin > Properties (select the drive, choose 'Custom size') and try again")
-    if max_mb is not None and size > max_mb * 1024 * 1024:
-        return f"Too big for the Recycle Bin on {drive} (limit {max_mb} MB; Windows would delete it permanently), so nothing was deleted"
-    return None
-
-def _rb_settings(ap):
-    """(nuke, max_mb, policy_off) for the volume holding ap, read from Explorer's BitBucket settings."""
-    import ctypes, winreg
-    def rd(root, key, name):
-        try:
-            with winreg.OpenKey(root, key) as k: return winreg.QueryValueEx(k, name)[0]
-        except OSError: return None
-    pol = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
-    policy_off = rd(winreg.HKEY_CURRENT_USER, pol, "NoRecycleFiles") == 1 or rd(winreg.HKEY_LOCAL_MACHINE, pol, "NoRecycleFiles") == 1
-    buf = ctypes.create_unicode_buffer(64)
-    drive = os.path.splitdrive(ap)[0] + "\\"
-    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(drive, buf, 64): return None, None, policy_off
-    guid = buf.value[buf.value.find("{"):buf.value.find("}") + 1]
-    vk = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\" + guid
-    nuke = rd(winreg.HKEY_CURRENT_USER, vk, "NukeOnDelete"); max_mb = rd(winreg.HKEY_CURRENT_USER, vk, "MaxCapacity")
-    return (None if nuke is None else bool(nuke)), max_mb, policy_off
-
-def _rb_size(ap):
-    return _df_dir_size(ap)[1] if os.path.isdir(ap) else os.path.getsize(ap)
-
-FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 3, 0x4, 0x10, 0x40, 0x400, 0x4000
-
-def recycle(paths):
-    """Move paths to the Windows Recycle Bin. Returns {path: None (recycled) or error text}. Never deletes permanently:
-    refused up front when the drive has no Recycle Bin, Windows is set to delete immediately (NukeOnDelete), the item is
-    over the bin's size limit, or the setting can't be read; FOF_WANTNUKEWARNING is a last safety net."""
+def delete_paths(paths):
+    """Permanently delete each path (file, or folder with its contents). Returns {path: None (deleted) or error text}."""
+    import shutil
     res = {}
-    if os.name != "nt":
-        return {p: "Recycle Bin is only available on Windows" for p in paths}
-    import ctypes
-    from ctypes import wintypes
-    class SHFILEOPSTRUCTW(ctypes.Structure):
-        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
-                    ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
-                    ("lpszProgressTitle", wintypes.LPCWSTR)]
-    class SHQUERYRBINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("i64Size", ctypes.c_longlong), ("i64NumItems", ctypes.c_longlong)]
-    sh = ctypes.windll.shell32
     for p in paths:
         try:
-            ap = os.path.abspath(p)
-            if not os.path.exists(ap): res[p] = "Not found"; continue
-            drive = os.path.splitdrive(ap)[0] + "\\"
-            qi = SHQUERYRBINFO(); qi.cbSize = ctypes.sizeof(qi)
-            if sh.SHQueryRecycleBinW(drive, ctypes.byref(qi)) != 0: res[p] = f"No Recycle Bin on {drive} (not deleted)"; continue
-            why = rb_refusal(drive, _rb_size(ap), *_rb_settings(ap))
-            if why: res[p] = why; continue
-            op = SHFILEOPSTRUCTW(); op.wFunc = FO_DELETE; op.pFrom = ap + "\0"; op.pTo = None
-            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING
-            rc = sh.SHFileOperationW(ctypes.byref(op))
-            if rc != 0: res[p] = f"Windows error {rc:#x}"
-            elif op.fAnyOperationsAborted: res[p] = "Cancelled"
-            elif os.path.exists(ap): res[p] = "Still there after recycling"
-            else: res[p] = None
-        except Exception as e:
-            res[p] = f"Could not recycle ({type(e).__name__})"
+            if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)
+            elif os.path.lexists(p): os.remove(p)
+            else: res[p] = "Not found"; continue
+            res[p] = None if not os.path.lexists(p) else "Still there after deleting"
+        except OSError as e:
+            res[p] = f"Could not delete ({e.strerror or type(e).__name__})"
     return res
 
 @app.get("/api/films/<int:fid>/deletefiles")
@@ -894,8 +839,9 @@ def deletefiles_list(fid):
 
 @app.post("/api/films/<int:fid>/deletefiles")
 def deletefiles_do(fid):
-    """{keys:[...]} from the list above. Recycles those (only ones the server itself lists as deletable), then removes the
-    item from the library like Remove does. If anything fails to recycle, the item is kept and the failures are listed."""
+    """{keys:[...]} from the list above. Permanently deletes those (only ones the server itself lists as deletable), then
+    removes the item from the library like Remove does. If a deletion fails, the failures are listed and the item is kept
+    only while one of its ticked video files still exists (so it never points at a deleted file)."""
     c = C()
     if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
     keys = ((request.json or {}).get("keys") if request.is_json else None) or []
@@ -903,16 +849,18 @@ def deletefiles_do(fid):
     plan = {it["key"]: it for it in df_plan(c, fid)}
     bad = [k for k in keys if k not in plan or not plan[k]["ok"]]
     if bad: return jsonify(error="Some of those files can't be deleted: " + ", ".join(plan[k]["path"] if k in plan else str(k) for k in bad)), 400
-    paths = [plan[k]["path"] for k in keys]
-    db.exclude_film(c, fid)  # remembered (path, size, hash) while the files still exist; rolled back on failure
-    res = recycle(paths) if paths else {}
-    failed = [dict(path=p, error=e) for p, e in res.items() if e]
-    if failed:
-        c.rollback()
-        return jsonify(error="Some files could not be moved to the Recycle Bin, so the item was kept in the library",
-                       failed=failed, recycled=[p for p, e in res.items() if not e]), 500
-    c.commit()
-    return ok(recycled=paths)
+    keys = list(dict.fromkeys(keys)); paths = [plan[k]["path"] for k in keys]
+    videos = [plan[k]["path"] for k in keys if plan[k]["kind"] == "video"]
+    db.exclude_film(c, fid)  # remembered (path, size, hash) while the files still exist; rolled back if the item is kept
+    res = delete_paths(paths) if paths else {}
+    failed = [dict(path=p, error=e) for p, e in res.items() if e]; deleted = [p for p, e in res.items() if not e]
+    if not failed: c.commit(); return ok(deleted=deleted, removed=True)
+    keep = any(os.path.exists(v) for v in videos)
+    if keep: c.rollback()
+    else: c.commit()
+    return jsonify(error=("Some files could not be deleted; the video file is still there, so the item was kept in the library" if keep
+                          else "Some files could not be deleted; the video file was deleted, so the item was removed from the library"),
+                   failed=failed, deleted=deleted, removed=not keep), 500
 
 @app.post("/api/films/merge")
 def merge_films():
