@@ -760,11 +760,125 @@ def update_film(fid):
     return get_film(fid)
 
 @app.delete("/api/films/<int:fid>")
-def delete_film(fid):  # removes catalogue entry only; never touches files
+def delete_film(fid):  # removes the library entry only; never touches files
     c = C()
     if request.args.get("exclude", "1") == "0": c.execute("DELETE FROM films WHERE id=?", (fid,))
     else: db.exclude_film(c, fid)  # remembered so scans never re-add it; the file itself is left alone
     c.commit(); return ok()
+
+# ---------- Delete files & remove from library: the item's own video file(s) + gallery go to the Recycle Bin ----------
+def _df_roots(c):
+    rs = list(db.get_setting(c, "roots", []) or []) + list(db.get_setting(c, "scene_roots", []) or [])
+    return [r for r in dict.fromkeys(rs) if r and str(r).strip()]
+
+def _df_norm(p): return os.path.normcase(os.path.realpath(os.path.abspath(p)))
+
+def df_inside_roots(p, roots):
+    """True when p lies strictly inside one of the library roots (never a root itself)."""
+    np_ = _df_norm(p)
+    for r in roots:
+        nr = _df_norm(r)
+        try:
+            if np_ != nr and os.path.commonpath([np_, nr]) == nr: return True
+        except ValueError: continue  # different drives
+    return False
+
+def _df_dir_size(d):
+    n = total = 0
+    for base, _, names in os.walk(d):
+        for x in names:
+            try: total += os.path.getsize(os.path.join(base, x)); n += 1
+            except OSError: pass
+    return n, total
+
+def df_plan(c, fid):
+    """What 'Delete files' would recycle for an item: [{key, kind, path, size, count, ok, reason}]."""
+    roots = _df_roots(c); out = []
+    mine = [r["path"] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY path", (fid,))]
+    others = {_df_norm(r["path"]) for r in c.execute("SELECT path FROM files WHERE film_id<>? OR film_id IS NULL", (fid,))}
+    for i, p in enumerate(mine):
+        it = dict(key=f"v{i}", kind="video", path=p, size=None, count=1, ok=False, reason=None)
+        if not df_inside_roots(p, roots): it["reason"] = "Not inside a library folder"
+        elif not os.path.isfile(p): it["reason"] = "File not found (drive unplugged or already gone)"
+        elif _df_norm(p) in others: it["reason"] = "This file also belongs to another item"
+        else: it.update(ok=True, size=os.path.getsize(p))
+        out.append(it)
+        kind, g = gallerymod.find(p, db.VIDEO_EXT)
+        if not g: continue
+        gi = dict(key=f"g{i}", kind="gallery", path=g, size=None, count=0, ok=False, reason=None)
+        ng = _df_norm(g)
+        if not df_inside_roots(g, roots): gi["reason"] = "Not inside a library folder"
+        elif any(o == ng or o.startswith(ng + os.sep) for o in others): gi["reason"] = "This folder holds another item's files"
+        elif any(os.path.splitext(x)[1].lower() in db.VIDEO_EXT for _, _, ns in os.walk(g) for x in ns):
+            gi["reason"] = "This folder contains video files"
+        else:
+            gi["count"], gi["size"] = _df_dir_size(g); gi["ok"] = True
+        out.append(gi)
+    return out
+
+FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 3, 0x4, 0x10, 0x40, 0x400, 0x4000
+
+def recycle(paths):
+    """Move paths to the Windows Recycle Bin. Returns {path: None (recycled) or error text}. Never deletes permanently:
+    a drive without a Recycle Bin is refused up front, and FOF_WANTNUKEWARNING makes Windows ask instead of nuking."""
+    res = {}
+    if os.name != "nt":
+        return {p: "Recycle Bin is only available on Windows" for p in paths}
+    import ctypes
+    from ctypes import wintypes
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", wintypes.LPCWSTR)]
+    class SHQUERYRBINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("i64Size", ctypes.c_longlong), ("i64NumItems", ctypes.c_longlong)]
+    sh = ctypes.windll.shell32
+    for p in paths:
+        try:
+            ap = os.path.abspath(p)
+            if not os.path.exists(ap): res[p] = "Not found"; continue
+            drive = os.path.splitdrive(ap)[0] + "\\"
+            qi = SHQUERYRBINFO(); qi.cbSize = ctypes.sizeof(qi)
+            if sh.SHQueryRecycleBinW(drive, ctypes.byref(qi)) != 0: res[p] = f"No Recycle Bin on {drive} (not deleted)"; continue
+            op = SHFILEOPSTRUCTW(); op.wFunc = FO_DELETE; op.pFrom = ap + "\0"; op.pTo = None
+            op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING
+            rc = sh.SHFileOperationW(ctypes.byref(op))
+            if rc != 0: res[p] = f"Windows error {rc:#x}"
+            elif op.fAnyOperationsAborted: res[p] = "Cancelled"
+            elif os.path.exists(ap): res[p] = "Still there after recycling"
+            else: res[p] = None
+        except Exception as e:
+            res[p] = f"Could not recycle ({type(e).__name__})"
+    return res
+
+@app.get("/api/films/<int:fid>/deletefiles")
+def deletefiles_list(fid):
+    c = C()
+    f = c.execute("SELECT id, title, kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return jsonify(error="not found"), 404
+    return jsonify(id=fid, title=f["title"], items=df_plan(c, fid))
+
+@app.post("/api/films/<int:fid>/deletefiles")
+def deletefiles_do(fid):
+    """{keys:[...]} from the list above. Recycles those (only ones the server itself lists as deletable), then removes the
+    item from the library like Remove does. If anything fails to recycle, the item is kept and the failures are listed."""
+    c = C()
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    keys = ((request.json or {}).get("keys") if request.is_json else None) or []
+    if not isinstance(keys, list): return jsonify(error="Bad request"), 400
+    plan = {it["key"]: it for it in df_plan(c, fid)}
+    bad = [k for k in keys if k not in plan or not plan[k]["ok"]]
+    if bad: return jsonify(error="Some of those files can't be deleted: " + ", ".join(plan[k]["path"] if k in plan else str(k) for k in bad)), 400
+    paths = [plan[k]["path"] for k in keys]
+    db.exclude_film(c, fid)  # remembered (path, size, hash) while the files still exist; rolled back on failure
+    res = recycle(paths) if paths else {}
+    failed = [dict(path=p, error=e) for p, e in res.items() if e]
+    if failed:
+        c.rollback()
+        return jsonify(error="Some files could not be moved to the Recycle Bin, so the item was kept in the library",
+                       failed=failed, recycled=[p for p, e in res.items() if not e]), 500
+    c.commit()
+    return ok(recycled=paths)
 
 @app.post("/api/films/merge")
 def merge_films():
