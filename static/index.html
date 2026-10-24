@@ -534,21 +534,22 @@ function rwRow(x){return `<div class=rw-row id=rw_${x.id}><input type=checkbox c
  <div class=rw-m title="${esc([x.studio,x.date,x.cast].filter(Boolean).join(' · '))}">${esc([x.studio,x.date,x.cast].filter(Boolean).join(' · '))}</div>
  <div class=rw-f><b>Now:</b> ${esc(x.old_name)}</div><div class=rw-f><b>New:</b> ${esc(x.new_name)}</div></div>
  <button onclick="renameOne(${x.id})">Rename</button></div>`}
-function rwMore(){const L=$('rwRows');if(!L)return;const nx=RW.items.slice(RW.shown,RW.shown+50);RW.shown+=nx.length;L.insertAdjacentHTML('beforeend',nx.map(rwRow).join(''));
- $('rwMoreBox').innerHTML=RW.shown<RW.items.length?`<button onclick="rwMore()">Show more (${RW.items.length-RW.shown} left)</button>`:''}
-function rwCount(){const n=document.querySelectorAll('#rwOv .rwc:checked').length,t=$('rwCnt');if(t)t.textContent=`${RW.items.length} waiting · ${RW.shown} shown · ${n} selected`}
+function rwMore(k=50){const L=$('rwRows');if(!L)return;const nx=RW.items.slice(RW.shown,RW.shown+k);RW.shown+=nx.length;L.insertAdjacentHTML('beforeend',nx.map(rwRow).join(''));rwCount()}
+function rwCount(){const rows=document.querySelectorAll('#rwOv .rwc'),n=document.querySelectorAll('#rwOv .rwc:checked').length,t=$('rwCnt'),all=$('rwAll');RW.shown=rows.length;  // single source: the rendered rows
+ if(t)t.textContent=`${RW.items.length} waiting · ${rows.length} shown · ${n} selected`;if(all){all.checked=rows.length>0&&n==rows.length;all.indeterminate=n>0&&n<rows.length}
+ const m=$('rwMoreBox');if(m)m.innerHTML=RW.shown<RW.items.length?`<button onclick="rwMore()">Show more (${RW.items.length-RW.shown} left)</button>`:''}
 async function renameWaiting(){if($('rwRes'))$('rwRes').textContent='Checking…';const d=await api('/api/scenes/rename-waiting');
  if($('rwRes'))$('rwRes').textContent=`${d.count} file(s) waiting (${d.scenes} scene(s), ${d.flagged} from scans)`;
  RW.items=d.items;RW.shown=0;const o=rwEnsure();o.style.zIndex='';
  o.innerHTML=`<div class=rw-box><div class=rw-head><h3>Rename waiting</h3><label class=rw-all><input type=checkbox id=rwAll checked onchange="document.querySelectorAll('#rwOv .rwc').forEach(x=>x.checked=this.checked);rwCount()"> Select all shown</label><span id=rwCnt class=muted></span><button onclick="renameSelected()">Rename selected</button><button onclick="rwClose()" title="Close">×</button></div>
  <p class=muted style="margin:8px 0">Matched scenes whose files were not renamed automatically. Nothing is renamed until you click.</p><div id=rwRows></div><div id=rwMoreBox class=rw-more></div></div>`;
  $('rwRows').onchange=rwCount;rwMore();rwCount()}
-function rwDrop(id){RW.items=RW.items.filter(x=>x.id!=id);document.querySelectorAll('#rw_'+id).forEach(e=>{e.remove();RW.shown--});rwCount()}
+function rwDrop(id){RW.items=RW.items.filter(x=>x.id!=id);document.querySelectorAll('#rw_'+id).forEach(e=>e.remove());rwCount()}
 async function renameOne(id){const r=await api('/api/scenes/rename-apply',{method:'POST',body:{ids:[id]}});
  if(r.errors.length)toast(r.errors[0].error);else{rwDrop(id);toast(`Renamed ${r.renamed} file(s)`)}}
 async function renameSelected(){const ids=[...new Set([...document.querySelectorAll('#rwOv .rwc:checked')].map(x=>+x.value))];if(!ids.length||!confirm(`Rename ${ids.length} scene(s)?`))return;
  $('rwCnt').textContent='Renaming…';const r=await api('/api/scenes/rename-apply',{method:'POST',body:{ids}});const bad=new Set(r.errors.map(e=>+e.id));ids.filter(i=>!bad.has(i)).forEach(rwDrop);
- toast(`Renamed ${r.renamed} file(s)`+(r.errors.length?`, ${r.errors.length} error(s): `+r.errors.slice(0,3).map(e=>e.error).join('; '):''));if(RW.shown<10)rwMore();reload()}
+ toast(`Renamed ${r.renamed} file(s)`+(r.errors.length?`, ${r.errors.length} error(s): `+r.errors.slice(0,3).map(e=>e.error).join('; '):''));rwCount();if(RW.shown<50)rwMore(50-RW.shown);rwCount();reload()}
 async function reviewUnmatched(){const d=await api('/api/tpdb/unmatched');
  openM(`<h3>Unmatched scenes (${d.scenes.length})</h3><p class=muted>Best ThePornDB candidates for each scene. Click Use to apply one. Review-flagged scenes are shown without images.</p>`+d.scenes.map(x=>`<div id=ru_${x.id} style="margin:10px 0;padding-bottom:6px;border-bottom:2px solid #8884"><div><b>${esc(x.file||x.title)}</b> ${x.review?'<span class=badge style="position:static">review</span>':''} <a href="#" onclick="openFilm(${x.id});return false">edit</a></div><div class=rc><span class=muted>…</span></div></div>`).join(''));
  const g=S.tpGen;for(const x of d.scenes){const el=$('ru_'+x.id);if(g!==S.tpGen||!el||$('modal').style.display=='none')break;const rc=el.querySelector('.rc');rc.innerHTML='<span class=muted>Searching…</span>';
