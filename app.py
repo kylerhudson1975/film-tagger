@@ -2083,14 +2083,21 @@ def keep_parent_studio(c, fid, s, new):
     fam = [site.get(k, {}).get("name") for k in ("parent", "network") if isinstance(site.get(k), dict)]
     return any(db.studio_key(x) in ck for x in fam if x)
 
-def apply_scene(c, fid, s, keep=()):
-    """Apply a ThePornDB scene to a film. Hand-edited fields (edited_fields) and `keep` are never replaced; tags are only added."""
+def apply_scene(c, fid, s, keep=(), override=False):
+    """Apply a ThePornDB scene to a film; tags are only added. Background matching (override=False): hand-edited fields
+    (edited_fields) and `keep` are never replaced. Explicit Load (override=True): hand-edited fields ARE replaced except
+    `keep` (changed in this edit session) and a hand-edited poster; replaced fields are then unlocked."""
     f = tpdb.scene_fields(s)
-    ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]")) | set(keep)
+    locked = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
+    ed = (set(keep) | ({"poster", "poster_wide"} if "poster" in locked or "poster_wide" in locked else set())) if override else locked | set(keep)
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
     if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
     if upd.get("studio"): upd["studio"] = db.canon_studio(upd["studio"], c)  # 'angels.love' -> 'Angels Love'
     if upd.get("studio") and keep_parent_studio(c, fid, s, upd["studio"]): upd.pop("studio")  # never swap Kyle's studio for a sub-label
+    if override:  # unlock what Load just replaced (and the id it loaded); same-session edits and a hand-edited poster stay locked
+        unlock = (set(upd) | {"tpdb_id"}) - set(keep)
+        if "year" in unlock or "release_date" in unlock: unlock |= {"year", "release_date"}
+        upd["edited_fields"] = json.dumps(sorted(locked - unlock))
     upd.update(kind="scene", tpdb_checked=time.time(), updated_at=time.time())
     c.execute(f"UPDATE films SET {','.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     for t in f["tags"]: db.add_tag_if_absent(c, fid, t, "Content", source="tpdb")
@@ -2174,7 +2181,7 @@ def tpdb_apply(fid):
             if s: s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
         if not s: return jsonify(error="No ThePornDB match (no confident match; use Find… to pick a candidate)"), 404
     except Exception as e: return jsonify(error=tpdb_err(e)), 502
-    apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS])
+    apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS], override=bool(sid))  # Load of a given id replaces locked fields; blank id (filename lookup) keeps them
     c.execute("UPDATE films SET rename_pending=0 WHERE id=?", (fid,)); c.commit()  # Loaded: no longer 'rename waiting'
     if d.get("rename", True):
         try: rename_scene_file(c, fid)
