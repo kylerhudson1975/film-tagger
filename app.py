@@ -116,6 +116,8 @@ def build_query(q):
         where.append("f.id IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")")
     if q.get("nompaa") in ("1", 1): where.append("f.tmdb_id IS NOT NULL AND COALESCE(f.mpaa,'')=''")
     if q.get("needs_tmdb") in ("1", 1): where.append("f.tmdb_status='needs_match'")
+    if q.get("soft_match") in ("1", 1):  # matched scenes whose file is not renamed yet (orange flag)
+        c0 = C(); ids = soft_match_ids(c0); c0.close(); where.append(f"f.id IN ({','.join(map(str, ids)) or 'NULL'})")
     person = (q.get("person") or "").strip()
     if person:  # exact name match against stored people lists (not a text search)
         role = q.get("prole") or ""
@@ -173,7 +175,27 @@ def attach(c, films, full=False):
     for f in films: f["queued"] = f["id"] in qs
     aq = {r[0] for r in c.execute(f"SELECT film_id FROM aznude_queue WHERE film_id IN ({ph})", ids)}
     for f in films: f["aznude_queued"] = f["id"] in aq
+    sm = soft_match_ids(c, [f["id"] for f in films if f.get("kind") == "scene"])
+    for f in films: f["soft_match"] = f["id"] in sm
     return films
+
+def soft_match_ids(c, ids=None):
+    """Scenes that are a 'soft match': flagged rename_pending, or matched (tpdb_id) with a stored file path that is not the
+    standard '<root>/<Studio>/<standard name>[ (n)].ext'. Same set as the Rename waiting view, but from stored paths only (no
+    filesystem access). Never Review-by-hand or [Hold rename] scenes, nor ones missing studio/date/title."""
+    if ids is not None and not ids: return set()
+    w = "kind='scene' AND (COALESCE(rename_pending,0)=1 OR tpdb_id IS NOT NULL)"
+    if ids is not None: w += f" AND id IN ({','.join(str(int(i)) for i in ids)})"
+    films = {r["id"]: r for r in c.execute(f"SELECT id, studio, release_date, cast_, title, notes FROM films WHERE {w}")
+             if r["studio"] and r["release_date"] and r["title"] and "review by hand" not in (r["notes"] or "").lower()
+             and HOLD_RENAME.lower() not in (r["notes"] or "").lower()}
+    if not films: return set()
+    out = set()
+    for fid, p in c.execute(f"SELECT film_id, path FROM files WHERE film_id IN ({','.join(map(str, films))})"):
+        f = films[fid]; folder, base = os.path.split(p or ""); stem = os.path.splitext(base)[0]
+        ok = os.path.basename(folder) == _safe(f["studio"], 60) and _re.fullmatch(_re.escape(scene_file_name(f)) + r"( \(\d+\))?", stem)
+        if not ok: out.add(fid)
+    return out
 
 @app.get("/api/films")
 def list_films():
@@ -2258,9 +2280,13 @@ def scenes_rename_waiting():
     c = C(); items = []
     for r in c.execute("SELECT id, COALESCE(rename_pending,0) p FROM films WHERE kind='scene' AND (rename_pending=1 OR tpdb_id IS NOT NULL)"
                        " ORDER BY studio COLLATE FOLD, title COLLATE FOLD").fetchall():
-        for m in rename_waiting(c, r[0]):
+        ms = rename_waiting(c, r[0])
+        if not ms: continue
+        f = c.execute("SELECT title, studio, release_date, cast_, custom_poster, poster_wide, poster FROM films WHERE id=?", (r[0],)).fetchone()
+        for m in ms:  # rename_waiting already excludes Review-by-hand scenes, so a thumbnail is fine here
             items.append(dict(id=r[0], old=m["old"], new=m["new"], old_name=os.path.basename(m["old"]),
-                              new_name=os.path.basename(m["new"]), flagged=bool(r[1])))
+                              new_name=os.path.basename(m["new"]), flagged=bool(r[1]), title=f["title"], studio=f["studio"],
+                              date=f["release_date"], cast=f["cast_"], thumb=f["custom_poster"] or f["poster_wide"] or f["poster"] or None))
     return jsonify(count=len(items), scenes=len({x["id"] for x in items}), flagged=sum(1 for x in items if x["flagged"]), items=items)
 
 @app.get("/api/scenes/rename-preview")
