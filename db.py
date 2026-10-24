@@ -351,6 +351,9 @@ def connect():
     c.executescript(SCHEMA)
     c.execute("CREATE TABLE IF NOT EXISTS excluded(id INTEGER PRIMARY KEY, path TEXT, size INTEGER, oshash TEXT, title TEXT, kind TEXT, removed_at REAL)")
     c.execute("CREATE INDEX IF NOT EXISTS ix_excluded_size ON excluded(size)")
+    fcols = {r[1] for r in c.execute("PRAGMA table_info(files)")}
+    if "oshash" not in fcols: c.execute("ALTER TABLE files ADD COLUMN oshash TEXT")  # fingerprint, for relinking files renamed/moved outside the app
+    c.execute("CREATE INDEX IF NOT EXISTS ix_files_size ON files(size)")
     xcols = {r[1] for r in c.execute("PRAGMA table_info(excluded)")}
     for col in ("studio", "cast_", "release_date"):  # shown and sorted in Settings > Removed items
         if col not in xcols: c.execute(f"ALTER TABLE excluded ADD COLUMN {col} TEXT")
@@ -522,10 +525,34 @@ def is_gallery_dir(name):
     import gallery
     return gallery.is_gallery_dir(name)
 
+def _root_of(p, roots):
+    return next((r for r in roots if under(p, r.rstrip("\\/"))), None)
+
+def relink(c, p, size, h, roots, sroots, seen):
+    """A file found by the scan that is not in the library: is it an existing item's file renamed/moved outside the app?
+    Candidates: files rows with the same size whose path is gone from disk (and not seen in this scan). With a stored
+    fingerprint it must equal this file's; without one (rows from before fingerprints were stored) only when it is the
+    sole same-size candidate overall, under the same library root, with the same extension and the same kind (scene or
+    not). Exactly one candidate must qualify, else None (added as new like before). Returns the files row id or None."""
+    if not size: return None
+    cands = [r for r in c.execute("SELECT x.id, x.path, x.oshash, f.kind FROM files x JOIN films f ON f.id=x.film_id WHERE x.size=?", (size,))
+             if os.path.normcase(r["path"]) not in seen and not os.path.exists(r["path"])
+             and _root_of(r["path"], roots) and os.path.isdir(_root_of(r["path"], roots))]  # its library is reachable (not an unplugged drive)
+    if not cands: return None
+    ok = [r for r in cands if r["oshash"] and h and r["oshash"] == h]
+    if not ok and len(cands) == 1 and not cands[0]["oshash"]:
+        o = cands[0]; scene = any(under(p, sr) for sr in sroots)
+        same_root = _root_of(p, roots) and _root_of(o["path"], roots) == _root_of(p, roots)
+        if (same_root and os.path.splitext(o["path"])[1].lower() == os.path.splitext(p)[1].lower()
+                and (o["kind"] == "scene") == scene):
+            ok = [o]
+    return ok[0]["id"] if len(ok) == 1 else None
+
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}
     sroots = scene_roots(c)
-    now = time.time(); added = 0; seen = set(); errors = []
+    now = time.time(); added = 0; relinked = 0; seen = set(); errors = []
+    allroots = list(dict.fromkeys(list(roots) + list(sroots)))
     for root in roots:
         if not os.path.isdir(root):
             if any(os.path.normcase(root.rstrip("\\/")) == os.path.normcase(sr) for sr in sroots): continue  # scene root not created yet
@@ -533,7 +560,7 @@ def scan(c, roots, progress=None):
         for dp, dns, fns in os.walk(root, onerror=lambda e: errors.append(str(e))):
             dns[:] = [d for d in dns if not d.startswith(("$", ".")) and not is_gallery_dir(d)]  # photo galleries are never catalogue items
             if progress.get("cancel"): break
-            progress.update(found=len(seen), added=added, current=dp)
+            progress.update(found=len(seen), added=added, relinked=relinked, current=dp)
             for fn in fns:
                 if os.path.splitext(fn)[1].lower() not in VIDEO_EXT: continue
                 if re.search(r"\bsample\b", fn, re.I): continue
@@ -546,15 +573,30 @@ def scan(c, roots, progress=None):
                 if r:
                     if is_scene: c.execute("UPDATE films SET kind='scene' WHERE id=? AND kind IS NULL", (r["film_id"],))
                     c.execute("UPDATE files SET missing=0, size=? WHERE id=?", (size, r["id"]))
+                    if size and not c.execute("SELECT oshash FROM files WHERE id=?", (r["id"],)).fetchone()[0]:  # store fingerprint once
+                        c.execute("UPDATE files SET oshash=? WHERE id=?", (file_hash(p), r["id"]))
                     c.execute("UPDATE films SET missing=0 WHERE id=?", (r["film_id"],))
                     continue
+                h = file_hash(p) if size else None
+                rid = relink(c, p, size, h, allroots, sroots, seen)
+                if rid:  # renamed/moved outside the app: keep the item (metadata, tags, locks), just update its path
+                    o = c.execute("SELECT film_id, path FROM files WHERE id=?", (rid,)).fetchone()
+                    c.execute("UPDATE files SET path=?, size=?, oshash=?, missing=0 WHERE id=?", (p, size, h, rid))
+                    c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (p, o["path"]))
+                    c.execute("UPDATE films SET missing=0 WHERE id=?", (o["film_id"],)); relinked += 1
+                    try:
+                        import csv
+                        with open(os.path.join(root, "_filmtagger_relinks.csv"), "a", newline="", encoding="utf-8-sig") as fh:
+                            csv.writer(fh).writerow([time.strftime("%Y-%m-%d %H:%M:%S"), o["film_id"], o["path"], p])
+                    except OSError as e: errors.append(f"relink log: {e}")
+                    continue
                 if is_scene:
-                    new_scene(c, p, size, root, now); added += 1; continue
+                    fid = new_scene(c, p, size, root, now); c.execute("UPDATE files SET oshash=? WHERE film_id=? AND path=?", (h, fid, p)); added += 1; continue
                 t, y = guess_title_year(p)
                 drive = os.path.splitdrive(p)[0] or root
                 cur = c.execute("INSERT INTO films(title,year,storage,added_at,updated_at) VALUES(?,?,?,?,?)",
                                 (t, y, drive, now, now))
-                c.execute("INSERT INTO files(film_id,path,size) VALUES(?,?,?)", (cur.lastrowid, p, size))
+                c.execute("INSERT INTO files(film_id,path,size,oshash) VALUES(?,?,?,?)", (cur.lastrowid, p, size, h))
                 added += 1
     # flag missing: files under scanned roots that weren't seen (skipped if the scan was cancelled)
     missing = 0
@@ -569,7 +611,7 @@ def scan(c, roots, progress=None):
     c.commit()
     try: fill_folder_studios(c)  # add-only studio from the <Studio> folder
     except sqlite3.Error as e: errors.append(f"studio from folder: {e}")
-    return {"added": added, "found": len(seen), "missing_files": missing, "errors": errors[:50]}
+    return {"added": added, "relinked": relinked, "found": len(seen), "missing_files": missing, "errors": errors[:50]}
 
 # ---------- tags ----------
 def get_tag_id(c, name, category=None, set_category=False):

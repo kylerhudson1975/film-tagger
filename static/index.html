@@ -674,7 +674,7 @@ async function browseFolder(){const b=event.target;b.disabled=true;b.textContent
  finally{b.disabled=false;b.textContent='Browse…'}}
 let pt,ptFast=false;
 function jobText(j){if(j.kind=='resolution')return `${j.done}/${j.total} · ${j.matched} detected · ${j.skipped} unknown${j.offline?' · '+j.offline+' on unplugged drives':''}${j.errors?' · '+j.errors+' errors':''}${j.running?(j.cancel?' · cancelling…':(j.eta_s!=null?' · ~'+Math.ceil(j.eta_s/60)+' min left':'')):' · finished'}`;
- if(j.kind=='scan')return `${j.found||0} video files found · ${j.added||0} new${j.running?'':(' · '+(j.missing_files||0)+' missing')}${j.cancelled?' · cancelled':''}`;
+ if(j.kind=='scan')return `${j.found||0} video files found · ${j.added||0} new${j.relinked?` · ${j.relinked} relinked`:''}${j.running?'':(' · '+(j.missing_files||0)+' missing')}${j.cancelled?' · cancelled':''}`;
  const what=j.kind=='pgenre'?'filled':j.kind=='mpaa'?'rated':j.kind=='ai'?'films tagged':'matched',miss=j.kind=='pgenre'?'no TMDB genre':j.kind=='mpaa'?'no US rating':j.kind=='ai'?'no reply':'need match';
  return `${j.done}/${j.total} · ${j.matched} ${what} · ${j.skipped} ${miss}${j.errors?' · '+j.errors+' errors':''}${j.error?' — '+j.error:''}${j.running?(j.cancel?' · cancelling…':''):' · finished'}`}
 function showJob(r){const j=r.scan&&r.scan.running?r.scan:(r.res&&r.res.running&&!r.job.running?r.res:r.job),sj=r.scan&&r.scan.running?r.scan:(r.res&&r.res.running?r.res:(r.res&&r.res.finished_at&&(!r.scan.finished_at||r.res.finished_at>r.scan.finished_at)?r.res:r.scan));
@@ -746,7 +746,7 @@ async function copyPrompt(){const [p,q]=await Promise.all([fetch('/api/prompt').
 async function quitApp(){if(!confirm('Stop Film Tagger? (Start it again from the Desktop icon.)'))return;await api('/api/shutdown',{method:'POST',body:{}}).catch(()=>{});document.body.innerHTML='<div style="margin:auto;font-size:18px">Film Tagger has stopped. You can close this window.</div>'}
 async function doScan(){const roots=$('s_roots').value.split('\n').map(s=>s.trim()).filter(Boolean);await api('/api/settings',{method:'PUT',body:{roots,scene_roots:$('s_scene_roots').value.split('\n').map(x=>x.trim()).filter(Boolean)}});
  $('scanRes').textContent='Scanning… (progress in the bar at the top)';S.jbHide=null;setTimeout(pollJob,300);const r=await api('/api/scan',{method:'POST',body:{roots}});
- $('scanRes').textContent=`Found ${r.found} video files, ${r.added} new, ${r.missing_files} missing. ${r.errors.join('; ')}`;refreshMeta();load();loadLibs();pollJob()}
+ $('scanRes').textContent=`Found ${r.found} video files, ${r.added} new, ${r.relinked||0} relinked, ${r.missing_files} missing. ${r.errors.join('; ')}`;refreshMeta();load();loadLibs();pollJob()}
 async function doImport(){const f=$('s_file').files[0];if(!f)return;if(f.name.endsWith('.json')&&!confirm('This REPLACES your whole database. Continue?'))return;
  const fd=new FormData();fd.append('file',f);const r=await api('/api/import',{method:'POST',body:fd});toast('Imported: '+JSON.stringify(r));refreshMeta();load()}
 // ---------- person search + person pages ----------
