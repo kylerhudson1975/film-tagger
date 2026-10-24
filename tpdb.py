@@ -240,12 +240,14 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
     date, m = _date(rest)
     if m: rest = (rest[:m.start()] + " " + rest[m.end():]).strip()
     aliases = resolve_site(fetch, studio, site_cache) if studio else []
-    best = None
+    best = None; seen = {}  # scene id -> best score (for the runner-up check)
     def consider(cands, strat):
         nonlocal best
         for sc in cands[:8]:
             sv, why = score(sc, studio, date, f"{studio or ''} {rest}", aliases)
-            if sv >= 0 and (best is None or sv > best["score"]): best = dict(scene=sc, score=sv, why=why, strategy=strat)
+            if sv < 0: continue
+            k = str(sc.get("id") or sc.get("_id") or id(sc)); seen[k] = max(sv, seen.get(k, -1))
+            if best is None or sv > best["score"]: best = dict(scene=sc, score=sv, why=why, strategy=strat)
     if os.path.isfile(path):
         try:
             h = oshash(path)
@@ -264,8 +266,23 @@ def identify(token, path, folder=None, fetch=None, site_cache=None):
         if res is None: continue
         consider(res, strat)
         if best and best["score"] >= CONFIDENT + 2: break
-    if best: best["confident"] = is_confident(best["score"], best["why"])
+    if best:
+        best["confident"] = is_confident(best["score"], best["why"])
+        bk = str(best["scene"].get("id") or best["scene"].get("_id") or id(best["scene"]))
+        best["runner_up"] = max([v for k, v in seen.items() if k != bk], default=None)  # best score of a different scene
     return best
+
+def rename_safe(r):
+    """Extremely high confidence, safe to rename/move the file automatically: an OSHASH fingerprint match, or studio +
+    date + full title (>=85%) + every scene performer found in the filename, with no other scene scoring within 1 point."""
+    if not r or not r.get("scene") or not r.get("confident"): return False
+    if r.get("strategy") == "oshash" and "fingerprint" in (r.get("why") or []): return True
+    why = r.get("why") or []
+    if not ("studio" in why and "date" in why and "title" in why): return False
+    m = next((x for x in (re.match(r"performers (\d+)/(\d+)$", w) for w in why) if x), None)
+    if not m or m.group(1) != m.group(2) or int(m.group(2)) < 1: return False
+    ru = r.get("runner_up")
+    return ru is None or ru < r["score"] - 1
 
 def site_queries(stem, text, rest):
     """Queries like ThePornDB website's scene search box (plain ?q=, no parse/direct): every term must match, so try the

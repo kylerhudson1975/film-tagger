@@ -378,6 +378,7 @@ def connect():
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # existing rows untouched (NULL/0)
     # Scenes libraries: kind='scene' rows never use TMDB; release_date YYYY-MM-DD; tpdb_id = ThePornDB scene id
     if "tpdb_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN tpdb_checked REAL")
+    if "rename_pending" not in cols: c.execute("ALTER TABLE films ADD COLUMN rename_pending INTEGER DEFAULT 0")  # matched by the scan, file not auto-renamed
     for col in ("kind", "release_date", "tpdb_id"):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
     import subtitles as _subs

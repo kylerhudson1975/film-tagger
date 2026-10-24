@@ -2152,7 +2152,8 @@ def tpdb_apply(fid):
             if s: s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
         if not s: return jsonify(error="No ThePornDB match (no confident match; use Find… to pick a candidate)"), 404
     except Exception as e: return jsonify(error=tpdb_err(e)), 502
-    apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS]); c.commit()
+    apply_scene(c, fid, s, keep=[k for k in d.get("keep", []) if k in FILM_FIELDS])
+    c.execute("UPDATE films SET rename_pending=0 WHERE id=?", (fid,)); c.commit()  # Loaded: no longer 'rename waiting'
     if d.get("rename", True):
         try: rename_scene_file(c, fid)
         except OSError as e: return jsonify(error=f"Matched, but the file could not be renamed: {e}"), 500
@@ -2240,7 +2241,27 @@ def do_scene_moves(c, moves):
 def rename_scene_file(c, fid):
     """Move a scene's file(s) (and same-name sidecars) to the standard name. Returns (renamed count, note)."""
     moves, note = plan_scene_rename(c, fid)
-    return (do_scene_moves(c, moves) if moves else 0), note
+    n = do_scene_moves(c, moves) if moves else 0
+    if not note and n == len(moves): c.execute("UPDATE films SET rename_pending=0 WHERE id=?", (fid,)); c.commit()  # now standard
+    return n, note
+
+def rename_waiting(c, fid):
+    """Planned moves for a scene that is waiting for a by-hand rename, or [] (held, review, missing fields, already standard)."""
+    if rename_held(c, fid) or is_review(c, fid): return []
+    moves, note = plan_scene_rename(c, fid)
+    return [] if note else [m for m in moves if m["new"] != m["old"]]
+
+@app.get("/api/scenes/rename-waiting")
+def scenes_rename_waiting():
+    """Scenes whose file was not renamed automatically (flagged by the scan) plus older matched scenes (tpdb_id set) whose
+    file name differs from the standard name. Preview only: nothing is moved. Review-by-hand scenes are never listed."""
+    c = C(); items = []
+    for r in c.execute("SELECT id, COALESCE(rename_pending,0) p FROM films WHERE kind='scene' AND (rename_pending=1 OR tpdb_id IS NOT NULL)"
+                       " ORDER BY studio COLLATE FOLD, title COLLATE FOLD").fetchall():
+        for m in rename_waiting(c, r[0]):
+            items.append(dict(id=r[0], old=m["old"], new=m["new"], old_name=os.path.basename(m["old"]),
+                              new_name=os.path.basename(m["new"]), flagged=bool(r[1])))
+    return jsonify(count=len(items), scenes=len({x["id"] for x in items}), flagged=sum(1 for x in items if x["flagged"]), items=items)
 
 @app.get("/api/scenes/rename-preview")
 def scenes_rename_preview():
@@ -2574,10 +2595,17 @@ def run_tpdb_job(token, ids):
             if TP["cancel"]: break
             try:
                 p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
-                rl.wait(); s = tpdb.lookup(token, p[0]) if p else None
+                rl.wait(); r = tpdb.identify(token, p[0]) if p else None
+                s = r["scene"] if r and r.get("confident") else None  # same as lookup(): details only on a confident match
                 if s:
                     rl.wait(); s = tpdb.get_scene(token, s.get("id") or s.get("_id")) or s
-                    apply_scene(c, fid, s); TP["matched"] += 1
+                    apply_scene(c, fid, s); TP["matched"] += 1; c.commit()
+                    if tpdb.rename_safe(r) and not rename_held(c, fid) and not is_review(c, fid):
+                        try:
+                            if rename_scene_file(c, fid)[0]: TP["renamed"] = TP.get("renamed", 0) + 1
+                        except OSError as e: TP["rename_errors"] = TP.get("rename_errors", 0) + 1; TP["error"] = f"Rename failed: {e}"
+                    if rename_waiting(c, fid):  # matched but the file still has a non-standard name: wait for a by-hand rename
+                        c.execute("UPDATE films SET rename_pending=1 WHERE id=?", (fid,)); TP["rename_waiting"] = TP.get("rename_waiting", 0) + 1
                 else:
                     c.execute("UPDATE films SET tpdb_checked=? WHERE id=?", (time.time(), fid)); TP["skipped"] += 1
                 c.commit()
