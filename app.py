@@ -986,13 +986,22 @@ def excluded_restore(xid):
     """Forget the exclusion and add the file back right away if it is still there (title is guessed again / rematched)."""
     c = C(); r = c.execute("SELECT * FROM excluded WHERE id=?", (xid,)).fetchone()
     if not r: return jsonify(error="not found"), 404
-    c.execute("DELETE FROM excluded WHERE id=?", (xid,)); c.commit()
+    c.execute("DELETE FROM excluded WHERE id=?", (xid,))
+    # the same file may have been removed more than once (under other names/paths): forget those too, or the scan
+    # would still skip it by size + fingerprint (or name + size) and the restore would silently add nothing
+    same = 0
+    if r["size"]:
+        name = os.path.basename((r["path"] or "").replace("\\", "/")).lower()
+        for o in c.execute("SELECT id, path, oshash FROM excluded WHERE size=?", (r["size"],)).fetchall():
+            if (r["oshash"] and o["oshash"] == r["oshash"]) or os.path.basename((o["path"] or "").replace("\\", "/")).lower() == name:
+                c.execute("DELETE FROM excluded WHERE id=?", (o["id"],)); same += 1
+    c.commit()
     added = False
     roots = [x for x in (db.get_setting(c, "roots", []) or []) + db.scene_roots(c) if x]
     root = next((x for x in roots if db.under(r["path"], x)), None)
-    if root and os.path.exists(r["path"]):
+    if root and os.path.isdir(root):  # also when the file was moved/renamed since it was removed
         res = db.scan(c, [root]); added = res.get("added", 0) > 0
-    return ok(added=added)
+    return ok(added=added, also_forgotten=same)
 
 @app.get("/api/categories")
 def cats():
