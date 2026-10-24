@@ -7,7 +7,24 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.2.2
+### ✏ Automatic renaming only for sure matches
+- **ThePornDB scans now rename files only when the match is certain:** a fingerprint (file hash) match, or the studio, date, full title and every performer all agree with the file name, with no other scene scoring close. Every other match still gets its details, but the file keeps its name until you say so.
+- **⚑ Soft match flag:** matched scenes whose file has not been renamed yet show a small orange flag in the bottom-right corner of their card. *Show only → Soft matches* lists just those. The flag goes away once the file is renamed or the scene is loaded again.
+- **Rename waiting:** in *Library & Settings*, **Rename waiting…** opens a wide panel listing every waiting scene, older matched ones too, with its thumbnail, details, the current name and the new one. Tick the ones you want and click **Rename selected**, or use the **Rename** button on a single row. It shows 50 at a time, with *Show more*. Nothing is renamed until you click. Scenes marked *Review by hand* or *[Hold rename]* are never listed.
+
+### 🗑 Removing and deleting
+- **Remove from library** (the old *Delete*) takes an item out of the catalogue and leaves its files alone.
+- **Delete files & remove from library** lists the exact files first, can include the photo gallery folder, and warns that it **can't be undone**. Files are deleted permanently, not sent to the Recycle Bin.
+- **Restoring a removed item** now brings it back even if its file was moved or renamed in the meantime.
+
+### 📏 Height units
+- Choose how heights are shown on people pages: **both** (5′4″ (162 cm)), **metric** or **imperial**. Stored values are not changed.
+
+### Other
+- New tests for automatic renaming, soft matches, deleting files and restoring removed items.
 
 ## What's new in v1.2.1
 ### ✂ Poster editor
