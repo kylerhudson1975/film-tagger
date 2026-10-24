@@ -328,9 +328,22 @@ def fold_collate(a, b):
     ka, kb = fold_key(a), fold_key(b)
     return (ka > kb) - (ka < kb) or (a > b) - (a < b)
 
+_READY = set()  # DB paths whose schema/migrations already ran in this process (they only need to run once)
+
+def _functions(c):
+    import subtitles as _subs
+    c.create_collation("FOLD", fold_collate)
+    for name, n, fn in (("tag_norm", 1, tag_norm), ("title_match", 4, title_match), ("person_in", 2, person_in),
+                        ("person_in_any", 2, person_in_any), ("fold_in", 2, fold_in), ("studio_key_in", 2, studio_key_in),
+                        ("path_studio_key", 2, path_studio_key), ("sub_lang_in", 2, _subs.lang_in)):
+        c.create_function(name, n, fn, deterministic=True)
+
 def connect():
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
+    key = os.path.abspath(DB_PATH)
+    if key in _READY and os.path.exists(DB_PATH):  # fast path: no schema script / migrations (which can wait on write locks)
+        _functions(c); c.execute("PRAGMA foreign_keys=ON"); return c
     c.create_collation("FOLD", fold_collate)
     c.create_function("tag_norm", 1, tag_norm, deterministic=True)
     c.execute("PRAGMA foreign_keys=ON")
@@ -387,6 +400,7 @@ def connect():
         c.executemany("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,?)",
                       [(n, i) for i, n in enumerate(DEFAULT_CATEGORIES)])
         c.commit()
+    _READY.add(key)
     return c
 
 def get_setting(c, k, default=None):

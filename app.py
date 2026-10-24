@@ -2337,10 +2337,19 @@ def refresh_galleries(c=None):
         if f: out[fid] = len(gallerymod.images(f))
     return out
 
-def _gallery_or_404(fid):
+GAL_CACHE = {}  # film id -> (time, kind, folder): thumbnail/photo requests reuse the folder found by the listing
+GAL_TTL = 120
+
+def _gallery_or_404(fid, fresh=True):
+    """fresh=False (thumb/photo/poster requests): reuse the folder found by a recent listing instead of re-scanning the
+    gallery (hundreds of files on a USB drive) once per thumbnail. Review-by-hand is still checked every time."""
     c = C()
     if is_review(c, fid): return None, (jsonify(error="Gallery hidden: this scene is flagged for review by hand"), 403)
+    hit = GAL_CACHE.get(fid)
+    if not fresh and hit and time.time() - hit[0] < GAL_TTL and os.path.isdir(hit[2]): return (c, hit[1], hit[2]), None
     kind, folder = scene_gallery(c, fid)
+    if folder: GAL_CACHE[fid] = (time.time(), kind, folder)
+    else: GAL_CACHE.pop(fid, None)
     if not folder: return None, (jsonify(error="No gallery for this scene"), 404)
     return (c, kind, folder), None
 
@@ -2353,7 +2362,7 @@ def gallery_list(fid):
 
 @app.get("/api/films/<int:fid>/gallery/thumb")
 def gallery_thumb(fid):
-    g, err = _gallery_or_404(fid)
+    g, err = _gallery_or_404(fid, fresh=False)
     if err: return err
     p = gallerymod.safe_name(g[2], request.args.get("name"))
     if not p: return jsonify(error="not found"), 404
@@ -2362,7 +2371,7 @@ def gallery_thumb(fid):
 
 @app.get("/api/films/<int:fid>/gallery/image")
 def gallery_image(fid):
-    g, err = _gallery_or_404(fid)
+    g, err = _gallery_or_404(fid, fresh=False)
     if err: return err
     p = gallerymod.safe_name(g[2], request.args.get("name"))
     if not p: return jsonify(error="not found"), 404
@@ -2371,7 +2380,7 @@ def gallery_image(fid):
 @app.post("/api/films/<int:fid>/gallery/poster")
 def gallery_poster(fid):
     """{name}: copy that gallery photo into the posters folder and use it as the custom poster (smart crop runs after)."""
-    g, err = _gallery_or_404(fid)
+    g, err = _gallery_or_404(fid, fresh=False)
     if err: return err
     c = g[0]; p = gallerymod.safe_name(g[2], (request.json or {}).get("name"))
     if not p: return jsonify(error="not found"), 404
