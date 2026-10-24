@@ -434,10 +434,12 @@ async function openGallery(id){let d;try{d=await api(`/api/films/${id}/gallery`)
    else if(S.gal&&S.gal.i!=null&&(e.key=='ArrowRight'||e.key=='ArrowLeft')){e.stopImmediatePropagation();e.preventDefault();galShow(S.gal.i+(e.key=='ArrowRight'?1:-1))}},true)}
  S.gal={id,names:d.images,i:null};const u=n=>`/api/films/${id}/gallery/thumb?name=${encodeURIComponent(n)}`;
  o.innerHTML=`<div class=gh><b>Gallery</b><span class=muted>${d.count} photo${d.count==1?'':'s'}</span><span style="flex:1"></span><button id=galBack style="display:none" onclick="galGrid()">▦ All photos</button><button onclick="galClose()">✕ Close</button></div>
-  <div class=gg id=galGrid>${d.images.map((n,i)=>`<img loading=lazy src="${u(n)}" title="${esc(n)}" onclick="galShow(${i})">`).join('')}</div>
+  <div class=gg id=galGrid>${d.images.map((n,i)=>{const k=n.indexOf('/'),g=k>0?n.slice(0,k):null,pg=i?(d.images[i-1].indexOf('/')>0?d.images[i-1].slice(0,d.images[i-1].indexOf('/')):null):null;
+   return (g&&(i==0||g!==pg)?`<div class=ggh>${esc(g)} <span class=muted>(${d.images.filter(x=>x.startsWith(g+'/')).length})</span></div>`:'')+`<img loading=lazy src="${u(n)}" title="${esc(n)}" onclick="galShow(${i})">`}).join('')}</div>
   <div class=gv id=galView><button onclick="galShow(S.gal.i-1)" title="Previous (←)">‹</button><img id=galImg alt=""><button onclick="galShow(S.gal.i+1)" title="Next (→)">›</button></div>
   <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span><button class=pri onclick="galPoster()">Use as poster</button></div>`;
  o.style.display='flex'}
+(()=>{const st=document.createElement('style');st.textContent='#galOv .gg .ggh{grid-column:1/-1;font-weight:bold;margin:10px 0 2px;padding-bottom:3px;border-bottom:1px solid #8885;text-align:left}';document.head.appendChild(st)})();
 function galClose(){const o=$('galOv');if(o){o.style.display='none';o.innerHTML=''}S.gal=null}
 function galGrid(){S.gal.i=null;$('galView').style.display='none';$('galBar').style.display='none';$('galBack').style.display='none';$('galGrid').style.display='grid'}
 function galShow(i){const g=S.gal,n=g.names.length;if(!n)return;i=(i+n)%n;g.i=i;

@@ -2349,7 +2349,7 @@ def gallery_list(fid):
     g, err = _gallery_or_404(fid)
     if err: return err
     c, kind, folder = g; names = gallerymod.images(folder)
-    return jsonify(kind=kind, folder=os.path.basename(folder), count=len(names), images=names)
+    return jsonify(kind=kind, folder=os.path.basename(folder), count=len(names), images=names, groups=gallerymod.groups(names))
 
 @app.get("/api/films/<int:fid>/gallery/thumb")
 def gallery_thumb(fid):
