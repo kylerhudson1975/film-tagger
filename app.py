@@ -816,11 +816,43 @@ def df_plan(c, fid):
         out.append(gi)
     return out
 
+def rb_refusal(drive, size, nuke, max_mb, policy_off):
+    """Why moving `size` bytes on `drive` to the Recycle Bin would NOT be safe (Windows would delete permanently), or None.
+    nuke/max_mb come from the volume's BitBucket settings (None = unknown, treated as unsafe)."""
+    if policy_off: return f"Recycle Bin is turned off by policy, so nothing was deleted"
+    if nuke is None: return f"Could not confirm that {drive} has a Recycle Bin, so nothing was deleted"
+    if nuke: return (f"Windows is set to delete files on {drive} immediately instead of using the Recycle Bin, so nothing was deleted. "
+                     "Turn it on in Recycle Bin > Properties (select the drive, choose 'Custom size') and try again")
+    if max_mb is not None and size > max_mb * 1024 * 1024:
+        return f"Too big for the Recycle Bin on {drive} (limit {max_mb} MB; Windows would delete it permanently), so nothing was deleted"
+    return None
+
+def _rb_settings(ap):
+    """(nuke, max_mb, policy_off) for the volume holding ap, read from Explorer's BitBucket settings."""
+    import ctypes, winreg
+    def rd(root, key, name):
+        try:
+            with winreg.OpenKey(root, key) as k: return winreg.QueryValueEx(k, name)[0]
+        except OSError: return None
+    pol = "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer"
+    policy_off = rd(winreg.HKEY_CURRENT_USER, pol, "NoRecycleFiles") == 1 or rd(winreg.HKEY_LOCAL_MACHINE, pol, "NoRecycleFiles") == 1
+    buf = ctypes.create_unicode_buffer(64)
+    drive = os.path.splitdrive(ap)[0] + "\\"
+    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(drive, buf, 64): return None, None, policy_off
+    guid = buf.value[buf.value.find("{"):buf.value.find("}") + 1]
+    vk = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\" + guid
+    nuke = rd(winreg.HKEY_CURRENT_USER, vk, "NukeOnDelete"); max_mb = rd(winreg.HKEY_CURRENT_USER, vk, "MaxCapacity")
+    return (None if nuke is None else bool(nuke)), max_mb, policy_off
+
+def _rb_size(ap):
+    return _df_dir_size(ap)[1] if os.path.isdir(ap) else os.path.getsize(ap)
+
 FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 3, 0x4, 0x10, 0x40, 0x400, 0x4000
 
 def recycle(paths):
     """Move paths to the Windows Recycle Bin. Returns {path: None (recycled) or error text}. Never deletes permanently:
-    a drive without a Recycle Bin is refused up front, and FOF_WANTNUKEWARNING makes Windows ask instead of nuking."""
+    refused up front when the drive has no Recycle Bin, Windows is set to delete immediately (NukeOnDelete), the item is
+    over the bin's size limit, or the setting can't be read; FOF_WANTNUKEWARNING is a last safety net."""
     res = {}
     if os.name != "nt":
         return {p: "Recycle Bin is only available on Windows" for p in paths}
@@ -840,6 +872,8 @@ def recycle(paths):
             drive = os.path.splitdrive(ap)[0] + "\\"
             qi = SHQUERYRBINFO(); qi.cbSize = ctypes.sizeof(qi)
             if sh.SHQueryRecycleBinW(drive, ctypes.byref(qi)) != 0: res[p] = f"No Recycle Bin on {drive} (not deleted)"; continue
+            why = rb_refusal(drive, _rb_size(ap), *_rb_settings(ap))
+            if why: res[p] = why; continue
             op = SHFILEOPSTRUCTW(); op.wFunc = FO_DELETE; op.pFrom = ap + "\0"; op.pTo = None
             op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING
             rc = sh.SHFileOperationW(ctypes.byref(op))

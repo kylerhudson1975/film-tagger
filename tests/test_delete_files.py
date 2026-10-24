@@ -55,6 +55,13 @@ assert c.execute("SELECT COUNT(*) FROM films WHERE id=?", (fb,)).fetchone()[0] =
 # gallery unticked: video only
 mk(a, 100); mk(os.path.join(ga, "1.jpg")); fa2 = add("Alpha again", [a]); calls.clear()
 assert cl.post(f"/api/films/{fa2}/deletefiles", json={"keys": ["v0"]}).status_code == 200 and calls == [[a]] and os.path.isdir(ga)
+# Recycle Bin safety: never recycle where Windows would delete permanently
+R = app.rb_refusal
+assert R("D:\\", 10, False, 1000, False) is None
+assert "immediately" in R("D:\\", 10, True, 1000, False)          # NukeOnDelete=1 ("Don't move files to the Recycle Bin")
+assert "confirm" in R("D:\\", 10, None, None, False)              # unknown setting -> refuse
+assert "Too big" in R("D:\\", 2 * 1024 * 1024, False, 1, False)   # over MaxCapacity (MB)
+assert "policy" in R("D:\\", 10, False, 1000, True)
 # the real recycler (restored) refuses instead of deleting when there is no Recycle Bin (any non-Windows OS)
 import importlib; importlib.reload(app)
 if os.name != "nt":
