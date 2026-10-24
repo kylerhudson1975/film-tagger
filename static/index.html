@@ -508,7 +508,7 @@ async function renameApply(){if(!confirm('Rename the files listed?'))return;$('r
  $('rnRes').textContent=`Renamed ${r.renamed} file(s)`+(r.errors.length?`, ${r.errors.length} error(s): `+r.errors.slice(0,3).map(e=>e.error).join('; '):'');$('rnList').innerHTML='';reload()}
 const RW={items:[],shown:0};
 function rwEnsure(){let o=$('rwOv');if(o)return o;const st=document.createElement('style');st.textContent=`
-#rwOv{position:fixed;inset:0;background:#000a;z-index:9;display:flex;justify-content:center;align-items:flex-start;padding:24px;overflow:auto}
+#rwOv{position:fixed;inset:0;background:#000a;z-index:20;display:flex;justify-content:center;align-items:flex-start;padding:24px;overflow:auto}
 #rwOv .rw-box{background:var(--p);color:inherit;border-radius:8px;width:min(1100px,94vw);max-width:none;padding:14px 16px;box-sizing:border-box;text-align:left}
 #rwOv .rw-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:-24px;background:var(--p);padding:8px 0;z-index:1;border-bottom:1px solid #8884}
 #rwOv .rw-head h3{margin:0;flex:1 1 auto}
@@ -526,10 +526,11 @@ function rwEnsure(){let o=$('rwOv');if(o)return o;const st=document.createElemen
 #rwOv .rw-row button{white-space:nowrap;width:auto}
 #rwOv .rw-more{text-align:center;padding:12px}`;document.head.appendChild(st);
  o=document.createElement('div');o.id='rwOv';o.onclick=e=>{if(e.target===o)rwClose()};document.body.appendChild(o);return o}
+function rwOpen(id){const o=$('rwOv');if(o)o.style.zIndex=9;openFilm(id)}  // edit window (#modal, z 10) goes above the panel
 function rwClose(){const o=$('rwOv');if(o)o.remove()}
 function rwRow(x){return `<div class=rw-row id=rw_${x.id}><input type=checkbox class=rwc value=${x.id} checked>
- <div class=rw-th onclick="openFilm(${x.id})" title="Open">${x.thumb?`<img loading=lazy src="${esc(x.thumb)}" alt="">`:''}</div>
- <div class=rw-info><a href="#" class=rw-t onclick="openFilm(${x.id});return false" title="${esc(x.title||'')}">${esc(x.title||'(untitled)')}</a>
+ <div class=rw-th onclick="rwOpen(${x.id})" title="Open">${x.thumb?`<img loading=lazy src="${esc(x.thumb)}" alt="">`:''}</div>
+ <div class=rw-info><a href="#" class=rw-t onclick="rwOpen(${x.id});return false" title="${esc(x.title||'')}">${esc(x.title||'(untitled)')}</a>
  <div class=rw-m title="${esc([x.studio,x.date,x.cast].filter(Boolean).join(' · '))}">${esc([x.studio,x.date,x.cast].filter(Boolean).join(' · '))}</div>
  <div class=rw-f><b>Now:</b> ${esc(x.old_name)}</div><div class=rw-f><b>New:</b> ${esc(x.new_name)}</div></div>
  <button onclick="renameOne(${x.id})">Rename</button></div>`}
@@ -538,7 +539,7 @@ function rwMore(){const L=$('rwRows');if(!L)return;const nx=RW.items.slice(RW.sh
 function rwCount(){const n=document.querySelectorAll('#rwOv .rwc:checked').length,t=$('rwCnt');if(t)t.textContent=`${RW.items.length} waiting · ${RW.shown} shown · ${n} selected`}
 async function renameWaiting(){if($('rwRes'))$('rwRes').textContent='Checking…';const d=await api('/api/scenes/rename-waiting');
  if($('rwRes'))$('rwRes').textContent=`${d.count} file(s) waiting (${d.scenes} scene(s), ${d.flagged} from scans)`;
- RW.items=d.items;RW.shown=0;const o=rwEnsure();
+ RW.items=d.items;RW.shown=0;const o=rwEnsure();o.style.zIndex='';
  o.innerHTML=`<div class=rw-box><div class=rw-head><h3>Rename waiting</h3><label class=rw-all><input type=checkbox id=rwAll checked onchange="document.querySelectorAll('#rwOv .rwc').forEach(x=>x.checked=this.checked);rwCount()"> Select all shown</label><span id=rwCnt class=muted></span><button onclick="renameSelected()">Rename selected</button><button onclick="rwClose()" title="Close">×</button></div>
  <p class=muted style="margin:8px 0">Matched scenes whose files were not renamed automatically. Nothing is renamed until you click.</p><div id=rwRows></div><div id=rwMoreBox class=rw-more></div></div>`;
  $('rwRows').onchange=rwCount;rwMore();rwCount()}
