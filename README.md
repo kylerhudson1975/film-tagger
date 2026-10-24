@@ -7,7 +7,19 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.2.3
+### 🖼 Photo galleries
+- **Shoot subfolders:** galleries that keep photos in subfolders one level down (one folder per shoot) now show all of them. The viewer groups them under a heading for each subfolder, after the top-level photos.
+- **Zoom and pan in the photo viewer:** zoom with the mouse wheel toward the cursor, the + / − / 0 keys, double-click, or pinch on a touch screen, and drag to move around a zoomed photo. On-screen − % + Fit controls are included.
+- **Type a zoom level:** click the zoom percentage, type a number such as 125 and press Enter. Esc or an invalid value puts it back.
+- **Much faster thumbnails:** gallery thumbnails load roughly 10 times faster.
+
+### 🔁 Matching and scanning
+- **Loading a ThePornDB id now wins over hand edits:** when you enter a ThePornDB id and click Load, its details replace fields you had locked by editing them by hand (except changes made in the same edit window and a hand-edited poster). Background matching and Load with a blank id still protect your edits.
+- **Renamed or moved files are found again:** if you rename or move a file outside the app, the next scan links it back to its existing item (same size and fingerprint), instead of treating it as removed and new. Relinks are logged to _filmtagger_relinks.csv. The first scan after updating may be slower once while fingerprints are stored.
+- **Find Gallery Cancel really stops:** Cancel now stops a gallery download within about 2 seconds. Finished photos are kept, half-downloaded ones are removed, and the status shows how many were kept.
 
 ## What's new in v1.2.2
 ### ✏ Automatic renaming only for sure matches
