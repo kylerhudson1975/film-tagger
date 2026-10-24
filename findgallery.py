@@ -256,6 +256,51 @@ def learn(page, studio, performers, plist):
 
 # ---------- download (gallery-dl as a separate process) ----------
 DL = {"running": False}
+CANCEL = threading.Event()  # set by cancel(); every wait in a download wakes up on it
+
+def cancel():
+    DL["cancel"] = True; CANCEL.set()
+
+def cancelled(): return bool(DL.get("cancel")) or CANCEL.is_set()
+
+def kill_tree(p):
+    """Stop gallery-dl and everything it started. On Windows the venv's python/pythonw.exe is a launcher that runs the
+    real interpreter as a child, so terminating only the launcher leaves the download running: kill the whole tree."""
+    if p is None or p.poll() is not None: return
+    pid = getattr(p, "pid", None)
+    if os.name == "nt" and pid:
+        try: subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception: pass
+    elif pid:
+        try: subprocess.run(["pkill", "-KILL", "-P", str(pid)], capture_output=True, timeout=5)  # its children first
+        except Exception: pass
+    try: p.terminate()
+    except Exception: pass
+    try: p.wait(timeout=3)
+    except Exception:
+        try: p.kill()
+        except Exception: pass
+
+def _unless_cancelled(fn, default):
+    """Run fn() (a forum page read, up to HTTP_TIMEOUT_S) in a helper thread; return default at once on cancel."""
+    box = {}
+    t = threading.Thread(target=lambda: box.update(r=fn()), daemon=True); t.start()
+    while t.is_alive():
+        if cancelled(): return default
+        t.join(0.2)
+    return box.get("r", default)
+
+def drop_partials(d):
+    """Remove half-written files (gallery-dl's '.part'/'.tmp') left by a stopped download. Returns how many."""
+    n = 0
+    try: names = os.listdir(d)
+    except OSError: return 0
+    for x in names:
+        if x.endswith((".part", ".tmp")):
+            try: os.remove(os.path.join(d, x)); n += 1
+            except OSError: pass
+    return n
 
 def gallery_dl_cmd(url, dest):
     return [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, url]
@@ -280,11 +325,19 @@ def resolves(host, _cache={}):
     return _cache[host]
 
 def list_urls(url, run=None, timeout=300):
-    """`gallery-dl -g` (list only, nothing saved) -> the file/page URLs of a thread."""
-    run = run or subprocess.run
-    r = run([sys.executable, "-m", "gallery_dl", "-g", url], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    return [x.strip() for x in (r.stdout or "").splitlines() if x.strip().startswith("http")]
+    """`gallery-dl -g` (list only, nothing saved) -> the file/page URLs of a thread. Stops at once on cancel."""
+    if run:
+        r = run([sys.executable, "-m", "gallery_dl", "-g", url], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return [x.strip() for x in (r.stdout or "").splitlines() if x.strip().startswith("http")]
+    out = tempfile.TemporaryFile(); t0 = time.time()
+    p = subprocess.Popen([sys.executable, "-m", "gallery_dl", "-g", url], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    while p.poll() is None:
+        if cancelled() or time.time() - t0 > timeout: kill_tree(p); out.close(); return []
+        CANCEL.wait(0.25)
+    out.seek(0); txt = out.read().decode("utf-8", "replace"); out.close()
+    return [x.strip() for x in txt.splitlines() if x.strip().startswith("http")]
 
 def live_urls(urls, bad=(), ok=resolves):
     """Drop URLs whose host is in bad or does not resolve (e.g. dead promo images embedded next to the real set)."""
@@ -434,7 +487,8 @@ def log_tail(path, n=300):
 def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
     popen = popen or subprocess.Popen; log = None; log_path = ""; p = None
     os.makedirs(dest, exist_ok=True)
-    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None)
+    CANCEL.clear()
+    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None, partial_removed=0, cancelled=False)
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         # gallery-dl's messages go to a log file, never a pipe: an unread pipe fills up (~4 KB on Windows) and
@@ -446,7 +500,7 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
         tries = [url] + ([tm.group(1)] if tm else [])
         # Link mode: download the set's host-page links ourselves (one gallery-dl run with a URL file), so only the
         # links that fail are retried and a set posted twice is downloaded once. Falls back to the whole URL.
-        main, alt = set_links(url) if url.startswith(BASE) else ([], [])
+        main, alt = _unless_cancelled(lambda: set_links(url), ([], [])) if url.startswith(BASE) else ([], [])
         tmpd = tempfile.gettempdir(); LK = {"main": main, "alt": alt, "todo": list(range(len(main))), "used_alt": False}
         if main:
             DL["expected"] = len(main); tries = ["&"] + tries
@@ -455,6 +509,7 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
             with open(lf, "w", encoding="utf-8") as f: f.write("\n".join(urls) + "\n")
             return lf
         for k, u in enumerate(tries):
+            if cancelled(): DL["error"] = "cancelled"; break
             if k and not u.startswith(("@", "%", "&")): DL.update(url=u, last_msg="That post has no images; trying the whole thread")
             log = open(log_path, "wb"); DL["log"] = log_path
             err = os.path.join(tmpd, "filmtagger_gallerydl_failed.txt")
@@ -470,23 +525,24 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
                 uu = u.lstrip("%"); cmd = input_file_cmd(uu[1:], dest) if uu.startswith("@") else gallery_dl_cmd(uu, dest)
                 if u.startswith("%"): cmd = cmd[:-1] + ["--sleep-request", RETRY_SLEEP_S] + cmd[-1:]
             p = popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log, creationflags=flags)
-            DL["pid"] = getattr(p, "pid", None)
+            DL["pid"] = getattr(p, "pid", None); last_check = 0.0
             while p.poll() is None:
-                if DL["cancel"]: p.terminate(); DL["error"] = "cancelled"; break
+                if cancelled(): kill_tree(p); DL["error"] = "cancelled"; break
+                if time.time() - last_check < 1: CANCEL.wait(0.2); continue  # wake on cancel; folder checks once a second
+                last_check = time.time()
                 try:  # watching the folder must never end the download: a file can vanish/rename between list and stat
                     DL["files"] = count_files(dest); DL["last_msg"] = log_tail(log_path)
                     ph = len(placeholders(dest)) if DL["files"] >= DEAD_SET_N else 0
                 except OSError as e:
                     log_w = globals()["log"]; log_w.warning("Find Gallery: folder check skipped: %s", type(e).__name__)
-                    time.sleep(1); continue
+                    continue
                 if DL["files"] == 0 and missing_count(log_path) >= DEAD_SET_N:  # dead set: stop early
-                    p.terminate(); DL["error"] = MISSING_MSG; break
+                    kill_tree(p); DL["error"] = MISSING_MSG; break
                 if DL["files"] >= DEAD_SET_N and ph >= DL["files"]:  # only placeholder images so far
-                    p.terminate(); DL["error"] = MISSING_MSG; break
+                    kill_tree(p); DL["error"] = MISSING_MSG; break
                 if DL["files"] == 0 and not str(u).startswith(("@", "&")) and dns_failed_hosts(log_path):  # dead host: stop, skip it
-                    p.terminate(); DL["dead"] = dns_failed_hosts(log_path); break
-                if time.time() - DL["started_at"] > timeout: p.terminate(); DL["error"] = "timed out"; break
-                time.sleep(1)
+                    kill_tree(p); DL["dead"] = dns_failed_hosts(log_path); break
+                if time.time() - DL["started_at"] > timeout: kill_tree(p); DL["error"] = "timed out"; break
             try: p.wait(timeout=20)
             except Exception:
                 try: p.kill()
@@ -539,11 +595,16 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
         DL["error"] = f"{type(e).__name__}: {e}"
         # never leave gallery-dl running on its own (it would keep writing while cleanup() removes its .part files)
         try:
-            if p and p.poll() is None: p.terminate(); p.wait(timeout=20)
+            if p and p.poll() is None: kill_tree(p)
         except Exception: pass
     finally:
         try: log and log.close()
         except Exception: pass
+        if cancelled():  # stopped by the user: drop half-written files, keep finished ones, skip the slow wrap-up checks
+            try:
+                if p and p.poll() is None: kill_tree(p)
+            except Exception: pass
+            DL["partial_removed"] = drop_partials(dest); DL["error"] = "cancelled"; DL["cancelled"] = True
         DL["removed"] = cleanup(dest); DL["files"] = count_files(dest)
         if main and DL["files"] and not DL.get("error") and DL.get("expected"):  # link mode: exact unique count
             DL["failed"] = min(len(LK["todo"]), max(0, len(main) - DL["files"]))

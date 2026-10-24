@@ -2610,7 +2610,7 @@ def vg_learned_remove():
 
 @app.get("/api/findgallery/status")
 def findgallery_status():
-    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at", "last_msg")}
+    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at", "last_msg", "cancel", "cancelled", "partial_removed")}
     j["dest"] = os.path.basename(fgmod.DL.get("dest") or "")
     st = fgmod.SEARCH
     j["search"] = dict(step=st["step"], secs=round(time.time() - st["started"]) if st["started"] else 0) if st["step"] else None
@@ -2618,7 +2618,7 @@ def findgallery_status():
 
 @app.post("/api/findgallery/cancel")
 def findgallery_cancel():
-    fgmod.DL["cancel"] = True; return jsonify(ok=True)
+    fgmod.cancel(); return jsonify(ok=True)
 
 @app.post("/api/galleries/refresh")
 def galleries_refresh():
