@@ -949,11 +949,14 @@ def init(app, tmdb, posters_dir):
 
     @app.get("/api/people/cocredit/suggest")
     def people_cocredit_suggest():
-        """People credited with person `pid`, best first by films shared in the library; `q` matches names and aliases."""
+        """People credited with person `pid`, best first by titles shared (same count as the comparison page); `q` matches names and aliases."""
         c = C(); row = co_canon(c, int(request.args.get("pid") or 0))
         if not row: return jsonify(error="Unknown person"), 404
+        return jsonify(people=co_suggest(c, row, request.args.get("q") or "", min(int(request.args.get("limit", 10)), 50)))
+
+    def co_suggest(c, row, qtext, lim, extra=4, roles_of=None):
         e = person_entry(c, row); F = e["films"]; mine = co_keys(c, row, e)
-        q = fold(request.args.get("q") or "").split(); lim = min(int(request.args.get("limit", 10)), 50)
+        q = fold(qtext or "").split()
         idx = index(c); ag = db.alias_groups(c)
         cand = {}
         for k, x in idx.items():
@@ -991,7 +994,8 @@ def init(app, tmdb, posters_dir):
             nm = min(v["names"], key=len); fk = fold(nm)
             exact = 0 if q and fk == " ".join(q) else 1 if q and all(any(t.startswith(w) for t in fk.split()) for w in q) else 2
             return (-len(v["films"]), exact, -v.get("all", 0), fk)
-        hits = sorted((v for v in cand.values() if v["films"] or q), key=sc)[:lim * 3]
+        rk = (lambda v: v["roles"].get("director", 0) > 0) if roles_of == "director" else (lambda v: bool(v["roles"]) and max(v["roles"].items(), key=lambda kv: kv[1])[0] != "director") if roles_of == "others" else (lambda v: True)
+        hits = sorted((v for v in cand.values() if (v["films"] or q) and rk(v)), key=sc)[:lim * 3]
         out, seen = [], set()
         for v in hits:
             r = v["row"]
@@ -1002,7 +1006,7 @@ def init(app, tmdb, posters_dir):
             out.append(dict(name=nm, pid=r["id"] if r else None, n=len(v["films"]), total=len(v["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT.get(role)), aka=sorted(n for n in v["names"] if n != nm)[:3],
                             _sc=sc(v)))
-            if len(out) >= lim + 4: break
+            if len(out) >= lim + extra: break
         # exact numbers for the ones shown: the same set the comparison page counts (library + cached filmographies, age rule)
         for x in out:
             if not x["pid"]: continue
@@ -1011,4 +1015,125 @@ def init(app, tmdb, posters_dir):
         out.sort(key=lambda x: (-x["total"], -x["n"], x["_sc"][1:]))
         out = [x for x in out if x["total"] or q][:lim]
         for x in out: x.pop("_sc")
-        return jsonify(people=out)
+        return out
+
+    # ---------- Person page insights (Dashboard-style summary above the filmography) ----------
+    INS = {}  # (person id, data key) -> (at, result)
+    def co_dkey(c):
+        return (tuple(c.execute("SELECT COUNT(*), MAX(updated_at), SUM(COALESCE(rating,0)), SUM(COALESCE(watched,0)) FROM films").fetchone()),
+                tuple(c.execute("SELECT COUNT(*), MAX(COALESCE(fetched_at,0)), MAX(COALESCE(tpdb_scenes_at,0)), SUM(LENGTH(COALESCE(birthday,''))), MAX(id) FROM people").fetchone()))
+    def person_rows(c, row, dk=None):
+        """One person's credits (library + cached TMDB/ThePornDB filmography) as rows. Adult titles where they performed
+        only count with a known birth date and 18+ at release (same rule as Reports / Credited with)."""
+        dk = dk or co_dkey(c); e = person_entry(c, row)
+        ik = (row["id"], dk[0], dk[1]); its = CO_ITEMS.get(ik)
+        if its is None:
+            lib_tp = {str(r[1]): r[0] for r in c.execute("SELECT id, tpdb_id FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''")}
+            its = CO_ITEMS[ik] = co_items(c, row, e, lib_tp)
+            if len(CO_ITEMS) > 256: CO_ITEMS.pop(next(iter(CO_ITEMS)))
+        adult_ids = adult_film_ids(c); anyadult = bool(e["films"] & adult_ids); bd = _bd(row["birthday"])
+        fids = [int(k[1:]) for k in its if k[0] == "L"]; F = {}
+        for i in range(0, len(fids), 500):
+            ch = fids[i:i + 500]
+            for r in c.execute(f"SELECT id, title, year, release_date, kind, studio, director, cast_, writers, producers, primary_genre, country, rating FROM films WHERE id IN ({','.join('?' * len(ch))})", ch):
+                F[r["id"]] = r
+        rows, excluded = [], 0
+        for k, it in its.items():
+            if k[0] == "L":
+                f = F.get(int(k[1:]))
+                if not f: continue
+                adult = f["id"] in adult_ids or f["kind"] == "scene" or (f["primary_genre"] or "").strip().lower() in CO_ADULT_GENRES
+                r = dict(film_id=f["id"], year=f["year"], date=f["release_date"] or "", kind=f["kind"] or "film", studio=f["studio"] or "",
+                         genre=(f["primary_genre"] or "").strip(), country=f["country"] or "", rating=f["rating"], in_library=True, adult=adult)
+            else:
+                adult = k[0] == "P" or anyadult
+                r = dict(film_id=None, year=it.get("year"), date=it.get("date") or "", kind="scene" if k[0] == "P" else "film", studio=it.get("studio") or "",
+                         genre="", country="", rating=None, in_library=False, adult=adult)
+            if r["year"] is None and (r["date"] or "")[:4].isdigit(): r["year"] = int(r["date"][:4])
+            labs = [RLBL_CO.get(ro, ro) for ro in it["roles"]] or it["xroles"] or ["Credited"]
+            if adult and r["kind"] == "scene": labs = ["Performer" if x == "Actor" else x for x in labs]
+            r["roles"] = labs
+            if adult and any(x in ("Actor", "Performer") for x in labs) and not (bd and _adult_ok(bd, r["date"] or None, r["year"])):
+                excluded += 1; continue
+            rows.append(r)
+        return rows, excluded, e, F
+    COCREDIT["person"] = lambda c, pid: {r["film_id"] for r in person_rows(c, co_canon(c, pid))[0] if r["film_id"]} if co_canon(c, pid) else set()
+
+    @app.get("/api/people/<int:pid>/insights")
+    def person_insights(pid):
+        """Read-only summary for the person page: stats, credits per year, worked with most, genres/studios/countries,
+        and for directors the Stable (4 films) / Muses (5-7) / Harem (8+) of performers they directed. Cached."""
+        c = C(); row = co_canon(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        dk = co_dkey(c); ck = (row["id"], dk)
+        hit = INS.get(ck)
+        if hit and time.time() - hit[0] < 600 and not request.args.get("force"): return jsonify(dict(hit[1], cached=True))
+        rows, excluded, e, F = person_rows(c, row, dk)
+        from collections import Counter
+        lib = [r for r in rows if r["in_library"]]
+        yrs = Counter(); yl = Counter()
+        for r in rows:
+            if r["year"]: yrs[r["year"]] += 1; yl[r["year"]] += r["in_library"]
+        busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
+        if busy and busy[1] < 2: busy = None  # no year with two or more credits
+        def top(cnt, n=10): return [dict(name=k, n=v) for k, v in sorted(cnt.items(), key=lambda kv: (-kv[1], fold(kv[0])))[:n]]
+        gen, stu, cty, rol = Counter(), Counter(), Counter(), Counter()
+        for r in lib:
+            if r["genre"]: gen[r["genre"][:1].upper() + r["genre"][1:]] += 1
+            if r["studio"]: stu[r["studio"]] += 1
+            for x in (r["country"] or "").split(","):
+                if x.strip(): cty[x.strip()] += 1
+        for r in rows:
+            for l in r["roles"]: rol[l] += 1
+        rated = [r["rating"] for r in lib if r["rating"] and r["rating"] > 0]
+        costars = co_suggest(c, row, "", 8, extra=4, roles_of="others")
+        directors = [x for x in co_suggest(c, row, "", 5, extra=3, roles_of="director") if x["total"]]
+        # Stable / Muses / Harem: performers in films they directed (or directed/wrote/produced), library titles only
+        stable = None
+        if e["roles"].get("director"):
+            ag = db.alias_groups(c); mine = co_keys(c, row, e)
+            prow = {r["name_norm"]: r for r in c.execute("SELECT id, name, name_norm, birthday, merged_into FROM people")}
+            byid = {r["id"]: r for r in prow.values()}
+            def canon_row(k, g):
+                pr = next((prow[kk] for kk in [k] + [fold(x) for x in (g or [])] if kk in prow), None); hops = 0
+                while pr and pr["merged_into"] and hops < 5:
+                    nx = byid.get(pr["merged_into"]); hops += 1
+                    if not nx: break
+                    pr = nx
+                return pr
+            stable = {}
+            for mode, want in (("directed", {"Director"}), ("all", {"Director", "Writer", "Producer"})):
+                cnt, nm, prs = Counter(), {}, {}
+                for r in lib:
+                    if not (set(r["roles"]) & want): continue
+                    f = F[r["film_id"]]; seen = set()
+                    for n in (f["cast_"] or "").split(","):
+                        n = " ".join(n.split()); k = fold(n)
+                        if not n or k in mine: continue
+                        g = ag.get(k); ckk = fold(g[0]) if g else k
+                        if ckk in mine or ckk in seen: continue
+                        if ckk not in prs: prs[ckk] = canon_row(k, g)
+                        pr = prs[ckk]
+                        if r["adult"]:
+                            bd = _bd(pr["birthday"]) if pr else None
+                            if not bd or not _adult_ok(bd, r["date"] or None, r["year"]): continue
+                        seen.add(ckk); cnt[ckk] += 1; nm.setdefault(ckk, Counter())[n] += 1
+                out = []
+                for ckk, n in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0])):
+                    if n < 4: break
+                    pr = prs.get(ckk)
+                    out.append(dict(name=pr["name"] if pr else nm[ckk].most_common(1)[0][0], pid=pr["id"] if pr else None, n=n,
+                                    tier="harem" if n >= 8 else "muses" if n >= 5 else "stable"))
+                    if len(out) >= 80: break
+                stable[mode] = out
+            stable["films"] = dict(directed=sum(1 for r in lib if "Director" in r["roles"]), all=sum(1 for r in lib if set(r["roles"]) & {"Director", "Writer", "Producer"}))
+        res = dict(id=row["id"], name=row["name"], total=len(rows), in_library=len(lib), not_in_library=len(rows) - len(lib), excluded=excluded,
+                   adult=any(r["adult"] for r in rows) or bool(excluded), birthday=row["birthday"],
+                   career=[min(yrs), max(yrs)] if yrs else None, busiest=dict(year=busy[0], n=busy[1], lib=yl[busy[0]]) if busy else None,
+                   years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
+                   top_genre=top(gen, 1)[0] if gen else None, top_role=top(rol, 1)[0] if rol else None, roles=top(rol, 8),
+                   rating=dict(avg=round(sum(rated) / len(rated), 2), n=len(rated)) if rated else None,
+                   genres=top(gen), studios=top(stu), countries=top(cty), costars=costars, directors=directors, stable=stable)
+        INS[ck] = (time.time(), res)
+        if len(INS) > 128: INS.pop(next(iter(INS)))
+        return jsonify(dict(res, cached=False))

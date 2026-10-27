@@ -64,3 +64,14 @@ s = cl.get(f"/api/people/cocredit/suggest?pid={pid['Maren Holt']}&q=t.+lind").js
 assert s and s[0]["name"] == "Tobias Lind", s
 assert cl.get("/api/people/cocredit?ids=" + str(pid['Maren Holt'])).status_code == 400
 print("ok")
+# person page insights: totals, list filter pin= matches, Stable/Muses/Harem tiers
+ins = cl.get(f"/api/people/{pid['Maren Holt']}/insights").json
+assert ins["in_library"] == cl.get(f"/api/films?limit=1&pin={pid['Maren Holt']}").json["total"]
+y = next(x for x in ins["years"] if x["lib"]); assert cl.get(f"/api/films?limit=1&pin={pid['Maren Holt']}&year_min={y['k']}&year_max={y['k']}").json["total"] == y["lib"]
+for i in range(8): film(f"D{i}", 1990 + i, "Maren Holt", "Ann Two, Bo Three" if i < 5 else "Ann Two")
+c.commit()
+ins = cl.get(f"/api/people/{pid['Maren Holt']}/insights").json
+tiers = {x["name"]: (x["n"], x["tier"]) for x in ins["stable"]["directed"]}
+assert tiers.get("Ann Two") == (8, "harem") and tiers.get("Bo Three") == (5, "muses") and "Tobias Lind" not in tiers, tiers
+assert ins["stable"]["films"]["directed"] == 9
+print("insights ok")

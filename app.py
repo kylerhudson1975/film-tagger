@@ -132,6 +132,11 @@ def build_query(q):
         import people as _pm
         ids = sorted(_pm.COCREDIT["ids"](C(), cc)) if _pm.COCREDIT.get("ids") else []
         where.append(f"f.id IN ({','.join(str(int(i)) for i in ids) or 'NULL'})")
+    pin = str(q.get("pin") or "").strip()
+    if pin.isdigit():  # person page insights: this person's library titles after the age rule (same set the charts count)
+        import people as _pm
+        ids = sorted(_pm.COCREDIT["person"](C(), int(pin))) if _pm.COCREDIT.get("person") else []
+        where.append(f"f.id IN ({','.join(str(int(i)) for i in ids) or 'NULL'})")
     mo = str(q.get("month") or "").strip()
     if mo.isdigit():  # month of release (Dashboard explore): 1-12, or 0 = unknown month (same expression as the chart)
         where.append(f"{repmod.MONTH_SQL}=?"); args.append(int(mo))

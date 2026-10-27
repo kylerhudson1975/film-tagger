@@ -213,6 +213,12 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .co-box:not(:focus-within){border-color:var(--b);box-shadow:none}
 @media(max-width:900px){.co-duo{grid-template-columns:1fr}.co-duo3{grid-template-columns:1fr}.co-find{flex-direction:column}.co-in{flex:auto;width:100%}.co-ms{grid-template-columns:1fr 1fr}}
 
+.ppins{max-width:none;padding:4px 0 6px;margin:12px 0 4px}
+.ppins-h{display:flex;align-items:center;gap:8px;padding:6px 2px 10px;cursor:pointer;color:var(--m);user-select:none}.ppins-h b{color:var(--t);font-size:15px}.ppins-h:hover .ppins-c{color:var(--a)}.ppins-c{margin-left:auto;font-size:12px}
+.dsh-stats.five{grid-template-columns:repeat(5,minmax(0,1fr))}@media(max-width:1100px){.dsh-stats.five{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.ppins-n{margin-left:auto;color:var(--m);font-size:11.5px;white-space:nowrap}.ppins-n b{color:var(--ok)}.co-al:hover b{color:var(--a)}
+.ppst{margin-bottom:12px}.ppst-h{display:flex;gap:10px;align-items:baseline;font-size:13px;margin-bottom:6px}.ppst-h b{font-size:14px}.ppst-k{margin-left:auto;color:var(--m);font-size:12px}
+.ppst-l{display:flex;flex-wrap:wrap;gap:6px}.ppst-l a{background:var(--p2);border:1px solid var(--b);border-radius:14px;padding:2px 10px;font-size:12.5px;color:var(--t);cursor:pointer}.ppst-l a:hover{border-color:var(--a)}.ppst-l a b{color:var(--m);font-weight:600;margin-left:3px}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger<button id="hdrQuit" onclick="quitApp()" title="Quit Film Tagger (stops the app completely)" aria-label="Quit Film Tagger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>Quit</button></div>
@@ -244,7 +250,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 <div id="main">
  <div id="scanNote" class="muted" style="display:none;padding:8px 12px"></div>
  <div id="bar">
-  <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_month"><input type=hidden id="f_cocredit"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
+  <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_month"><input type=hidden id="f_cocredit"><input type=hidden id="f_pin"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
   <div id="libPop" onclick="event.stopPropagation()"><input id="libSearch" placeholder="Filter folders…" autocomplete="off"><div id="libTree"></div></div></div>
   <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="people">Search in: People</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="studio">Search in: Studio</option><option value="resolution">Search in: Resolution</option><option value="subtitles">Search in: Subtitles</option></select>
   <input id="q" placeholder="Search everything…">
@@ -283,7 +289,7 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON.stringify(o.body);o.headers={'Content-Type':'application/json'}}
  const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(!r.ok){toast(j.error||r.statusText);throw j}return j}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
-const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','studio','decade','res','pgenre','aznude','subs','month','cocredit'];
+const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','studio','decade','res','pgenre','aznude','subs','month','cocredit','pin'];
 const INPH={'':'Search everything…',people:'Search people (actors, directors, writers…)…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',studio:'Search studios…',resolution:'Search resolutions (e.g. 1080p)…',subtitles:'Search subtitles (e.g. English, SRT)…'};
 function setIn(v){$('f_in').value=v||'';localStorage.searchIn=$('f_in').value;$('q').placeholder=INPH[$('f_in').value]}
 const RESL=['SD','480p','576p','720p','1080p','1440p','4K'];
@@ -311,6 +317,9 @@ const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['wri
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
 const jsq=s=>esc(String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"));  // JS-escape first: the attribute decodes &#39; back to a quote
 async function personHeader(){const h=$('personHdr'),name=$('f_person').value,role=$('f_prole').value,co=$('f_cocredit').value;
+ const pin=$('f_pin').value;
+ if(pin&&!name&&!co){let p;try{p=await api('/api/people/'+pin+'/insights')}catch(e){return}if($('f_pin').value!==pin)return;
+  h.innerHTML=`<b>${esc(p.name)}</b> · ${S.total==1?'1 title':dN(S.total)+' titles'} in your library · <a href="#" onclick="showPerson(${+pin});return false">Back to their page</a> · <a href="#" onclick="$('f_pin').value='';load();return false">✕ clear</a>`;h.style.display='';return}
  if(co&&!name){let p;try{p=await api('/api/people/cocredit?lite=1&ids='+encodeURIComponent(co))}catch(e){return}if($('f_cocredit').value!==co||$('f_person').value)return;
   h.innerHTML=`Credited together: <b>${p.people.map(x=>esc(x.name)).join(' &amp; ')}</b> · ${S.total==1?'1 title':dN(S.total)+' titles'} in your library · <a href="#" onclick="showCo([${co}]);return false">Back to their page</a> · <a href="#" onclick="$('f_cocredit').value='';load();return false">✕ clear</a>`;h.style.display='';return}
  if(!name){h.style.display='none';h.innerHTML='';return}
@@ -972,7 +981,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;if(!opt.keep)S.ppLim=200;S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;if(!opt.nohist||opt.refresh)delete PI.d[pid]}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -996,6 +1005,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
  <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
  </div></div>`;
+ h+=ppInsHtml(p.id);
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
   <span>Sort: <button onclick="ppSort()" title="Toggle year order">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span>
@@ -1465,4 +1475,49 @@ function renderCo(){const d=CO.d,P=d.people,c=$('content');DSH.acts=[];
  if(d.adult_rule)h+=`<div class=co-note>${dIc('info',15)}<div><b>Age rule:</b> for adult titles, co-credits only count when every person compared has a known birth date and was 18 or older on the release date (year-only dates need a clear year), the same rule Reports and the Dashboard use. Anything else is left out${d.excluded?` (${dN(d.excluded)} here)`:''}.</div></div>`;
  c.innerHTML=h+'</div>'}
 function coSort(k){if(CO.sk==k)CO.sd=-CO.sd;else{CO.sk=k;CO.sd=1}coSet('sk',CO.sk)}
+/* ---------- Person page insights: Dashboard-style summary above the filmography (collapsible, remembered) ---------- */
+const PI={d:{},busy:null};
+function ppInsHtml(pid){return `<div id=ppIns class="dsh ppins">${ppInsInner(pid)}</div>`}
+function ppInsToggle(pid){localStorage.ppInsOpen=localStorage.ppInsOpen==='0'?'1':'0';ppInsDraw(pid)}
+function ppInsSet(pid,k,v){localStorage[k]=v;ppInsDraw(pid)}
+async function ppInsLoad(pid,force){if(PI.busy===pid)return;PI.busy=pid;try{PI.d[pid]=await api('/api/people/'+pid+'/insights'+(force?'?force=1':''))}catch(e){PI.d[pid]={error:true}}PI.busy=null;ppInsDraw(pid)}
+function ppInsDraw(pid){const el=$('ppIns');if(el&&S.page==='person:'+pid)el.innerHTML=ppInsInner(pid)}
+function ppGo(pid,add={}){dshGo({pin:String(pid),...add})}
+async function ppCo(pid,name,opid){const id=await coPid({name,pid:opid});showCo([pid,id])}
+function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
+ const head=`<div class=ppins-h onclick="ppInsToggle(${pid})" title="${open?'Hide':'Show'} the insights (remembered)">${dIc('bars',16)}<b>Insights</b><span class=muted>${d&&!d.error?`${dN(d.in_library)} in your library · ${dN(d.total)} total credits`:''}</span><span class=ppins-c>${open?'▾ hide':'▸ show'}</span></div>`;
+ if(!open)return head;
+ if(!d){if(PI.busy!==pid)setTimeout(()=>ppInsLoad(pid),0);return head+'<p class=muted style="margin:6px 2px">Crunching their career…</p>'}
+ if(d.error)return head+'<p class=muted>Could not load insights.</p>';
+ DSH.acts=DSH.acts&&DSH.acts.length>400?[]:(DSH.acts||[]);
+ const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
+ const stat=(ic,v,l,sub,cls,go,tip)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="${esc(tip||'')}"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
+ const go=add=>dAct(()=>ppGo(pid,add)),cr=d.career,b=d.busiest;
+ const tiles=[stat('film',`${dN(d.in_library)} <span style="font-size:14px;color:var(--m);font-weight:500">/ ${dN(d.total)}</span>`,'Credits in library / total',`${dN(d.not_in_library)} not in your library`,'',d.in_library?go({}):'','Show their titles in your library'),
+  stat('cal',cr?`${cr[1]-cr[0]+1} yr${cr[1]-cr[0]?'s':''}`:'—','Career span',cr?`${cr[0]}–${cr[1]}`:'','ai'),
+  stat('star',b?b.year:'—','Busiest year',b?`${dN(b.n)} credit${b.n==1?'':'s'} · ${dN(b.lib)} in library`:'','ai',b&&b.lib?go({year_min:b.year,year_max:b.year}):'','Show that year in your library'),
+  stat('tag',d.top_genre?esc(d.top_genre.name):'—','Top genre',d.top_genre?`${dN(d.top_genre.n)} in your library`:'','',d.top_genre?go({pgenre:d.top_genre.name}):'','Show them'),
+  stat('ppl',d.top_role?esc(d.top_role.name):'—','Top role',d.top_role?`${dN(d.top_role.n)} credit${d.top_role.n==1?'':'s'}${d.roles.length>1?' · then '+esc(d.roles[1].name.toLowerCase()):''}`:'',''),
+  ...(d.rating?[stat('heart',(+d.rating.avg).toFixed(1),'Your average rating',`${dN(d.rating.n)} rated`,'ok')]:[])];
+ let h=head+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
+ if(d.years.length){const y0=d.years[0].k,y1=d.years[d.years.length-1].k,line=localStorage.ppInsChart=='line';
+  const rows=fill(d.years.map(x=>({k:x.k,films:x.lib,scenes:x.other})),y0,y1).map(x=>({...x,label:(y1-y0>12?"'"+String(x.k).slice(2):String(x.k))}));
+  const tg=(v,l)=>`<button class="${(localStorage.ppInsChart||'bar')==v?'on':''}" onclick="ppInsSet(${pid},'ppInsChart','${v}')">${l}</button>`;
+  h+=card('dsh-w2','bars',`Career timeline<span class=dsh-tg>${tg('bar','Bar')}${tg('line','Line')}</span>`,dTime(rows,{line,c2:'#4b5260',title:x=>`${x.k}: ${x.films+x.scenes} credit${x.films+x.scenes==1?'':'s'} · ${x.films} in your library${x.scenes?`, ${x.scenes} not`:''}`,click:x=>x.films?go({year_min:x.k,year_max:x.k}):''})+
+   `<div class=dsh-legend><span><i style="background:#5b9cff"></i>In your library</span><span><i style="background:#4b5260"></i>Not in your library</span><span class=muted>${d.undated?`${dN(d.undated)} undated · `:''}click a bar for that year's titles</span></div>`,'credits per year')}
+ const wl=(l,lbl)=>l.map(x=>`<div class=co-al style="cursor:pointer" onclick="${dAct(()=>ppCo(pid,x.name,x.pid))}" title="Open Credited with: ${esc(d.name)} & ${esc(x.name)}"><span class=co-av>${initials(x.name)}</span><span style="min-width:0;flex:1"><b style="font-weight:500">${esc(x.name)}</b><small>${esc(lbl||x.known_for||'')}</small></span><small class=ppins-n><b>${dN(x.n)}</b> in library · ${dN(x.total)} total</small></div>`).join('');
+ if(d.costars.length||d.directors.length)h+=card('','link','Worked with most',`<div class=co-also>${wl(d.costars)}</div>${d.directors.length?`<div class=co-rl2 style="margin:10px 0 6px">Directed by</div><div class=co-also>${wl(d.directors,'Director')}</div>`:''}<div class=dsh-foot>Same counts as Credited with · click a name to compare.</div>`,'titles together');
+ if(d.genres.length)h+=card('','tag','Genre mix',dHl(d.genres,'#5b9cff',x=>go({pgenre:x.name})),'in your library');
+ if(d.studios.length)h+=card('','studio','Top studios',dHl(d.studios,'#c58bff',x=>go({studio:x.name})),'in your library');
+ if(d.countries.length)h+=card('','globe','Top countries',dHl(d.countries,'#3fbf7f',x=>go({country:x.name})),'in your library');
+ if(d.stable){const mode=localStorage.ppInsMode=='all'?'all':'directed',L=d.stable[mode]||[],tg=(v,l)=>`<button class="${mode==v?'on':''}" onclick="ppInsSet(${pid},'ppInsMode','${v}')">${l}</button>`;
+  const T=[['harem','Harem','8+ films','the regulars who kept coming back for more','#c58bff'],['muses','Muses','5–7 films','favourite faces, cast again and again','#5b9cff'],['stable','Stable','exactly 4 films','the dependable bench','#3fbf7f']];
+  const body=T.map(([k,t,n,copy,col])=>{const l=L.filter(x=>x.tier==k);return l.length?`<div class=ppst><div class=ppst-h><b style="color:${col}">${t}</b><span class=muted>${n} · ${copy}</span><span class=ppst-k>${l.length}</span></div><div class=ppst-l>${l.map(x=>`<a onclick="${dAct(()=>ppCo(pid,x.name,x.pid))}" title="Credited with: ${esc(d.name)} & ${esc(x.name)}">${esc(x.name)} <b>${x.n}</b></a>`).join('')}</div></div>`:''}).join('');
+  const nf=d.stable.films[mode];
+  h+=card('dsh-w2','dir',`Stable, Muses &amp; Harem<span class=dsh-tg>${tg('directed','Directed only')}${tg('all','All credits')}</span>`,
+   (body||`<p class=muted style="margin:4px 0">Nobody has made 4 or more of these ${dN(nf)} films with ${esc(coFirst(d.name))} yet — the stable is still being built.</p>`)+
+   `<div class=dsh-foot>Performers in the ${dN(nf)} title${nf==1?'':'s'} in your library that ${esc(coFirst(d.name))} ${mode=='all'?'directed, wrote or produced':'directed'}. Fewer than 4 films together isn't shown. Click a name for Credited with.</div>`,'')}
+ h+='</div>';
+ if(d.adult||d.excluded)h+=`<div class=co-note style="margin:4px 0 0">${dIc('info',15)}<div><b>Age rule:</b> adult titles only count for performers with a known birth date who were 18 or older at release${d.excluded?` — ${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} left out${d.birthday?'':' (no known birth date)'}`:''}. The same rule applies to everyone in Worked with most and the Stable.</div></div>`;
+ return h}
 </script></body></html>
