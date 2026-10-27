@@ -438,7 +438,78 @@ def run_sql(r, sql, everyone, safe):
     return cols, rows, len(raw) > SQL_MAX_ROWS, dropped
 
 
+def mentioned_people(c, question):
+    """Performer and director names (as stored) that appear in the question, longest first, no overlaps."""
+    ql = " " + re.sub(r"\s+", " ", question.lower()) + " "
+    names = {}
+    for ca, d in c.execute("SELECT cast_, director FROM films"):
+        for n in _split(ca): names.setdefault(n.lower(), ("cast", n))
+        for n in _split(d): names.setdefault(n.lower(), ("director", n))
+    hits = []
+    for k, v in sorted(names.items(), key=lambda kv: -len(kv[0])):
+        if len(k) < 4 or " " not in k: continue
+        if re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql) and not any(k in h[1].lower() for h in hits):
+            hits.append(v)
+    return hits
+
+
+def person_birthday(c, name):
+    row = c.execute("SELECT birthday FROM people WHERE merged_into IS NULL AND lower(name)=lower(?)", (name,)).fetchone()
+    return (row[0] or None) if row else None
+
+
+def lookup_birthday(c, name):
+    """One-person version of tools/fill_birthdates.py: exact name/alias match on ThePornDB; never overwrites or touches hand-edited."""
+    import db, tpdb
+    tok = db.get_setting(c, "tpdb_key", "") or ""
+    if not tok: return None, "no ThePornDB key set"
+    k = db.fold(" ".join(name.split())); nm = lambda x: db.fold(" ".join((x or "").split()))
+    row = c.execute("SELECT id,birthday,edited_fields,tpdb_performer_id FROM people WHERE merged_into IS NULL AND name_norm=?", (k,)).fetchone()
+    if row and "birthday" in json.loads(row[2] or "[]"): return None, "birthday was hand-edited"
+    try:
+        if row and row[3] not in (None, "", "-"): p = tpdb.call(f"/performers/{row[3]}", tok).get("data")
+        else:
+            hits = tpdb.call("/performers", tok, q=name).get("data") or []
+            ex = [h for h in hits if nm(h.get("name")) == k] or [h for h in hits if any(nm(a) == k for a in (h.get("aliases") or []))]
+            if len(ex) != 1: return None, ("several ThePornDB performers match" if ex else "not found on ThePornDB")
+            p = ex[0]
+            if not (p.get("extras") or {}).get("birthday"): p = tpdb.call(f"/performers/{p['id']}", tok).get("data") or p
+    except Exception as e: return None, "ThePornDB lookup failed (" + type(e).__name__ + ")"
+    bd = ((p or {}).get("extras") or {}).get("birthday")
+    if not bd: return None, "ThePornDB has no birth date for them either"
+    bd = bd[:10]; datetime.date.fromisoformat(bd)
+    if row: c.execute("UPDATE people SET birthday=? WHERE id=? AND (birthday IS NULL OR birthday='')", (bd, row[0]))
+    else: c.execute("INSERT INTO people(name,name_norm,birthday) VALUES(?,?,?)", (name, k, bd))
+    c.commit(); return bd, "found on ThePornDB"
+
+
+def _msg(question, text, **kw):
+    return dict(mode="sql", question=question, reading=kw.pop("reading", ""), sql="", columns=[], rows=[], answer=text,
+                notes=kw.pop("notes", []), retried=False, **kw)
+
+
 def ask(c, question, chat):
+    people = mentioned_people(c, question)
+    for kind, name in people:
+        if kind != "cast": continue
+        bd = person_birthday(c, name)
+        if bd and re.match(r"^\d{4}-\d{2}-\d{2}$", bd): continue
+        note = []
+        if not bd:
+            try: got, why = lookup_birthday(c, name)
+            except Exception as e: got, why = None, "lookup failed (" + type(e).__name__ + ")"
+            if got: continue  # now known; _ro_conn rebuilds with it
+            note = [f"Tried looking up {name}'s birth date: {why}."]
+        return _msg(question, f"{name} has no known birth date, so per the library's age rule I can't list their titles.",
+                    notes=note, birthday_status="unknown")
+    res = _ask_sql(c, question, chat, allow_fallback=not people)
+    if people and res.get("mode") == "sql" and not res["rows"] and not res.get("answer_from_error"):
+        cast = [n for k, n in people if k == "cast"]
+        if cast: res["notes"].insert(0, f"Only titles released when {', '.join(cast)} was 18 or older are counted.")
+    return res
+
+
+def _ask_sql(c, question, chat, allow_fallback=True):
     """chat(prompt)->text. Returns a result dict; mode 'sql' or (fallback) the old spec report."""
     tries, err, reading, sql = [], None, "", ""
     try:
@@ -458,6 +529,9 @@ def ask(c, question, chat):
             prompt = (sql_prompt(c, question) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
     else:
         r = None
+    if r is None and not allow_fallback:
+        why = (tries[-1]["error"] if tries else str(err)) if (tries or err) else "unknown error"
+        return _msg(question, "I couldn't answer that: " + why + ".", notes=["This question is about a person, so I didn't substitute a ready-made report."], answer_from_error=True)
     if r is None:
         try:
             res = run(c, parse_spec(chat(ask_prompt(c, question))))

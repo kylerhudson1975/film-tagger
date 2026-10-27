@@ -2006,8 +2006,8 @@ def ai_endpoint(url):
     if not _re.search(r"/v\d+[a-z]*$", u): u += "/v1"
     return u + "/chat/completions"
 
-def ai_chat(url, key, model, prompt, timeout=180):
-    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
+def ai_chat(url, key, model, prompt, timeout=180, temperature=0.3):
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": temperature}
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if key: headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(ai_endpoint(url), data=json.dumps(body).encode(), headers=headers, method="POST")
@@ -3126,7 +3126,7 @@ def reports_ask():
     if not (url and model):
         return jsonify(error="No AI service is set up. Add one in Library & Settings \u2192 Tags & Categories \u2192 Smart tagging, or use the ready-made reports."), 400
     try:
-        res = repmod.ask(c, q, lambda p: ai_chat(url, key, model, p, timeout=90))  # AI writes a read-only SELECT; falls back to a report spec
+        res = repmod.ask(c, q, lambda p: ai_chat(url, key, model, p, timeout=90, temperature=0))  # AI writes a read-only SELECT; falls back to a report spec
     except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
     return jsonify(res)
