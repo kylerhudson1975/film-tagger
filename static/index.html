@@ -94,6 +94,26 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .rp-ans{border-left:3px solid var(--a)}.rp-big{font-size:18px;font-weight:600;margin:4px 0}.rp-note{color:var(--m);font-size:12.5px;margin:0 2px 8px}.rp-grid{display:grid;align-items:start;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}@media(max-width:1000px){.rp-grid{grid-template-columns:1fr}}
 .rp-t{width:100%;border-collapse:collapse;font-size:13px}.rp-t th{position:static;cursor:default}.rp-t td,.rp-t th{padding:5px 8px}.rp-t .n{text-align:right;font-variant-numeric:tabular-nums}.rp-t tbody tr{cursor:pointer}.rp-g{cursor:pointer}.rp-g text{fill:var(--m);font-size:11px}.rp-g text.v{fill:var(--t)}.rp-g:hover rect{opacity:.8}
 .rp-t th.rp-s{cursor:pointer;user-select:none;white-space:nowrap}.rp-t th.rp-s:hover{color:var(--t)}.rp-t th.rp-s.on{color:var(--a)}
+#navRow button.on{border-color:var(--a);color:var(--a)}
+.dsh{max-width:1400px;margin:0 auto;padding:4px 6px 30px;--warn:#f0b450}
+.dsh-head{display:flex;align-items:flex-end;gap:10px;margin:2px 2px 14px}.dsh-head h2{margin:0;font-size:21px;font-weight:600}.dsh-head .crumb{font-size:13px;color:var(--m)}.dsh-head .upd{margin-left:auto;font-size:12px;color:var(--m);display:flex;gap:8px;align-items:center}
+.dsh-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(116px,1fr));gap:10px;margin-bottom:12px}
+.dsh-stat{background:var(--p);border:1px solid var(--b);border-radius:10px;padding:11px 13px;position:relative;overflow:hidden}.dsh-stat:after{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--a);opacity:.7}.dsh-stat.ai:after{background:var(--ai)}.dsh-stat.ok:after{background:var(--ok)}
+.dsh-stat.go{cursor:pointer}.dsh-stat.go:hover{border-color:var(--a)}.dsh-stat svg{color:var(--m);float:right}.dsh-sv{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.01em}.dsh-sl{font-size:12.5px}.dsh-ss{font-size:11.5px;color:var(--m)}
+.dsh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:12px;grid-auto-flow:dense}.dsh-w2{grid-column:span 2}@media(max-width:760px){.dsh-w2{grid-column:auto}}
+.dsh-card{background:var(--p);border:1px solid var(--b);border-radius:10px;padding:13px 16px 14px;box-shadow:0 1px 2px #0005;min-width:0}
+.dsh-ch{display:flex;align-items:center;gap:8px;margin-bottom:10px;color:var(--m)}.dsh-ch h3{margin:0;font-size:14px;font-weight:600;color:var(--t)}.dsh-sub{margin-left:auto;font-size:11.5px}
+.dsh svg text{fill:var(--m);font-size:11px}.dsh svg text.v{fill:var(--t);font-size:10.5px}.dsh-bar{cursor:pointer}.dsh-bar:hover rect{filter:brightness(1.25)}.dsh-bar:hover text{fill:var(--t)}
+.dsh-legend{display:flex;gap:14px;font-size:12px;margin-top:2px;color:var(--t)}.dsh-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}.dsh-legend .muted{margin-left:auto}
+.dsh-hr{display:grid;grid-template-columns:104px 1fr 44px;align-items:center;gap:8px;font-size:12.5px;padding:3px 4px;margin:0 -4px;border-radius:5px;cursor:pointer}.dsh-hr:hover{background:var(--p2)}.dsh-hr:hover .dsh-hk{color:var(--a)}.dsh-hk{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dsh-ht{height:9px;background:var(--p2);border-radius:5px;overflow:hidden}.dsh-ht span{display:block;height:100%;border-radius:5px}.dsh-hn{text-align:right;font-variant-numeric:tabular-nums;color:var(--m)}
+.dsh-rank{margin:0;padding:0;list-style:none;counter-reset:r}.dsh-rank li{display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #2a2f37;font-size:13px;counter-increment:r;cursor:pointer}.dsh-rank li:hover span{color:var(--a)}.dsh-rank li:before{content:counter(r);color:var(--m);width:18px;text-align:right;font-size:12px}.dsh-rank li:last-child{border:0}.dsh-rank b{margin-left:auto;font-weight:500;font-variant-numeric:tabular-nums;color:var(--m)}
+.dsh-tl{margin:0;padding:0;list-style:none}.dsh-tl li{display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid #2a2f37;font-size:13px;cursor:pointer}.dsh-tl li:last-child{border:0}.dsh-tl li:hover .dsh-tt{color:var(--a)}.dsh-tt{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dsh-ty{color:var(--m);font-variant-numeric:tabular-nums}.dsh-td{width:76px;text-align:right;color:var(--m);font-size:11.5px}
+.dsh-foot{font-size:11.5px;color:var(--m);margin-top:8px;padding-top:8px;border-top:1px dashed var(--b)}
+.dsh-chips{display:grid;gap:6px}.dsh-chip{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--p2);border:1px solid var(--b);cursor:pointer;color:var(--t)}.dsh-chip:hover{border-color:var(--a)}.dsh-chip>svg{margin-left:auto;color:var(--m)}.dsh-chip b{font-weight:500;font-size:13px}.dsh-chip small{display:block;color:var(--m);font-size:11px;line-height:1.2}
+.dsh-cn{min-width:44px;text-align:center;font-weight:650;font-size:13px;padding:2px 6px;border-radius:12px;font-variant-numeric:tabular-nums;display:flex;justify-content:center}
+.dsh-chip.warn .dsh-cn{background:#f0b4501f;color:var(--warn)}.dsh-chip.info .dsh-cn{background:#5b9cff1f;color:var(--a)}.dsh-chip.ok .dsh-cn{background:#3fbf7f22;color:var(--ok)}.dsh-chip.ok{cursor:default}
+.dsh-qls{display:grid;gap:4px}.dsh-ql{display:flex;gap:10px;align-items:center;padding:6px 8px;border-radius:7px;cursor:pointer}.dsh-ql:hover{background:var(--p2)}.dsh-ql:hover b{color:var(--a)}.dsh-ql svg{color:var(--a);flex-shrink:0}.dsh-ql b{font-weight:500;font-size:13px}.dsh-ql small{display:block;color:var(--m);font-size:11px;line-height:1.2}
+.dsh-pl{max-height:60vh;overflow:auto}.dsh-pl div{padding:5px 8px;border-bottom:1px solid #2a2f37;cursor:pointer;display:flex;gap:8px}.dsh-pl div:hover{background:var(--p2);color:var(--a)}.dsh-pl span{margin-left:auto;color:var(--m);font-size:12px}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger<button id="hdrQuit" onclick="quitApp()" title="Quit Film Tagger (stops the app completely)" aria-label="Quit Film Tagger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>Quit</button></div>
@@ -117,7 +137,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
  <label>Resolution</label><input type=hidden id="f_res"><div id="resChips"></div>
  <label>Subtitles</label><input type=hidden id="f_subs"><div id="subsChips"></div>
  <label>Watched</label><select id="f_watched"><option value="">Any</option><option value="1">Watched</option><option value="0">Unwatched</option></select>
- <label>Show only</label><select id="f_special"><option value="">All films</option><option value="pending">Pending AI tags</option><option value="queued">In smart-tag queue</option><option value="aznude_queued">In AZNude queue</option><option value="scenes">Scenes only</option><option value="films_only">Films only (no scenes)</option><option value="untagged">Untagged</option><option value="missing">Missing files</option><option value="needs_tmdb">Needs TMDB match</option><option value="nompaa">Matched, no MPAA rating</option><option value="soft_match">Soft matches (file not renamed yet)</option></select>
+ <label>Show only</label><select id="f_special"><option value="">All films</option><option value="pending">Pending AI tags</option><option value="queued">In smart-tag queue</option><option value="aznude_queued">In AZNude queue</option><option value="scenes">Scenes only</option><option value="films_only">Films only (no scenes)</option><option value="untagged">Untagged</option><option value="missing">Missing files</option><option value="noposter">Missing poster</option><option value="needs_tmdb">Needs TMDB match</option><option value="nompaa">Matched, no MPAA rating</option><option value="soft_match">Soft matches (file not renamed yet)</option></select>
  <div class="row" style="margin-top:8px"><button onclick="clearF()">Clear</button><button onclick="saveSearch()">Save search</button></div>
  <h3>Saved searches</h3><div id="saved" class="muted"></div>
  <h3>Tags <span class="muted">(click: AND · shift: NOT)</span></h3><div id="tagcloud" class="tagcloud"></div>
@@ -137,7 +157,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button onclick="openQueue()" id="queueBtn">Queue</button>
   <button onclick="newFilm()">+ Film</button>
   <button onclick="newPerson()" title="Add a performer or other person by hand">+ Person</button>
-  <div id="navRow"><button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button><button onclick="openSettings()">⚙ Library & Settings</button><button onclick="openReports()" title="Reports and questions about your library">📊 Reports</button><button onclick="openAbout()" title="About Film Tagger">ⓘ About</button><button id="updBtn" onclick="openUpdates(true)" title="Check for Updates" style="position:relative">⟳ Updates<span id="updDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:#e5484d"></span></button></div>
+  <div id="navRow"><button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button><button id="dashBtn" onclick="showDash()" title="Dashboard: library overview, health and quick links">📈 Dashboard</button><button onclick="openSettings()">⚙ Library & Settings</button><button onclick="openReports()" title="Reports and questions about your library">📊 Reports</button><button onclick="openAbout()" title="About Film Tagger">ⓘ About</button><button id="updBtn" onclick="openUpdates(true)" title="Check for Updates" style="position:relative">⟳ Updates<span id="updDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:#e5484d"></span></button></div>
  </div>
  <div id="jobbar"><b id="jbLabel"></b><div class="track"><div class="fill" id="jbFill"></div></div><span id="jbText"></span><button id="jbCancel" onclick="cancelJob()">Cancel</button><button id="jbClose" onclick="$('jobbar').style.display='none';S.jbHide=S.jbKey">×</button></div>
  <div id="bulk"><b id="selN"></b>
@@ -181,10 +201,11 @@ function histSave(){if(S.restoring)return;const st=navState(),cur=history.state;
  snap();history.pushState({...st,film:null},'')}
 function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id,page:S.page||null},'')}
 window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.restoring=true;try{FK.forEach(k=>{if(k=='lib')setLib(q.lib||'');else if(k=='in')setIn(q.in||'');else $('f_'+k).value=q[k]||''});$('q').value=q.q||'';$('sort').value=q.sort||'title';S.order=q.order||'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';renderMpaa();
- if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
+ if(q.page=='dash'){await showDash({nohist:true})}
+ else if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
  else{S.page=null;const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;await searchPeople();render();personHeader();$('content').scrollTop=q.scroll||0}
  if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
-async function load(keep){keep=keep===true;if(S.tagGroups)renderTagCloud();if(keep&&S.page)return showPerson(S.pageId,{keep:true,nohist:true});S.page=null;if(!keep)histSave();const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
+async function load(keep){keep=keep===true;if(S.tagGroups)renderTagCloud();if(keep&&S.page)return S.page=="dash"?showDash({keep:true,nohist:true}):showPerson(S.pageId,{keep:true,nohist:true});S.page=null;dashNav(false);if(!keep)histSave();const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
 function reload(){return load(true)}
 const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['writer','Writers'],producer:['producer','Producers'],cinematographer:['cinematographer','Cinematography'],composer:['composer','Music']};
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
@@ -757,7 +778,7 @@ function showJob(r){const tp=r.tpdb||{};const j=r.scan&&r.scan.running?r.scan:(t
  $('jbFill').style.width=cur.kind=='scan'?(cur.running?'100%':'100%'):(cur.total?Math.round(100*cur.done/cur.total):100)+'%';
  $('jbText').textContent=jobText(cur).replace(/^\d+\/\d+ · /,'');$('jbCancel').style.display=cur.running?'':'none';$('jbCancel').dataset.kind=cur.kind}
 async function pollJob(){clearTimeout(pt);let r;try{r=await api('/api/jobs')}catch(e){return}showJob(r);
- const rs=r.res||{},tp=r.tpdb||{};const running=r.job.running||r.scan.running||rs.running||tp.running;if(running){S.wasRunning=true;if((r.scan&&r.scan.running||tp.running)&&(!S.scanLoad||Date.now()-S.scanLoad>4000)){S.scanLoad=Date.now();load();loadLibs()}pt=setTimeout(pollJob,1000)}
+ const rs=r.res||{},tp=r.tpdb||{};const running=r.job.running||r.scan.running||rs.running||tp.running;if(running){S.wasRunning=true;if((r.scan&&r.scan.running||tp.running)&&(!S.scanLoad||Date.now()-S.scanLoad>4000)){S.scanLoad=Date.now();if(S.page!='dash')load();loadLibs()}pt=setTimeout(pollJob,1000)}
  else{if(S.wasRunning){S.wasRunning=false;reload();refreshMeta();loadLibs()}pt=setTimeout(pollJob,(r.job.finished_at||r.scan.finished_at||rs.finished_at||tp.finished_at)&&Date.now()/1000-Math.max(r.job.finished_at||0,r.scan.finished_at||0,rs.finished_at||0,tp.finished_at||0)<9?1000:15000)}}
 async function startJob(url,body={}){try{await api(url,{method:'POST',body});S.jbHide=null;S.wasRunning=true;pollJob()}catch(e){}}
 async function cancelJob(){const k=$('jbCancel').dataset.kind;await api(k=='scan'?'/api/scan/cancel':k=='resolution'?'/api/resolution/cancel':k=='tpdb'?'/api/tpdb/cancel':'/api/posters/cancel',{method:'POST'});pollJob()}
@@ -846,7 +867,7 @@ async function openPersonByName(name){if(!name){S.page=null;return load()}S.keep
  const r=await api('/api/person/lookup?'+new URLSearchParams({name}));return showPerson(r.id)}
 async function showPerson(pid,opt={}){
  if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='person:'+pid&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'person:'+pid},'')}}
- S.page='person:'+pid;S.pageId=pid;$('personHdr').style.display='none';
+ S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
  if(S.page!=='person:'+pid)return;if(!opt.keep)S.ppLim=200;S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
@@ -958,7 +979,7 @@ async function saveNewPerson(){const n=$('ppe_name').value.trim();if(!n){toast('
  PPF.forEach(([k])=>{const v=$('ppe_'+k).value.trim();if(v)fd.append(k,v)});const f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
  let r;try{r=await api('/api/people/new',{method:'POST',body:fd})}catch(e){toast(e.message||String(e));return}if(r.warning)toast(r.warning);closeM();showPerson(r.id)}
 async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
-S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');$('q').value='';setIn('');/* always start on Search in: Everything with an empty search */$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();api('/api/about').then(a=>{if($('ver'))$('ver').textContent='v'+a.version}).catch(()=>{});
+S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');$('q').value='';setIn('');/* always start on Search in: Everything with an empty search */$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(()=>{history.replaceState({...navState(),film:null,page:'dash'},'');showDash({nohist:true})});/* open on the Dashboard; Home shows the library */refreshMeta();pollJob();api('/api/about').then(a=>{if($('ver'))$('ver').textContent='v'+a.version}).catch(()=>{});
 
 // Back to top: tracks whichever container scrolls (#content library/person pages, #modal, any long panel)
 (function(){const b=document.getElementById('totop');let el=null;
@@ -1055,4 +1076,64 @@ document.addEventListener('mousedown',e=>{if(e.button!==0)return;const b=$('mbox
 document.addEventListener('click',e=>{if(FW.moved){FW.moved=false;e.stopPropagation();e.preventDefault()}},true);
 document.addEventListener('dblclick',e=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&fwBar(e.target)){delete localStorage['win.'+b._fwKey];FW.apply(b,FW.def())}});
 addEventListener('resize',()=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&b._fw)FW.apply(b,{...b._fw})});
+/* Dashboard: library summary shown at startup (text and SVG only, no posters). Data: /api/dashboard (cached ~60 s). */
+const DSH={IC:{film:'<rect x=3 y=5 width=18 height=14 rx=2 /><path d="M7 5v14M17 5v14M3 12h4M17 12h4"/>',scene:'<rect x=3 y=6 width=13 height=12 rx=2 /><path d="m16 10 5-3v10l-5-3"/>',star:'<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',ppl:'<circle cx=9 cy=8 r=4 /><path d="M2 21c0-4 3-6 7-6s7 2 7 6M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-5.6"/>',tag:'<path d="M20 12l-8 8-9-9V3h8z"/><circle cx=7.5 cy=7.5 r=1.5 />',clock:'<circle cx=12 cy=12 r=9 /><path d="M12 7v5l3 2"/>',disk:'<ellipse cx=12 cy=6 rx=8 ry=3 /><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',bars:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',globe:'<circle cx=12 cy=12 r=9 /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',dir:'<rect x=3 y=7 width=14 height=12 rx=2 /><path d="m17 11 4-2v8l-4-2"/>',cal:'<rect x=3 y=5 width=18 height=16 rx=2 /><path d="M3 10h18M8 3v4M16 3v4"/>',plus:'<path d="M12 5v14M5 12h14"/>',heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/>',ask:'<path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>',studio:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',check:'<path d="M5 12l5 5L20 7"/>'},
+ RP:[['ask','ask','Plain-English questions about the library'],['country','globe','Filter by genre and tag'],['directors','dir','By decade, count or share'],['tag_decades','tag','How a tag rises and falls'],['genres','bars','Genre mix per decade'],['studios','studio','Biggest studios by decade'],['performers','ppl','Most-credited performers']]};
+const dIc=(n,z=18)=>`<svg width=${z} height=${z} viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round>${DSH.IC[n]}</svg>`;
+const dN=n=>Number(n||0).toLocaleString();
+function dashNav(on){document.querySelectorAll('#navRow button').forEach(b=>b.classList.toggle('on',on&&b.id=='dashBtn'))}
+async function showDash(opt={}){
+ if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='dash'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'dash'},'')}}
+ if(!opt.keep&&!S.restoring)closeM();S.page='dash';S.sel.clear();$('personHdr').style.display='none';$('bulk').style.display='none';$('count').textContent='';$('selAllBtn').style.display='none';dashNav(true);
+ if(!opt.keep){$('content').innerHTML='<div class=dsh><p class=muted>Loading dashboard…</p></div>';$('content').scrollTop=0}
+ let d;try{d=await api('/api/dashboard'+(opt.force?'?force=1':''))}catch(e){if(S.page=='dash')$('content').innerHTML='<div class=dsh><p class=muted>Could not load the dashboard.</p></div>';return}
+ if(S.page!='dash')return;DSH.d=d;const st=$('content').scrollTop;$('content').innerHTML=dashHtml(d);if(opt.keep)$('content').scrollTop=st}
+function dshGo(set,filmsOnly){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';if($('f_in').value=='people')setIn('');setLib('');S.sel.clear();
+ for(const k in set)$('f_'+k).value=set[k];if(filmsOnly)$('f_special').value='films_only';renderMpaa();$('content').scrollTop=0;load()}
+function dshReport(k){RP.cur=k;openReports()}
+function dshNoBday(){const l=(DSH.d&&DSH.d.no_birthday_people)||[];
+ openM(`<h3 style="margin-top:0">People without a birth date <span class=muted style="font-weight:400">(${l.length})</span></h3><p class=muted style="margin-top:0">Birth dates are used for age checks in Reports. Click a name to open their page.</p><div class=dsh-pl>${l.map(p=>`<div onclick="closeM();showPerson(${p.id})">${esc(p.name)}<span>${esc(p.source=='tpdb'?'ThePornDB':p.source=='tmdb'?'TMDB':'added by hand')}</span></div>`).join('')||'<p class=muted>Everyone has a birth date.</p>'}</div>`)}
+function dashHtml(d){const s=d.stats,h=d.health,hrs=Math.round(s.runtime_min/60),tb=s.bytes/1e12;
+ const hr=new Date().getHours(),greet=hr<5?'Good evening':hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
+ const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
+ const stat=(ic,v,l,sub,cls,go)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="Show in the library"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
+ const stats=[stat('film',dN(s.films),'Films','not scenes','',"dshGo({special:'films_only'})"),stat('scene',dN(s.scenes),'Scenes','from studios','ai',"dshGo({special:'scenes'})"),
+  stat('star',dN(s.classic),'Classic Porn',s.films?Math.round(100*s.classic/s.films)+'% of films':'','ai',"dshGo({pgenre:'Hardcore'},true)"),stat('ppl',dN(s.people),'People','cast &amp; crew'),
+  stat('tag',dN(s.tags),'Tags',dN(s.tag_uses)+' tag uses'),stat('clock',dN(hrs)+' h','Runtime','≈ '+dN(Math.round(hrs/24))+' days','ok'),
+  stat('disk',tb>=1?tb.toFixed(1)+' TB':(s.bytes/1e9).toFixed(0)+' GB','Storage',dN(s.files)+' files','ok')].join('');
+ // decades: stacked films (blue) + scenes (purple)
+ const dec=d.decades,W=640,H=272,bw=W/Math.max(1,dec.length),mx=Math.max(1,...dec.map(x=>x.films+x.scenes)),y0=H-30,sc=(H-70)/mx;
+ const peak=dec.reduce((a,x)=>x.films>(a?a.films:-1)?x:a,null);
+ const bars=dec.map((x,i)=>{const bx=i*bw+Math.min(9,bw*.15),w=bw-2*Math.min(9,bw*.15),hf=x.films*sc,hs=x.scenes*sc;
+  return `<g class=dsh-bar onclick="dshGo({decade:'${x.decade}'})"><title>${x.decade}s: ${dN(x.films)} films, ${dN(x.scenes)} scenes (click to show)</title><rect x=${bx} y=0 width=${w} height=${H} fill=transparent></rect><rect x=${bx} y=${y0-hf} width=${w} height=${Math.max(hf,1)} rx=3 fill="#5b9cff"></rect>${x.scenes?`<rect x=${bx} y=${y0-hf-hs} width=${w} height=${hs} rx=3 fill="#c58bff"></rect>`:''}<text x=${bx+w/2} y=${y0-hf-hs-6} text-anchor=middle class=v>${dN(x.films+x.scenes)}</text><text x=${bx+w/2} y=${H-12} text-anchor=middle>${x.decade<1900?x.decade:String(x.decade).slice(2)}s</text></g>`}).join('');
+ const decH=`<svg viewBox="0 0 ${W} ${H}" width=100% height=272 preserveAspectRatio="xMidYMid meet"><line x1=0 x2=${W} y1=${y0+.5} y2=${y0+.5} stroke="#333944"></line>${bars}</svg><div class=dsh-legend><span><i style="background:#5b9cff"></i>Films</span><span><i style="background:#c58bff"></i>Scenes</span><span class=muted>${peak?`Peak: ${peak.decade}s · ${dN(peak.films)} films`:''}${d.undated?` · ${dN(d.undated)} undated`:''}</span></div>`;
+ const hlist=(rows,color,click,hl)=>{const m=Math.max(1,...rows.map(r=>r.n));return rows.map(r=>`<div class=dsh-hr title="${esc(r.name)}: ${dN(r.n)} films (click to show)" onclick="${click(r)}"><span class=dsh-hk>${esc(r.name.replace(/^United States of America$/,'USA').replace(/^United Kingdom$/,'UK'))}</span><span class=dsh-ht><span style="width:${(100*r.n/m).toFixed(1)}%;background:${r.name==hl?'#c58bff':color}"></span></span><span class=dsh-hn>${dN(r.n)}</span></div>`).join('')||'<p class=muted>Nothing yet.</p>'};
+ const genH=hlist(d.genres,'#5b9cff',r=>`dshGo({pgenre:'${jsq(r.name)}'},true)`,'Hardcore'),ctyH=hlist(d.countries,'#3fbf7f',r=>`dshGo({country:'${jsq(r.name)}'},true)`);
+ const dirH=d.directors.length?'<ol class=dsh-rank>'+d.directors.map(r=>`<li title="Show ${esc(r.name)}'s films" onclick="dshGo({person:'${jsq(r.name)}',prole:'director'},true)"><span>${esc(r.name)}</span><b>${dN(r.n)}</b></li>`).join('')+'</ol>':'<p class=muted>No directors yet.</p>';
+ const today=new Date(d.today+'T12:00:00'),dayMs=864e5,rel=ts=>{const t=new Date(ts*1000),dd=Math.round((new Date(today.toDateString())-new Date(t.toDateString()))/dayMs);return dd<=0?'Today':dd==1?'Yesterday':t.toLocaleDateString(undefined,{month:'short',day:'numeric'})};
+ const tl=(rows,right)=>rows.length?'<ul class=dsh-tl>'+rows.map(f=>`<li title="Open ${esc(f.title)}" onclick="openFilm(${f.id})"><span class=dsh-tt>${esc(f.title)}</span><span class=dsh-ty>${f.year||''}</span><span class=dsh-td>${right(f)}</span></li>`).join('')+'</ul>':'';
+ const recH=tl(d.recent,f=>rel(f.added_at))||'<p class=muted>Nothing added yet.</p>';
+ const md=today.toLocaleDateString(undefined,{month:'long',day:'numeric'}),ny=today.getFullYear();
+ const otdH=(tl(d.on_this_day,f=>{const a=ny-f.year;return a<=0?'this year':a+' yr'+(a==1?'':'s')+' ago'})||`<p class=muted>No films released on ${md} in your library.</p>`)+(d.on_this_day_hidden?`<div class=dsh-foot>${dN(d.on_this_day_all)} titles in total were released on ${md}; ${dN(d.on_this_day_hidden)} ${d.on_this_day_hidden==1?'is a scene or adult film':'are scenes or adult films'} (hidden here).</div>`:'');
+ const chip=(n,label,sub,kind,go)=>`<div class="dsh-chip ${n?kind:'ok'}"${n?` onclick="${go}"`:''}><span class=dsh-cn>${n?dN(n):dIc('check',14)}</span><span><b>${label}</b><small>${sub}</small></span>${n?dIc('arrow',14):''}</div>`;
+ const npf=h.no_poster-h.no_poster_scenes;
+ const chips=[chip(h.no_poster,'Missing posters',h.no_poster?`${dN(npf)} film${npf==1?'':'s'} · ${dN(h.no_poster_scenes)} scene${h.no_poster_scenes==1?'':'s'}`:'every title has one','warn',"dshGo({special:'noposter'})"),
+  chip(h.needs_tmdb,'Needs TMDB match',h.needs_tmdb?'films with no TMDB link':'all films matched','warn',"dshGo({special:'needs_tmdb'})"),
+  chip(h.rename_waiting,'Rename waiting',h.rename_waiting?'scene files ready to rename':'nothing waiting','info','renameWaiting()'),
+  chip(h.missing,'Missing files',h.missing?'files not found on disk':'all files present','warn',"dshGo({special:'missing'})"),
+  chip(h.no_birthday,'People without birth dates',h.no_birthday?'used for age checks':'everyone has one','warn','dshNoBday()'),
+  chip(h.untagged,'Untagged titles',h.untagged?'no tags yet':'everything is tagged','info',"dshGo({special:'untagged'})")].join('');
+ const reps=DSH.RP.filter(([k])=>RP.pages[k]).map(([k,ic,sub])=>`<div class=dsh-ql onclick="dshReport('${k}')">${dIc(ic,16)}<span><b>${esc(RP.pages[k][0])}</b><small>${sub}</small></span></div>`).join('');
+ const at=new Date(d.computed_at*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+ return `<div class=dsh><div class=dsh-head><div><div class=crumb>Film Tagger › <b>Dashboard</b></div><h2>${greet}</h2></div><div class=upd>Updated ${at}<button onclick="showDash({keep:true,nohist:true,force:true})" title="Recount now">⟳ Refresh</button><button onclick="goHome()" title="Show the whole library">Browse library</button></div></div>
+ <div class=dsh-stats>${stats}</div><div class=dsh-grid>
+ ${card('dsh-w2','bars','Titles by decade',decH,'click a bar to show that decade')}
+ ${card('','heart','Library health','<div class=dsh-chips>'+chips+'</div>','click to fix')}
+ ${card('','bars','Top primary genres',genH,d.no_genre?dN(d.no_genre)+' unset':'films')}
+ ${card('','globe','Top countries',ctyH,dN(d.n_countries)+' countries')}
+ ${card('','dir','Top directors',dirH,'films')}
+ ${card('','plus','Recently added',recH,'last 10 · no adult titles')}
+ ${card('','cal','On this day · '+esc(md),otdH,'release date')}
+ ${card('','bars','Reports','<div class=dsh-qls>'+reps+'</div>','quick links')}
+ </div></div>`}
 </script></body></html>

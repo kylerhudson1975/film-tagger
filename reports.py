@@ -575,3 +575,61 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
                 notes=notes, retried=bool(tries))
+
+
+# ---------- Dashboard (home page summary; read-only) ----------
+NON_ADULT_SQL = "COALESCE(kind,'')<>'scene' AND COALESCE(primary_genre,'') NOT IN ('Hardcore','Softcore')"
+NO_POSTER_SQL = ("COALESCE(custom_poster,'')='' AND COALESCE(poster,'')='' "
+                 "AND NOT (kind='scene' AND COALESCE(poster_wide,'')<>'')")
+
+
+def dashboard(c, today=None):
+    """Library summary for the Dashboard. Text and numbers only (never poster paths). 'Recently added' and 'On this day'
+    leave out scenes and Hardcore/Softcore films; 'Classic Porn' = films (not scenes) whose primary genre is Hardcore."""
+    today = today or datetime.date.today()
+    one = lambda sql, a=(): c.execute(sql, a).fetchone()[0] or 0
+    FILM = "COALESCE(kind,'')<>'scene'"
+    pc = {r[1] for r in c.execute("PRAGMA table_info(people)")}  # people table/columns appear once People is first used
+    PW = "merged_into IS NULL" if "merged_into" in pc else "1"
+    s = dict(films=one(f"SELECT COUNT(*) FROM films WHERE {FILM}"),
+             scenes=one("SELECT COUNT(*) FROM films WHERE kind='scene'"),
+             classic=one(f"SELECT COUNT(*) FROM films WHERE {FILM} AND primary_genre=?", (ADULT_GENRE,)),
+             people=one(f"SELECT COUNT(*) FROM people WHERE {PW}") if pc else 0,
+             tags=one("SELECT COUNT(*) FROM tags"),
+             tag_uses=one("SELECT COUNT(*) FROM film_tags WHERE status='approved'"),
+             runtime_min=one("SELECT SUM(runtime) FROM films WHERE runtime>0"),
+             bytes=one("SELECT SUM(size) FROM files WHERE COALESCE(missing,0)=0"),
+             files=one("SELECT COUNT(*) FROM files"))
+    dec = [dict(decade=d, films=f or 0, scenes=sc or 0) for d, f, sc in c.execute(
+        f"SELECT (year/10)*10 d, SUM({FILM}), SUM(kind='scene') FROM films WHERE year>0 GROUP BY d ORDER BY d")]
+    undated = one("SELECT COUNT(*) FROM films WHERE year IS NULL OR year<=0")
+    genres = [dict(name=n, n=k) for n, k in c.execute(
+        f"SELECT primary_genre, COUNT(*) FROM films WHERE {FILM} AND COALESCE(primary_genre,'')<>'' GROUP BY primary_genre COLLATE NOCASE ORDER BY 2 DESC, 1 LIMIT 8")]
+    no_genre = one(f"SELECT COUNT(*) FROM films WHERE {FILM} AND COALESCE(primary_genre,'')=''")
+    cc, dc = {}, {}
+    for co, d in c.execute(f"SELECT country, director FROM films WHERE {FILM}"):
+        for x in _split(co): cc[x] = cc.get(x, 0) + 1
+        for x in _split(d): dc[x] = dc.get(x, 0) + 1
+    top = lambda m, n: [dict(name=k, n=v) for k, v in sorted(m.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:n]]
+    recent = [dict(id=i, title=t, year=y, added_at=a) for i, t, y, a in c.execute(
+        f"SELECT id, title, year, added_at FROM films WHERE {NON_ADULT_SQL} AND added_at IS NOT NULL ORDER BY added_at DESC, id DESC LIMIT 10")]
+    md = today.strftime("-%m-%d")
+    otd = [dict(id=i, title=t, year=int(rd[:4]), release_date=rd) for i, t, rd in c.execute(
+        f"SELECT id, title, release_date FROM films WHERE {NON_ADULT_SQL} AND release_date LIKE ? ORDER BY release_date, title COLLATE NOCASE",
+        ("____" + md,)) if rd[:4].isdigit()]
+    otd_all = one("SELECT COUNT(*) FROM films WHERE release_date LIKE ?", ("____" + md,))
+    NB = f"FROM people WHERE {PW} AND COALESCE(birthday,'')=''"
+    no_bday = [dict(id=i, name=n, source=src) for i, n, src in c.execute(
+        f"SELECT id, name, {'source' if 'source' in pc else 'NULL'} {NB} ORDER BY name COLLATE NOCASE LIMIT 500")] if pc else []
+    health = dict(
+        no_poster=one(f"SELECT COUNT(*) FROM films WHERE {NO_POSTER_SQL}"),
+        no_poster_scenes=one(f"SELECT COUNT(*) FROM films WHERE kind='scene' AND {NO_POSTER_SQL}"),
+        needs_tmdb=one("SELECT COUNT(*) FROM films WHERE tmdb_status='needs_match'"),
+        missing=one("SELECT COUNT(*) FROM films WHERE missing=1"),
+        no_birthday=one(f"SELECT COUNT(*) {NB}") if pc else 0,
+        untagged=one("SELECT COUNT(*) FROM films WHERE id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')"),
+        pending=one("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'"))
+    return dict(stats=s, decades=dec, undated=undated, genres=genres, no_genre=no_genre, countries=top(cc, 8),
+                n_countries=len(cc), directors=top(dc, 10), recent=recent, on_this_day=otd, on_this_day_all=otd_all,
+                on_this_day_hidden=max(0, otd_all - len(otd)), today=today.isoformat(), health=health,
+                no_birthday_people=no_bday, reports=REPORTS)

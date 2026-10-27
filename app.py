@@ -158,6 +158,7 @@ def build_query(q):
     if q.get("scenes") in ("1", 1): where.append("f.kind='scene'")
     if q.get("films_only") in ("1", 1): where.append("COALESCE(f.kind,'')<>'scene'")
     if q.get("untagged") in ("1", 1): where.append("f.id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')")
+    if q.get("noposter") in ("1", 1): where.append("COALESCE(f.custom_poster,'')='' AND COALESCE(f.poster,'')='' AND NOT (f.kind='scene' AND COALESCE(f.poster_wide,'')<>'')")
     return ("WHERE " + " AND ".join(where)) if where else "", args
 
 # Studio sort: within a studio, first billed performer A-Z (case/accent folded; none last), then newest release, then id.
@@ -3130,6 +3131,23 @@ def reports_ask():
     except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
     return jsonify(res)
+
+DASH = {"at": 0, "day": None, "data": None}
+
+@app.get("/api/dashboard")
+def dashboard():
+    """Dashboard summary (read-only queries), cached ~60 s; ?force=1 recomputes."""
+    import datetime as _dt
+    today = _dt.date.today()
+    if not request.args.get("force") and DASH["data"] and DASH["day"] == today and time.time() - DASH["at"] < 60:
+        return jsonify(dict(DASH["data"], cached=True))
+    c = C()
+    try:
+        d = repmod.dashboard(c, today)
+        d["health"]["rename_waiting"] = len(soft_match_ids(c))  # same set as the Rename waiting view, from stored paths
+    finally: c.close()
+    d["computed_at"] = time.time(); DASH.update(at=time.time(), day=today, data=d)
+    return jsonify(dict(d, cached=False))
 
 @app.get("/api/about")
 def about():
