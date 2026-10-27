@@ -342,6 +342,11 @@ def _ro_conn(c):
             except ValueError: pass
     except sqlite3.OperationalError:
         r.execute("CREATE TEMP TABLE people(name TEXT, birth_year INTEGER)")
+    try:  # linked aliases (people.aliases / merges): credits under an alias count for the person with the birth date
+        import db as _db
+        for nm, bd in list(people.values()):
+            for al in _db.expand_person(c, nm): people.setdefault(al.lower(), (nm, bd))
+    except Exception: pass
     dirs, cast, everyone = [], set(), set()
     for fid, d, ca, rd, y in r.execute("SELECT id,director,cast_,release_date,year FROM main.films"):
         for x in _split(d): dirs.append((fid, x))
@@ -352,7 +357,8 @@ def _ro_conn(c):
     r.executemany("INSERT INTO film_cast VALUES(?,?)", sorted(cast))
     r.execute("PRAGMA query_only=1")
     safe = {p for _, p in cast}
-    return r, everyone, {s.lower() for s in safe}
+    safe = {k for k, (n, _) in people.items() if n in safe}  # canonical names and their linked aliases
+    return r, everyone, safe
 
 
 def sql_schema(c):
@@ -383,8 +389,9 @@ def sql_schema(c):
         " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n")
 
 
-def sql_prompt(c, question):
-    return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) +
+def sql_prompt(c, question, hint=()):
+    h = "".join(f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n" for a, b in hint)
+    return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) + h +
             'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>"}\n'
             "Limit results to at most 50 rows unless asked otherwise.\nQuestion: " + question.strip()[:500])
 
@@ -445,6 +452,11 @@ def mentioned_people(c, question):
     for ca, d in c.execute("SELECT cast_, director FROM films"):
         for n in _split(ca): names.setdefault(n.lower(), ("cast", n))
         for n in _split(d): names.setdefault(n.lower(), ("director", n))
+    try:  # linked aliases (people.aliases / merges) that no film credits directly
+        import db as _db
+        for grp in _db.alias_groups(c).values():
+            for n in grp: names.setdefault(n.lower(), ("cast", n))
+    except Exception: pass
     hits = []
     for k, v in sorted(names.items(), key=lambda kv: -len(kv[0])):
         if len(k) < 4 or " " not in k: continue
@@ -454,8 +466,14 @@ def mentioned_people(c, question):
 
 
 def person_birthday(c, name):
-    row = c.execute("SELECT birthday FROM people WHERE merged_into IS NULL AND lower(name)=lower(?)", (name,)).fetchone()
-    return (row[0] or None) if row else None
+    """(canonical name, birthday or None) over the person's linked aliases."""
+    try:
+        import db as _db; names = _db.expand_person(c, name)
+    except Exception: names = [name]
+    for n in names:
+        row = c.execute("SELECT name,birthday FROM people WHERE merged_into IS NULL AND lower(name)=lower(?) AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'", (n,)).fetchone()
+        if row: return row[0], row[1]
+    return name, None
 
 
 def lookup_birthday(c, name):
@@ -489,34 +507,34 @@ def _msg(question, text, **kw):
 
 
 def ask(c, question, chat):
-    people = mentioned_people(c, question)
+    people = mentioned_people(c, question); hint = []
     for kind, name in people:
         if kind != "cast": continue
-        bd = person_birthday(c, name)
-        if bd and re.match(r"^\d{4}-\d{2}-\d{2}$", bd): continue
+        canon, bd = person_birthday(c, name)
+        if bd: hint.append((name, canon)); continue
         note = []
         if not bd:
             try: got, why = lookup_birthday(c, name)
             except Exception as e: got, why = None, "lookup failed (" + type(e).__name__ + ")"
-            if got: continue  # now known; _ro_conn rebuilds with it
+            if got: hint.append((name, name)); continue  # now known; _ro_conn rebuilds with it
             note = [f"Tried looking up {name}'s birth date: {why}."]
         return _msg(question, f"{name} has no known birth date, so per the library's age rule I can't list their titles.",
                     notes=note, birthday_status="unknown")
-    res = _ask_sql(c, question, chat, allow_fallback=not people)
+    res = _ask_sql(c, question, chat, allow_fallback=not people, hint=hint)
     if people and res.get("mode") == "sql" and not res["rows"] and not res.get("answer_from_error"):
         cast = [n for k, n in people if k == "cast"]
         if cast: res["notes"].insert(0, f"Only titles released when {', '.join(cast)} was 18 or older are counted.")
     return res
 
 
-def _ask_sql(c, question, chat, allow_fallback=True):
+def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     """chat(prompt)->text. Returns a result dict; mode 'sql' or (fallback) the old spec report."""
     tries, err, reading, sql = [], None, "", ""
     try:
         r, everyone, safe = _ro_conn(c)
     except Exception as e:
         r, err = None, e
-    prompt = sql_prompt(c, question) if r else None
+    prompt = sql_prompt(c, question, hint) if r else None
     for attempt in range(2):
         if not r: break
         try:
@@ -526,7 +544,7 @@ def _ask_sql(c, question, chat, allow_fallback=True):
             break
         except Exception as e:
             err = e; tries.append(dict(sql=sql, error=str(e)))
-            prompt = (sql_prompt(c, question) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
+            prompt = (sql_prompt(c, question, hint) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
     else:
         r = None
     if r is None and not allow_fallback:
@@ -547,11 +565,12 @@ def _ask_sql(c, question, chat, allow_fallback=True):
     try:
         sample = [dict(zip(cols, [v for v in x])) for x in rows[:25]]
         for d in sample: d.pop("film_ids", None)
-        answer = re.sub(r"<think>.*?</think>", "", chat(
+        answer = "Nothing matched." if not rows else re.sub(r"<think>.*?</think>", "", chat(
             "Answer the question in ONE short plain-English sentence using only these query results (no SQL talk). "
-            "Rows are ranked/ordered as shown; mention the top result with its number, or for a breakdown (per decade etc.) summarise the pattern with the biggest values. "
-            "If there are no rows say nothing matched.\nQuestion: " + question + "\nColumns: " + json.dumps(cols) +
-            "\nRows: " + json.dumps(sample, default=str)[:6000]) or "", flags=re.S).strip().strip('"')
+            "These rows ARE the answer to the question (already filtered for it). They are ranked as shown: name the top result with"
+            " its number; if several rows tie for the top value, name all of them. For a breakdown (per decade etc.) summarise the"
+            " pattern with the biggest values.\nQuestion: " + question + "\nResults (one per line):\n" +
+            "\n".join(" | ".join(f"{k}={v}" for k, v in d.items()) for d in sample)[:6000]) or "", flags=re.S).strip().strip('"')
     except Exception: answer = ""
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
