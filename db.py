@@ -548,59 +548,138 @@ def relink(c, p, size, h, roots, sroots, seen):
             ok = [o]
     return ok[0]["id"] if len(ok) == 1 else None
 
+def _scan_roots(roots, sroots):
+    """Film libraries plus scene libraries. Trailing slashes and duplicate spellings are ignored."""
+    out, seen = [], set()
+    for r in list(roots or []) + list(sroots or []):
+        r = (r or "").strip().rstrip("\\/")
+        if not r: continue
+        k = os.path.normcase(os.path.normpath(r))
+        if k in seen: continue
+        seen.add(k); out.append(r)
+    return out
+
+def _auto_film_title(path, title):
+    """True when a title is blank or still the automatic film guess (folder name, or the text before the year)."""
+    title = (title or "").strip()
+    if not title: return True
+    guessed, _ = guess_title_year(path)
+    parent = os.path.basename(os.path.dirname(path))
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return title in (guessed, parent, stem)
+
+def promote_to_scene(c, film_id, path):
+    """A file already in the library sits in a scenes folder. Mark the row a scene and, unless that field was
+    edited by hand, fill title, studio, date and performers from the filename when they are still the film guess
+    or blank. A row that already has a ThePornDB id only gets its kind corrected."""
+    f = c.execute("SELECT kind, title, year, studio, cast_, release_date, primary_genre, tpdb_id, edited_fields FROM films WHERE id=?", (film_id,)).fetchone()
+    if not f: return False
+    edited = set(json.loads(f["edited_fields"] or "[]"))
+    sets = {}
+    if f["kind"] != "scene": sets["kind"] = "scene"
+    if not f["tpdb_id"]:
+        import tpdb
+        n = tpdb.parse_name(path)
+        title = tpdb.default_title(n)
+        if title and "title" not in edited and _auto_film_title(path, f["title"]): sets["title"] = title
+        if n.get("date") and "release_date" not in edited and not (f["release_date"] or "").strip():
+            sets["release_date"] = n["date"]
+            if "year" not in edited: sets["year"] = int(n["date"][:4])
+        studio = n.get("studio") or folder_studio(path, scene_roots(c))
+        if studio and "studio" not in edited and not (f["studio"] or "").strip(): sets["studio"] = canon_studio(studio, c)
+        cast = ", ".join(n.get("performers") or [])
+        if cast and "cast_" not in edited and not (f["cast_"] or "").strip(): sets["cast_"] = cast
+        if "primary_genre" not in edited and not (f["primary_genre"] or "").strip(): sets["primary_genre"] = "Hardcore"
+    if not sets: return False
+    c.execute("UPDATE films SET " + ", ".join(f"{k}=?" for k in sets) + ", updated_at=? WHERE id=?",
+              list(sets.values()) + [time.time(), film_id])
+    return True
+
+def iter_videos(root, dirs_in, progress, errors):
+    """Every video under root, in the root and in every subfolder. Hidden folders and photo galleries are the only ones not entered."""
+    stack = [root]
+    while stack:
+        if progress.get("cancel"): return
+        folder = stack.pop()
+        dirs_in[root] = dirs_in.get(root, 0) + 1
+        progress.update(current=folder, folders=sum(dirs_in.values()))
+        try:
+            entries = list(os.scandir(folder))
+        except OSError as e:
+            errors.append(f"Cannot read folder {folder}: {e}")
+            continue
+        subdirs = []
+        for ent in entries:
+            name = ent.name
+            try: is_dir = ent.is_dir(follow_symlinks=False)
+            except OSError as e:
+                errors.append(f"{ent.path}: {e}")
+                continue
+            if is_dir:
+                if name.startswith((".", "$")) or is_gallery_dir(name): continue
+                subdirs.append(ent.path)
+            elif os.path.splitext(name)[1].lower() in VIDEO_EXT and not re.search(r"\bsample\b", name, re.I):
+                yield ent.path
+        stack.extend(reversed(subdirs))
+
 def scan(c, roots, progress=None):
     progress = progress if progress is not None else {}
     sroots = scene_roots(c)
-    now = time.time(); added = 0; relinked = 0; seen = set(); errors = []
-    allroots = list(dict.fromkeys(list(roots) + list(sroots)))
-    for root in roots:
+    now = time.time(); added = 0; relinked = 0; seen = set(); errors = []; skipped_removed = 0
+    found_in = {}; dirs_in = {}; missing_roots = []
+    allroots = _scan_roots(sroots, roots)  # scene folders first, so a big film library cannot hide them
+    for root in allroots:
         if not os.path.isdir(root):
-            if any(os.path.normcase(root.rstrip("\\/")) == os.path.normcase(sr) for sr in sroots): continue  # scene root not created yet
-            errors.append(f"Not a folder or not reachable: {root}"); continue
-        for dp, dns, fns in os.walk(root, onerror=lambda e: errors.append(str(e))):
-            dns[:] = [d for d in dns if not d.startswith(("$", ".")) and not is_gallery_dir(d)]  # photo galleries are never catalogue items
+            missing_roots.append(root)
+            if not any(os.path.normcase(root.rstrip("\\/")) == os.path.normcase(sr) for sr in sroots):
+                errors.append(f"Not a folder or not reachable: {root}")
+            continue
+        found_in.setdefault(root, 0)
+        for p in iter_videos(root, dirs_in, progress, errors):
             if progress.get("cancel"): break
-            progress.update(found=len(seen), added=added, relinked=relinked, current=dp)
-            for fn in fns:
-                if os.path.splitext(fn)[1].lower() not in VIDEO_EXT: continue
-                if re.search(r"\bsample\b", fn, re.I): continue
-                p = os.path.join(dp, fn); seen.add(os.path.normcase(p))
-                r = c.execute("SELECT id, film_id FROM files WHERE path=?", (p,)).fetchone()
-                try: size = os.path.getsize(p)
-                except OSError: size = None
-                is_scene = any(under(p, sr) for sr in sroots)
-                if not r and is_excluded(c, p, size): continue  # removed by hand earlier
-                if r:
-                    if is_scene: c.execute("UPDATE films SET kind='scene' WHERE id=? AND kind IS NULL", (r["film_id"],))
-                    c.execute("UPDATE files SET missing=0, size=? WHERE id=?", (size, r["id"]))
-                    if size and not c.execute("SELECT oshash FROM files WHERE id=?", (r["id"],)).fetchone()[0]:  # store fingerprint once
-                        c.execute("UPDATE files SET oshash=? WHERE id=?", (file_hash(p), r["id"]))
-                    c.execute("UPDATE films SET missing=0 WHERE id=?", (r["film_id"],))
-                    continue
-                h = file_hash(p) if size else None
-                rid = relink(c, p, size, h, allroots, sroots, seen)
-                if rid:  # renamed/moved outside the app: keep the item (metadata, tags, locks), just update its path
-                    o = c.execute("SELECT film_id, path FROM files WHERE id=?", (rid,)).fetchone()
-                    c.execute("UPDATE files SET path=?, size=?, oshash=?, missing=0 WHERE id=?", (p, size, h, rid))
-                    c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (p, o["path"]))
-                    c.execute("UPDATE films SET missing=0 WHERE id=?", (o["film_id"],)); relinked += 1
-                    try:
-                        import csv
-                        with open(os.path.join(root, "_filmtagger_relinks.csv"), "a", newline="", encoding="utf-8-sig") as fh:
-                            csv.writer(fh).writerow([time.strftime("%Y-%m-%d %H:%M:%S"), o["film_id"], o["path"], p])
-                    except OSError as e: errors.append(f"relink log: {e}")
-                    continue
-                if is_scene:
-                    fid = new_scene(c, p, size, root, now); c.execute("UPDATE files SET oshash=? WHERE film_id=? AND path=?", (h, fid, p)); added += 1; continue
-                t, y = guess_title_year(p)
-                drive = os.path.splitdrive(p)[0] or root
-                cur = c.execute("INSERT INTO films(title,year,storage,added_at,updated_at) VALUES(?,?,?,?,?)",
-                                (t, y, drive, now, now))
-                c.execute("INSERT INTO files(film_id,path,size,oshash) VALUES(?,?,?,?)", (cur.lastrowid, p, size, h))
-                added += 1
+            seen.add(os.path.normcase(p)); found_in[root] = found_in.get(root, 0) + 1
+            progress.update(found=len(seen), added=added, relinked=relinked)
+            r = c.execute("SELECT id, film_id FROM files WHERE path=?", (p,)).fetchone()
+            try: size = os.path.getsize(p)
+            except OSError: size = None
+            is_scene = any(under(p, sr) for sr in sroots)
+            if not r and is_excluded(c, p, size): skipped_removed += 1; continue  # removed by hand earlier
+            if r:
+                if is_scene: promote_to_scene(c, r["film_id"], p)
+                c.execute("UPDATE files SET missing=0, size=? WHERE id=?", (size, r["id"]))
+                if size and not c.execute("SELECT oshash FROM files WHERE id=?", (r["id"],)).fetchone()[0]:  # store fingerprint once
+                    c.execute("UPDATE files SET oshash=? WHERE id=?", (file_hash(p), r["id"]))
+                c.execute("UPDATE films SET missing=0 WHERE id=?", (r["film_id"],))
+                continue
+            h = file_hash(p) if size else None
+            rid = relink(c, p, size, h, allroots, sroots, seen)
+            if rid:  # renamed/moved outside the app: keep the item (metadata, tags, locks), just update its path
+                o = c.execute("SELECT film_id, path FROM files WHERE id=?", (rid,)).fetchone()
+                c.execute("UPDATE files SET path=?, size=?, oshash=?, missing=0 WHERE id=?", (p, size, h, rid))
+                c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (p, o["path"]))
+                c.execute("UPDATE films SET missing=0 WHERE id=?", (o["film_id"],)); relinked += 1
+                try:
+                    import csv
+                    with open(os.path.join(root, "_filmtagger_relinks.csv"), "a", newline="", encoding="utf-8-sig") as fh:
+                        csv.writer(fh).writerow([time.strftime("%Y-%m-%d %H:%M:%S"), o["film_id"], o["path"], p])
+                except OSError as e: errors.append(f"relink log: {e}")
+                continue
+            if is_scene:
+                fid = new_scene(c, p, size, root, now); c.execute("UPDATE files SET oshash=? WHERE film_id=? AND path=?", (h, fid, p)); added += 1
+                if added % 10 == 0: c.commit()
+                continue
+            t, y = guess_title_year(p)
+            drive = os.path.splitdrive(p)[0] or root
+            cur = c.execute("INSERT INTO films(title,year,storage,added_at,updated_at) VALUES(?,?,?,?,?)",
+                            (t, y, drive, now, now))
+            c.execute("INSERT INTO files(film_id,path,size,oshash) VALUES(?,?,?,?)", (cur.lastrowid, p, size, h))
+            added += 1
+            if added % 10 == 0: c.commit()
+        if progress.get("cancel"): break
+        c.commit()  # keep this folder even if a later one fails
     # flag missing: files under scanned roots that weren't seen (skipped if the scan was cancelled)
     missing = 0
-    for root in ([] if progress.get("cancel") else roots):
+    for root in ([] if progress.get("cancel") else allroots):
         if not os.path.isdir(root): continue
         pref = os.path.join(root, "")
         for r in c.execute("SELECT id, path FROM files WHERE path LIKE ? ESCAPE '\\'",
@@ -611,7 +690,9 @@ def scan(c, roots, progress=None):
     c.commit()
     try: fill_folder_studios(c)  # add-only studio from the <Studio> folder
     except sqlite3.Error as e: errors.append(f"studio from folder: {e}")
-    return {"added": added, "relinked": relinked, "found": len(seen), "missing_files": missing, "errors": errors[:50]}
+    return {"added": added, "relinked": relinked, "found": len(seen), "missing_files": missing, "errors": errors[:50],
+            "skipped_removed": skipped_removed, "missing_roots": missing_roots,
+            "roots_found": [{"path": k, "videos": found_in.get(k, 0), "folders": dirs_in.get(k, 0)} for k in list(dict.fromkeys(list(found_in) + list(dirs_in)))]}
 
 # ---------- tags ----------
 def get_tag_id(c, name, category=None, set_category=False):

@@ -1,4 +1,4 @@
-﻿"""Film Tagger - local film library cataloging & tagging. Run: python app.py -> http://localhost:5050"""
+"""Film Tagger - local film library cataloging & tagging. Run: python app.py -> http://localhost:5050"""
 import os, io, csv, json, time, urllib.request, urllib.parse, urllib.error
 from flask import Flask, request, jsonify, send_from_directory, send_file, Response
 import db
@@ -8,7 +8,7 @@ import tpdb
 import focus as focusmod
 import gallery as gallerymod
 
-APP_VERSION = "1.2.3"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.2.15"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -37,7 +37,10 @@ tpdb.ALIAS_SOURCE = _alias_map  # ThePornDB matching counts a performer alias as
 def ok(**k): return jsonify(dict(ok=True, **k))
 
 @app.route("/")
-def index(): return send_from_directory(app.static_folder, "index.html")
+def index():
+    resp = send_from_directory(app.static_folder, "index.html")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
 
 # ---------- films ----------
 def split_list(v):
@@ -265,15 +268,26 @@ def studios():
         for x in split_list(v): n[x] = n.get(x, 0) + 1
     return jsonify([dict(name=k, n=v) for k, v in sorted(n.items(), key=lambda kv: db.fold(kv[0]))])
 
+BUILTIN_GENRES = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama", "Family", "Fantasy",
+                  "History", "Horror", "Music", "Mystery", "Romance", "Science Fiction", "TV Movie", "Thriller", "War",
+                  "Western", "Hardcore", "Softcore"]
+
 @app.get("/api/primary-genres")
 def primary_genres():
-    """Primary genres in use (with counts) plus all Genre-category tag names, both accent-folded alphabetical."""
+    """Every genre the edit menu should offer: Genre tags, genres TMDB saved on a film, primary genres already
+    set, names you typed, and the standard TMDB list."""
     c = C()
     used = [dict(name=r[0], n=r[1]) for r in c.execute("SELECT primary_genre, COUNT(*) FROM films WHERE COALESCE(primary_genre,'')<>'' GROUP BY primary_genre")]
-    tags = [r[0] for r in c.execute("SELECT name FROM tags WHERE category='Genre' COLLATE NOCASE")]
+    tags = [r["name"] for r in c.execute("SELECT name, category FROM tags") if db.fold(r["category"] or "") in ("genre", "genres")]
+    from_films = []
+    for (raw,) in c.execute("SELECT tmdb_genres FROM films WHERE COALESCE(tmdb_genres,'') NOT IN ('','[]')"):
+        try: gl = json.loads(raw)
+        except Exception: continue
+        if isinstance(gl, list): from_films.extend(str(x).strip() for x in gl if str(x).strip())
     custom = db.custom_primary_genres(c)
     choices = {}
-    for n in tags + custom + [u["name"] for u in used]: choices.setdefault(db.fold(n), n)
+    for n in tags + from_films + custom + [u["name"] for u in used] + BUILTIN_GENRES:
+        if n: choices.setdefault(db.fold(n), n)
     return jsonify(used=sorted(used, key=lambda x: db.fold(x["name"])), genre_tags=sorted(tags, key=lambda x: (db.fold(x), x)),
                    custom=sorted(custom, key=lambda x: (db.fold(x), x)), choices=sorted(choices.values(), key=lambda x: (db.fold(x), x)))
 
@@ -1122,7 +1136,9 @@ def review():
 def settings_get():
     c = C()
     ak = db.get_setting(c, "ai_key", "")
-    return jsonify(roots=db.get_setting(c, "roots", []), tmdb_key=db.get_setting(c, "tmdb_key", ""),
+    scenes = [str(s).rstrip("\\/") for s in (db.scene_roots(c) or [])]
+    roots = [r for r in (db.get_setting(c, "roots", []) or []) if not any(os.path.normcase(str(r).rstrip("\\/")) == os.path.normcase(s) for s in scenes)]
+    return jsonify(roots=roots, tmdb_key=db.get_setting(c, "tmdb_key", ""),
                    ai_url=db.get_setting(c, "ai_url", ""), ai_model=db.get_setting(c, "ai_model", ""),
                    ai_key_set=bool(ak), scene_roots=db.get_setting(c, "scene_roots", []),
                    tpdb_key_set=bool(db.get_setting(c, "tpdb_key", "")), ai_key_hint=("…" + ak[-4:]) if len(ak) > 8 else ("set" if ak else ""),
@@ -1137,7 +1153,13 @@ def settings_put():
     if "roots" in d: db.set_setting(c, "roots", [r.strip() for r in d["roots"] if r.strip()])
     if "tmdb_key" in d: db.set_setting(c, "tmdb_key", d["tmdb_key"].strip().strip('"').strip("'").strip())
     if "ai_url" in d: db.set_setting(c, "ai_url", d["ai_url"].strip())
-    if "scene_roots" in d: db.set_setting(c, "scene_roots", [r.strip().rstrip("\\/") for r in d["scene_roots"] if r.strip()])
+    if "scene_roots" in d:
+        scenes = [str(r).strip().rstrip("\\/") for r in d["scene_roots"] if str(r).strip()]
+        db.set_setting(c, "scene_roots", scenes)
+        # A scene folder is not a film library. Leaving it in the film list sends those files to TMDB.
+        have = [str(r).strip().rstrip("\\/") for r in (d["roots"] if "roots" in d else (db.get_setting(c, "roots", []) or [])) if str(r).strip()]
+        have = [r for r in have if not any(os.path.normcase(r) == os.path.normcase(s) for s in scenes)]
+        db.set_setting(c, "roots", have)
     if d.get("tpdb_key") is not None and d.get("tpdb_key") != "":  # blank = keep existing; "-" = clear
         db.set_setting(c, "tpdb_key", "" if d["tpdb_key"].strip() == "-" else d["tpdb_key"].strip().strip('"').strip("'"))
     if "ai_model" in d: db.set_setting(c, "ai_model", d["ai_model"].strip())
@@ -1148,23 +1170,119 @@ def settings_put():
         db.set_setting(c, "ai_key", "" if d["ai_key"].strip() == "-" else d["ai_key"].strip().strip('"').strip("'"))
     c.commit(); return settings_get()
 
+def _ps_files(root):
+    """Every file under root, via PowerShell, when Python's own directory walk sees nothing."""
+    if os.name != "nt": return []
+    env = os.environ.copy(); env["FT_ROOT"] = root
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-ChildItem -LiteralPath $env:FT_ROOT -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }"],
+            capture_output=True, timeout=600, env=env)
+    except Exception:
+        return []
+    raw = r.stdout or b""
+    if raw.startswith(b"\xff\xfe") or (len(raw) > 3 and raw[1:2] == b"\x00"):
+        text = raw.decode("utf-16", "replace")
+    else:
+        text = raw.decode("mbcs" if os.name == "nt" else "utf-8", "replace")
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+def catalog_scene_folders(c, folders, progress):
+    """Add every video under each scene folder, including every studio subfolder. Scene folders are never film libraries."""
+    import re
+    now = time.time(); report = []; added = found = 0
+    for root in folders or []:
+        root = str(root or "").strip().rstrip("\\/")
+        item = {"path": root, "videos": 0, "folders": 0, "added": 0, "already": 0, "excluded": 0, "subfolders": [], "error": None, "errors": []}
+        if not root or not os.path.isdir(root):
+            item["error"] = "Not a folder Film Tagger can open: " + root
+            report.append(item); continue
+        try:
+            names = os.listdir(root)
+            item["subfolders"] = sorted(n for n in names if not n.startswith((".", "$")) and os.path.isdir(os.path.join(root, n)))[:20]
+        except OSError as e:
+            item["error"] = "Cannot read folder: " + str(e)
+            report.append(item); continue
+        paths = []
+        for dp, dns, fns in os.walk(root):
+            if progress.get("cancel"): break
+            dns[:] = [d for d in dns if not d.startswith((".", "$")) and not gallerymod.is_gallery_dir(d)]
+            item["folders"] += 1
+            for fn in fns:
+                if os.path.splitext(fn)[1].lower() in db.VIDEO_EXT and not re.search(r"\bsample\b", fn, re.I):
+                    paths.append(os.path.join(dp, fn))
+        if not paths and not progress.get("cancel"):
+            for p in _ps_files(root):
+                if os.path.splitext(p)[1].lower() in db.VIDEO_EXT and not re.search(r"\bsample\b", os.path.basename(p), re.I):
+                    paths.append(p)
+            if paths: item["via"] = "powershell"
+        for p in paths:
+            if progress.get("cancel"): break
+            item["videos"] += 1; found += 1
+            if found % 20 == 0: progress.update(found=found, added=added, current=os.path.dirname(p), folders=item["folders"])
+            if c.execute("SELECT 1 FROM files WHERE path=?", (p,)).fetchone():
+                item["already"] += 1
+                fid = c.execute("SELECT film_id FROM files WHERE path=?", (p,)).fetchone()
+                if fid:
+                    try: db.promote_to_scene(c, fid["film_id"], p)
+                    except Exception: c.execute("UPDATE films SET kind='scene' WHERE id=? AND COALESCE(kind,'')<>'scene'", (fid["film_id"],))
+                continue
+            try: size = os.path.getsize(p)
+            except OSError: size = None
+            ex = c.execute("SELECT id, kind FROM excluded WHERE path=? COLLATE NOCASE", (p,)).fetchone()
+            if ex and (ex["kind"] or "") == "scene":
+                item["excluded"] += 1  # removed as a scene on purpose
+                continue
+            if ex: c.execute("DELETE FROM excluded WHERE id=?", (ex["id"],))  # was removed when it was filed as a film
+            try:
+                db.new_scene(c, p, size, root, now)
+                item["added"] += 1; added += 1
+                if added % 25 == 0: c.commit()
+            except Exception as e:
+                if len(item["errors"]) < 8: item["errors"].append(os.path.basename(p) + ": " + str(e))
+        c.commit(); report.append(item)
+        if progress.get("cancel"): break
+    try:
+        log = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "last_scene_scan.txt")
+        with open(log, "w", encoding="utf-8") as fh:
+            for it in report:
+                fh.write(f"{it['path']}\n  videos={it['videos']} folders={it['folders']} added={it['added']} already={it.get('already')} excluded={it.get('excluded')} via={it.get('via','python')}\n  subfolders: {', '.join(it['subfolders'])}\n  error: {it['error']}\n  {it['errors']}\n")
+    except OSError:
+        pass
+    return added, report
+
 @app.post("/api/scan")
 def scan():
-    c = C(); roots = (request.json or {}).get("roots") or db.get_setting(c, "roots", [])
+    c = C(); d = request.json or {}
+    if isinstance(d.get("scene_roots"), list):
+        scenes = [str(r).strip().rstrip("\\/") for r in d["scene_roots"] if str(r).strip()]
+        db.set_setting(c, "scene_roots", scenes); c.commit()
+    else:
+        scenes = db.scene_roots(c)
+    roots = [str(r).strip().rstrip("\\/") for r in (d.get("roots") or db.get_setting(c, "roots", []) or []) if str(r).strip()]
+    roots = [r for r in roots if not any(os.path.normcase(r) == os.path.normcase(s) for s in scenes)]  # scenes are not sent to TMDB
+    db.set_setting(c, "roots", roots); c.commit()
     if SCAN["running"]: return jsonify(error="A scan is already running"), 409
     SCAN.clear(); SCAN.update(running=True, kind="scan", found=0, added=0, cancel=False, current="")
     try:
+        extra, report = catalog_scene_folders(c, scenes, SCAN)
         r = db.scan(c, roots, SCAN); SCAN.update(r); SCAN["cancelled"] = SCAN.get("cancel", False)
+        r["added"] = (r.get("added") or 0) + extra
+        r["scene_report"] = report
         threading.Thread(target=refresh_galleries, daemon=True).start()
         return jsonify(r)
     finally:
         SCAN["running"] = False; SCAN["finished_at"] = time.time()
-        try: start_res_job()  # detect resolution of newly found films in the background
+        try: start_res_job()
         except Exception: pass
-        try: start_tpdb_job()  # look up new scenes on ThePornDB (only if a token is set)
+        try: start_tpdb_job()
         except Exception: pass
-        try: start_subs_job(recheck=True)  # refresh subtitles for every non-overridden film (cached probes: fast)
+        try: start_subs_job(recheck=True)
         except Exception: pass
+        if not SCAN.get("cancel"):
+            try: start_poster_job(only_if_any=True)
+            except Exception: pass
 
 SCAN = {"running": False, "kind": "scan"}
 
@@ -1190,7 +1308,7 @@ def libraries():
     return jsonify(out)
 
 @app.get("/api/jobs")
-def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES, subs=SUBS)
+def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES, subs=SUBS, tpdb=TP)
 
 @app.get("/api/searches")
 def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name COLLATE FOLD")])
@@ -1206,7 +1324,67 @@ def del_search(sid):
     c = C(); c.execute("DELETE FROM saved_searches WHERE id=?", (sid,)); c.commit(); return ok()
 
 # ---------- native folder picker (local machine only) ----------
-import subprocess, sys
+import subprocess, sys, base64
+# Vista/Win11 folder picker (IFileOpenDialog). The old FolderBrowserDialog is only a fallback.
+PS_MODERN = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class FilmTaggerFolder {
+  [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")] class FileOpenDialogRCW {}
+  [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IFileOpenDialog {
+    [PreserveSig] int Show(IntPtr parent);
+    void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+    void SetFileTypeIndex(uint iFileType);
+    void GetFileTypeIndex(out uint piFileType);
+    void Advise(IntPtr pfde, out uint pdwCookie);
+    void Unadvise(uint dwCookie);
+    void SetOptions(uint fos);
+    void GetOptions(out uint pfos);
+    void SetDefaultFolder(IShellItem psi);
+    void SetFolder(IShellItem psi);
+    void GetFolder(out IShellItem ppsi);
+    void GetCurrentSelection(out IShellItem ppsi);
+    void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
+    void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+    void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+    void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+    void GetResult(out IShellItem ppsi);
+    void AddPlace(IShellItem psi, uint fdap);
+    void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+    void Close(int hr);
+    void SetClientGuid(ref Guid guid);
+    void ClearClientData();
+    void SetFilter(IntPtr pFilter);
+    void GetResults(out IntPtr ppenum);
+    void GetSelectedItems(out IntPtr ppsai);
+  }
+  [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IShellItem {
+    void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+    void GetParent(out IShellItem ppsi);
+    void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+    void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+    void Compare(IShellItem psi, uint hint, out int piOrder);
+  }
+  public static string Pick(string title) {
+    var dlg = (IFileOpenDialog)new FileOpenDialogRCW();
+    dlg.SetOptions(0x20 | 0x40 | 0x800);
+    dlg.SetTitle(string.IsNullOrEmpty(title) ? "Choose a folder" : title);
+    if (dlg.Show(IntPtr.Zero) != 0) return "";
+    IShellItem item; dlg.GetResult(out item);
+    IntPtr psz; item.GetDisplayName(0x80058000, out psz);
+    string path = Marshal.PtrToStringUni(psz);
+    Marshal.FreeCoTaskMem(psz);
+    return path ?? "";
+  }
+}
+"@
+[Console]::Out.Write([FilmTaggerFolder]::Pick($env:FT_PICK_TITLE))
+"""
 TK_PICK = r"""
 import sys
 try:
@@ -1216,36 +1394,50 @@ except Exception:
     sys.exit(3)
 try:
     r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)
-    p = filedialog.askdirectory(parent=r, title='Choose a film folder', mustexist=True)
+    p = filedialog.askdirectory(parent=r, title='Choose a folder', mustexist=True)
     r.destroy()
 except Exception:
     sys.exit(3)
 sys.stdout.write(p or '')
 """
 PS_PICK = ("Add-Type -AssemblyName System.Windows.Forms;"
-           "$f=New-Object System.Windows.Forms.FolderBrowserDialog;$f.Description='Choose a film folder';"
+           "$f=New-Object System.Windows.Forms.FolderBrowserDialog;$f.Description=$env:FT_PICK_TITLE;"
            "$o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
            "if($f.ShowDialog($o) -eq 'OK'){[Console]::Out.Write($f.SelectedPath)}")
 
+def _ps(cmd, title, encoded=False):
+    env = os.environ.copy(); env["FT_PICK_TITLE"] = (title or "Choose a folder")[:80]
+    args = ["powershell", "-NoProfile", "-STA"]
+    args += ["-EncodedCommand", cmd] if encoded else ["-Command", cmd]
+    return subprocess.run(args, capture_output=True, timeout=600, env=env,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
 @app.post("/api/pick-folder")
 def pick_folder():
-    """Opens a native folder chooser in a fresh subprocess; returns {path: str|null}."""
-    path, err = None, None
+    """Opens a native folder chooser; returns {path: str|null}. Windows uses the current Explorer dialog."""
+    title = ((request.json or {}).get("title") or "Choose a folder")
+    if os.name == "nt":
+        try:
+            enc = base64.b64encode(PS_MODERN.encode("utf-16le")).decode("ascii")
+            r = _ps(enc, title, encoded=True)
+            if r.returncode == 0:
+                path = r.stdout.decode("utf-8", "replace").strip()
+                return jsonify(path=os.path.normpath(path) if path else None)
+        except Exception: pass
+        try:
+            r = _ps(PS_PICK, title)
+            path = r.stdout.decode("utf-8", "replace").strip()
+            return jsonify(path=os.path.normpath(path) if path else None)
+        except Exception as e:
+            return jsonify(path=None, error=f"No folder picker available ({e}); type the path instead")
     try:
         r = subprocess.run([sys.executable, "-c", TK_PICK], capture_output=True, timeout=600)
         if r.returncode == 0:
             path = r.stdout.decode("utf-8", "replace").strip() or None
             return jsonify(path=os.path.normpath(path) if path else None)
-        err = "tkinter unavailable"
-    except Exception as e: err = str(e)
-    if os.name == "nt":
-        try:
-            r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", PS_PICK],
-                               capture_output=True, timeout=600, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            path = r.stdout.decode("utf-8", "replace").strip() or None
-            return jsonify(path=path)
-        except Exception as e: err = str(e)
-    return jsonify(path=None, error=f"No folder picker available ({err}); type the path instead")
+    except Exception as e:
+        return jsonify(path=None, error=f"No folder picker available ({e}); type the path instead")
+    return jsonify(path=None, error="No folder picker available; type the path instead")
 
 # ---------- TMDB (optional) ----------
 def tmdb(path, key, **params):
@@ -1390,6 +1582,21 @@ def run_poster_job(key, ids):
             JOB["done"] += 1
     finally:
         JOB["running"] = False; JOB["finished_at"] = time.time(); c.close()
+
+def start_poster_job(retry_skipped=False, only_if_any=False):
+    """Look up films with no poster and no TMDB id. No key -> None. Already running -> False.
+    only_if_any skips starting when nothing needs a lookup (used after a scan)."""
+    c = C(); key = db.get_setting(c, "tmdb_key", "")
+    if not key: c.close(); return None
+    with JOB_LOCK:
+        if JOB.get("running"): c.close(); return False
+        cond = "(poster IS NULL OR poster='') AND tmdb_id IS NULL AND COALESCE(kind,'')<>'scene'" + ("" if retry_skipped else " AND COALESCE(tmdb_status,'')<>'needs_match'")
+        ids = [r[0] for r in c.execute(f"SELECT id FROM films WHERE {cond} ORDER BY id")]
+        c.close()
+        if only_if_any and not ids: return True
+        JOB.clear(); JOB.update(running=True, kind="posters", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
+        threading.Thread(target=run_poster_job, args=(key, ids), daemon=True).start()
+    return True
 
 def run_mpaa_job(key, ids):
     rl = RateLimiter(20); c = C()
@@ -1669,15 +1876,10 @@ def credits_start():
 
 @app.post("/api/posters/start")
 def posters_start():
-    c = C(); key = db.get_setting(c, "tmdb_key", "")
-    if not key: return jsonify(error="No TMDB API key set in Settings"), 400
-    with JOB_LOCK:
-        if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
-        retry = (request.json or {}).get("retry_skipped", False)
-        cond = "(poster IS NULL OR poster='') AND tmdb_id IS NULL AND COALESCE(kind,'')<>'scene'" + ("" if retry else " AND COALESCE(tmdb_status,'')<>'needs_match'")
-        ids = [r[0] for r in c.execute(f"SELECT id FROM films WHERE {cond} ORDER BY id")]
-        JOB.clear(); JOB.update(running=True, kind="posters", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
-        threading.Thread(target=run_poster_job, args=(key, ids), daemon=True).start()
+    retry = bool((request.json or {}).get("retry_skipped", False)) if request.is_json else False
+    r = start_poster_job(retry)
+    if r is None: return jsonify(error="No TMDB API key set in Settings"), 400
+    if r is False: return jsonify(error="Another TMDB job is already running"), 409
     return jsonify(JOB)
 
 @app.get("/api/posters/status")
@@ -2637,6 +2839,7 @@ def run_tpdb_job(token, ids):
             if TP["cancel"]: break
             try:
                 p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+                TP["current"] = os.path.basename(p[0]) if p else ""
                 rl.wait(); r = tpdb.identify(token, p[0]) if p else None
                 s = r["scene"] if r and r.get("confident") else None  # same as lookup(): details only on a confident match
                 if s:
@@ -2669,7 +2872,7 @@ def start_tpdb_job(film_ids=None, retry=False, wait=False):
         ids = [int(i) for i in film_ids] if film_ids is not None else [r[0] for r in c.execute(
             "SELECT id FROM films WHERE kind='scene' AND tpdb_id IS NULL" + ("" if retry else " AND tpdb_checked IS NULL") + " ORDER BY id")]
         c.close()
-        TP.clear(); TP.update(running=True, kind="tpdb", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
+        TP.clear(); TP.update(running=True, kind="tpdb", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, current="")
         t = threading.Thread(target=run_tpdb_job, args=(token, ids), daemon=True); t.start()
     if wait: t.join()
     return True
@@ -2681,6 +2884,9 @@ def tpdb_start():
     if r is None: return jsonify(error="No ThePornDB API token set in Settings (free at theporndb.net)"), 400
     if r is False: return jsonify(error="ThePornDB lookup is already running"), 409
     return jsonify(TP)
+
+@app.post("/api/tpdb/cancel")
+def tpdb_cancel(): TP["cancel"] = True; return jsonify(TP)
 
 @app.get("/api/tpdb/status")
 def tpdb_status():
