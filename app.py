@@ -3064,6 +3064,46 @@ def check_updates(force=False):
     UPD.update(at=time.time(), data=out)
     return dict(out, cached=False)
 
+# ---------- Reports (read-only) ----------
+import reports as repmod
+
+@app.get("/api/reports/options")
+def reports_options():
+    c = C(); o = repmod.options(c)
+    o["ai_configured"] = bool(db.get_setting(c, "ai_url", "") and db.get_setting(c, "ai_model", ""))
+    return jsonify(o)
+
+@app.post("/api/reports/run")
+def reports_run():
+    return jsonify(repmod.run(C(), (request.json or {}).get("spec") or {}))
+
+@app.post("/api/reports/films")
+def reports_films():
+    return jsonify(films=repmod.films_list(C(), (request.json or {}).get("ids") or []))
+
+@app.get("/api/reports/synonyms")
+def reports_synonyms_get():
+    return jsonify(synonyms=repmod.synonyms(C()))
+
+@app.put("/api/reports/synonyms")
+def reports_synonyms_put():
+    try: return jsonify(synonyms=repmod.set_synonyms(C(), (request.json or {}).get("synonyms")))
+    except ValueError as e: return jsonify(error=str(e)), 400
+
+@app.post("/api/reports/ask")
+def reports_ask():
+    c = C(); q = ((request.json or {}).get("question") or "").strip()
+    if not q: return jsonify(error="Type a question first."), 400
+    url, model, key = db.get_setting(c, "ai_url", ""), db.get_setting(c, "ai_model", ""), db.get_setting(c, "ai_key", "")
+    if not (url and model):
+        return jsonify(error="No AI service is set up. Add one in Library & Settings \u2192 Tags & Categories \u2192 Smart tagging, or use the ready-made reports."), 400
+    try:
+        spec = repmod.parse_spec(ai_chat(url, key, model, repmod.ask_prompt(c, q), timeout=90))
+    except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
+    except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
+    res = repmod.run(c, spec); res["question"] = q; res["ai_spec"] = spec
+    return jsonify(res)
+
 @app.get("/api/about")
 def about():
     return jsonify(name="Film Tagger", version=APP_VERSION, author="Kyle R. Hudson",
