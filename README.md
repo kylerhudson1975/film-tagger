@@ -7,7 +7,45 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.3.0
+A big one: a new **Dashboard** you can click into, **Reports** with plain-English questions, and full **release dates**.
+
+![Dashboard overview](docs/screenshots/19-dashboard.png)
+
+### 📊 Dashboard
+- **Opens with an overview of your library:** totals, titles by decade, top genres, countries and directors, recently added, *On this day*, library health (missing posters, missing files, untagged titles and more, each one click away from a fix) and quick links to Reports.
+- **Scope tiles:** click **Films**, **Movies**, **Classic Porn** or **Scenes** at the top and the whole dashboard (charts, lists, tags, runtime, storage) recalculates for just that part of your library. The selected tile is highlighted; click it again, or **All**, to go back to everything.
+- **Click to explore instead of jumping to a list:** clicking a decade bar, genre, country, director, studio or tag opens new charts right on the dashboard. A decade shows its years, a year shows its months (from release dates; year-only dates count as *unknown month*), and a genre or country shows its count over time plus its share of all films per decade. A director gets films per year, genre mix, most frequent cast and career span.
+- **Keep drilling:** every bar, point and row inside a chart is clickable too, and filters combine (e.g. *Movies › Thriller › 1984 › Japan*). A breadcrumb shows where you are, and the browser Back button works.
+- **Bar or Line, Decades or Years:** switch time charts with one click. Hover any bar or point for exact numbers.
+- **Show these titles (N):** every view has a button that opens exactly those titles in the normal library list, with the same count.
+- Text and charts only; the dashboard never shows posters. In cast lists for adult titles, only performers with a known birth date who were 18 or older at release are counted.
+
+### 📈 Reports and *Ask a question*
+- **Reports** (new button in the toolbar): ready-made, read-only reports such as films by country, top directors by tag, tags over decades, primary genres, studios and performers. Columns sort with a click, and you can open the titles behind any row.
+- **Ask a question:** type something like *"Which director made the most westerns in the 1960s?"* The AI you set up writes one read-only query, Film Tagger checks it and runs it read-only (it can never change your library), and you get a short answer plus the table (and the query, if you want to see it). If it can't write a working query, you get the closest ready-made report instead.
+- **Tag synonyms:** group tags that mean the same thing so reports count them together.
+
+### 📅 Release dates
+- **Release Date replaces Year** in the Edit window. The year follows the date automatically. TMDB fills in the full date, and TMDB's 1 January placeholder dates are stored as the year only.
+- **Sort by release date:** a year-only date sorts as 1 July and a year-month date as the 15th, so they land in a sensible place among full dates.
+
+### 👤 People and windows
+- **Crop photo:** frame a person's photo in a 2:3 portrait box (drag and zoom). The full original is kept, so **Reset crop** always works.
+- **Library & Settings and Reports windows** can be moved by their title bar and resized from any edge or corner. Film Tagger remembers where you left them; double-click the title bar to reset.
+- **Toolbar:** Dashboard, Home, Library & Settings, Reports, About and Updates now sit on their own row with clean line icons.
+- Film Tagger always starts with *Search in: Everything* and an empty search box.
+- **Save & scan** button on the Scenes libraries card, and a new *Missing poster* filter.
+
+### 🧠 Setting up a local AI with Ollama (optional, free, private)
+*Ask a question* and Smart tagging work with any OpenAI-compatible service. To keep everything on your own computer, use [Ollama](https://ollama.com):
+1. Install Ollama, then download a model, for example `ollama pull qwen2.5-coder:7b`. Models that are good at code write better queries.
+2. In Film Tagger open **Library & Settings → Tags & Categories → Smart tagging with your own AI**. Set the address to `http://localhost:11434/v1`, type the model name (e.g. `qwen2.5-coder:7b`) and leave the key blank.
+3. Open **Reports → Ask a question** and type your question.
+
+With a local model, nothing leaves your computer. With an online service, the question and a description of your database's columns are sent so the AI can write the query, and the first rows of the result are sent so it can write the one-line answer.
 
 ## What's new in v1.2.16
 Covers everything since v1.2.3 (versions 1.2.4 to 1.2.15 were not published separately).
@@ -150,11 +188,13 @@ In **Library & Settings → Related studios**, link a sub-label to its parent st
 ## At a glance
 | | |
 |---|---|
+| 📊 **Dashboard** | Library overview with scope tiles and click-to-explore bar and line charts; *Show these titles* opens any slice as a list |
+| 📈 **Reports** | Read-only reports and *Ask a question* in plain English (local Ollama or any OpenAI-compatible AI) |
 | 📚 **Catalogue** | Recursive scans of any folders or drives, posters, rich metadata, grid and table views, fast with 10,000+ items |
 | 🏷️ **Tags** | Unlimited tags in your own categories, ALL / ANY / NOT search, primary genres, saved searches |
 | 🎞️ **Scenes** | ThePornDB matching, standard file names, Fix all, studio and performer aliases, related studios |
 | 📷 **Galleries** | `<video> - GALLERY` folders, From Gallery posters, Find Gallery search and gallery-dl downloads |
-| 🧠 **AI** | Optional smart tagging with any chatbot (no key) or any OpenAI-compatible API |
+| 🧠 **AI** | Optional smart tagging and questions with any chatbot (no key), local Ollama / LM Studio, or any OpenAI-compatible API |
 | 🖼️ **Smart crop** | On-device face detection centres 2:3 posters on the people |
 | 🔒 **Private** | One local SQLite file, localhost only, no account or telemetry |
 
@@ -166,10 +206,21 @@ In **Library & Settings → Related studios**, link a sub-label to its parent st
 5. For scenes: **Fetch from ThePornDB**, then **🔎 Find Gallery** to find and download a photo set into the scene's gallery folder.
 
 ## Feature guide
+### Dashboard
+- Click **Dashboard** (first button in the toolbar) for an overview of the library: totals, titles by decade, top genres, countries and directors, recently added, *On this day*, library health and links to Reports. Numbers are at most a minute old; click **Refresh** to recount now.
+- **Scope tiles:** **Films**, **Movies** (your library folder named *Movies*), **Classic Porn** and **Scenes** focus the whole dashboard on that part of the library. Click the tile again, or **All**, to see everything. Library health always covers the whole library.
+- **Explore:** click any bar, genre, country, director, studio or tag to open charts for it in place: decade → years → months, genre or country over time with its share of all films, director career span and films per year, genre mix, top tags and most frequent cast. Everything inside is clickable, and filters combine. Use the breadcrumb, **Back to Dashboard** or the browser's Back button to go back.
+- **Show these titles (N)** opens the same titles in the library list. The count always matches, because the dashboard uses the same filters as the list.
+
+### Reports
+- **Reports** (toolbar) has ready-made, read-only reports: films by country, top directors by tag, tags over decades, primary genres, studios and performers. Click column headers to sort, and open the titles behind any row. Tag synonyms let several tags count as one.
+- **Ask a question** in plain English. The AI you set up for Smart tagging writes one read-only query; Film Tagger checks it, runs it read-only and shows a short answer with the table. See [Setting up a local AI with Ollama](#-setting-up-a-local-ai-with-ollama-optional-free-private).
+- Performer reports and answers only include people with a known birth date and only count titles released when they were 18 or older.
+
 ### Library
 - **Library scan:** recursively finds video files (mkv, mp4, avi, mov, wmv, m4v, mpg, ts, webm, vob, …) in any folders or drives and guesses the title and year from file or folder names. Rescans add new files and flag missing ones. Film libraries are **read-only**: those files are never moved, renamed or deleted. (Scenes libraries can rename files; see below.)
 - **Removed items stay removed:** removing a film or scene from the library remembers it, so rescans skip it even if the file is later renamed or moved. *Show removed items* in Library & Settings lists them and can bring them back. The files themselves are never touched.
-- **Rich records:** title, original and alternative titles, year, country, director, cast, studio, runtime, plot, poster, MPAA rating, resolution, subtitles, your 1–10 rating, watched flag, notes, storage location and file paths. Everything is editable.
+- **Rich records:** title, original and alternative titles, release date (full date, year-month or year only; the year follows it), country, director, cast, studio, runtime, plot, poster, MPAA rating, resolution, subtitles, your 1–10 rating, watched flag, notes, storage location and file paths. Everything is editable.
 - **Poster grid and sortable table**, fast with 10,000+ items. Scene cards show a studio line (studio · date · runtime).
 - **Back to top:** a floating ↑ button appears in the grid, on person profiles and in long dialogs once you scroll down.
 - **About and Check for Updates:** *ⓘ About* in the toolbar shows the version, author, links and data credits. *⟳ Updates* checks GitHub for a newer release and shows its notes with a link to the release page; nothing is downloaded or installed automatically. A quiet check at startup puts a small dot on the button when an update is out.
@@ -209,6 +260,7 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Complete scene lists:** a performer's ThePornDB scenes are loaded page by page in the background (with progress) and cached, so performers with thousands of scenes show the true total. All your own scenes for that person are listed first as **In library**, linked by name, ThePornDB alias or scene id; the rest show 200 at a time with *Load more*. Scenes have their own *Only scenes I have* toggle.
 - **Re-link** a person to a different ThePornDB performer or TMDB person by id or URL, or go back to automatic matching.
 - **+ Person** adds someone by hand (name, photo, bio, links), for people neither service knows.
+- **Crop photo** frames a person's photo in a 2:3 portrait box (drag and zoom) without losing the original; **Reset crop** undoes it.
 
 ### Metadata and AI
 - **Optional TMDB metadata:** with a free key it fetches posters, cast, plot, runtime, genres, studios and countries for one film or the whole library, and fills in MPAA ratings. Your own poster art (upload, drag-and-drop or URL) is never replaced.
@@ -253,6 +305,22 @@ Screenshots captured and censored by the author from his own Porn Scenes library
 ![Freshly downloaded gallery](docs/screenshots/scenes-08-gallery-done.jpg)
 
 ## Screenshots
+Dashboard (v1.3.0), from a demo library of made-up mainstream titles and names:
+
+![Dashboard overview](docs/screenshots/19-dashboard.png)
+
+Scoped to the Movies library: every chart and list recalculates:
+
+![Dashboard scoped to Movies](docs/screenshots/20-dashboard-scope-movies.png)
+
+Drill-down: one genre over time (line) and its share of all films per decade:
+
+![Dashboard drill-down: a genre over time](docs/screenshots/21-dashboard-drill-genre.png)
+
+Drill-down: one year by month, from release dates:
+
+![Dashboard drill-down: a year by month](docs/screenshots/22-dashboard-drill-year.png)
+
 The v1.2.0 Find Posters screenshot is in [What's new in v1.2.0](#whats-new-in-v120) and the v1.1.1 screenshots in [What's new in v1.1.1](#whats-new-in-v111) above.
 Movie screenshots show real mainstream titles and their TMDB posters from the author's own Movies library, copied into a separate demo instance (no adult titles). The Porn Scenes screenshots were captured and censored by the author. The smart-crop screenshots (v1.0.43) use made-up titles and abstract artwork.
 
@@ -327,7 +395,7 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
   - TMDB lookups, if you add a TMDB key;
   - ThePornDB lookups for Scenes libraries and adult performers, if you add a ThePornDB token;
   - ViperGirls (guest search) and the image hosts of a set, only when you use Find Gallery or click Download;
-  - your chosen AI provider, if you set one up. Only the film's title, year, director, file path, a short plot and its existing tags are sent.
+  - your chosen AI provider, if you set one up. For Smart tagging only the film's title, year, director, file path, a short plot and its existing tags are sent. For *Ask a question*, the question, a description of the database columns and the first rows of the answer are sent. With a local model (Ollama, LM Studio) nothing leaves your computer.
 - API keys are stored only in your local database.
 
 ## Tech

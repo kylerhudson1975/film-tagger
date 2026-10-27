@@ -60,17 +60,29 @@ assert [f["title"] for f in cl.post("/api/reports/films", json={"ids": ids}).jso
 # ask: no AI configured -> helpful 400
 r = cl.post("/api/reports/ask", json={"question": "Which country made the most exploitation films?"})
 assert r.status_code == 400 and "No AI service" in r.json["error"]
-# ask with AI (mocked): only the question + vocabulary is sent, reply parsed into a spec
+# ask with AI (mocked). The AI first writes one read-only SELECT; a refused/failed query (here DROP TABLE, twice) falls
+# back to a whitelisted report spec. Only the question + schema/vocabulary is sent, never library rows.
 db.set_setting(c, "ai_url", "http://ai.invalid/v1"); db.set_setting(c, "ai_model", "m"); c.commit()
-sent = {}
-def fake(url, key, model, prompt, timeout=180):
-    sent["p"] = prompt
+sent = []
+def fake(url, key, model, prompt, timeout=180, **kw):
+    sent.append(prompt)
     return '```json\n{"report":"directors","tag":"Blowjob","decade":"1970s","scope":"adult","sql":"DROP TABLE films"}\n```'
 app.ai_chat = fake
 r = cl.post("/api/reports/ask", json={"question": "Which 1970s porn director made the most films tagged Blowjob?"}).json
-assert r["rows"][0]["k"] == "Dir One" and "sql" not in r["spec"] and "sql" not in r["ai_spec"]
-assert "Question: Which 1970s porn director" in sent["p"] and '"Blowjob"' in sent["p"] and "S1" not in sent["p"]
+assert r["mode"] == "spec" and len(r["sql_errors"]) == 2 and all("not allowed" in e["error"] or "Only SELECT" in e["error"] for e in r["sql_errors"]), r
+assert r["rows"][0]["k"] == "Dir One" and "sql" not in r["spec"]
+assert "ONE SQLite SELECT" in sent[0] and "Question: Which 1970s porn director" in sent[-1] and '"Blowjob"' in sent[-1]
+assert not any("S1" in p for p in sent)  # no titles from the library are sent
+assert c.execute("SELECT COUNT(*) FROM films").fetchone()[0] == 9  # the DROP never ran
+# a valid SELECT is run read-only and summarised
+def fake_sql(url, key, model, prompt, timeout=180, **kw):
+    if "ONE SQLite SELECT" in prompt:
+        return '{"reading": "films per director", "sql": "SELECT director, COUNT(*) AS n FROM films WHERE director<>\'\' GROUP BY director ORDER BY n DESC"}'
+    return "Dir One made the most, with 4 films."
+app.ai_chat = fake_sql
+r = cl.post("/api/reports/ask", json={"question": "Which director has the most films?"}).json
+assert r["mode"] == "sql" and r["columns"] == ["director", "n"] and r["rows"][0] == ["Dir One", 4] and r["answer"].startswith("Dir One"), r
 app.ai_chat = lambda *a, **k: "sorry, no idea"
-assert cl.post("/api/reports/ask", json={"question": "hm?"}).status_code == 502
+assert cl.post("/api/reports/ask", json={"question": "hm?"}).status_code == 502  # no query and no spec
 assert cl.get("/api/reports/options").json["ai_configured"] is True
 print("OK test_reports")

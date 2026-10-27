@@ -656,18 +656,7 @@ def dashboard(c, today=None, S="1"):
 # else 0 ('unknown month'). app.build_query's `month` filter uses this same expression, so counts always match the list.
 MONTH_SQL = ("(CASE WHEN length(COALESCE(f.release_date,''))>=7 AND substr(f.release_date,1,4)=printf('%04d',f.year) "
              "AND substr(f.release_date,6,2) GLOB '[0-9][0-9]' THEN CAST(substr(f.release_date,6,2) AS INTEGER) ELSE 0 END)")
-ADULT_GENRES = ("hardcore", "softcore")
-
-
-def _adult_ok(bd, rd, y):
-    """The Reports age rule: a performer counts on a title only if they were 18+ on its release date
-    (year-only dates: released in or after the year they turned 19)."""
-    adult_from = bd.replace(year=bd.year + 18) if not (bd.month == 2 and bd.day == 29) else datetime.date(bd.year + 18, 3, 1)
-    rel = None
-    if rd:
-        try: rel = datetime.date.fromisoformat(rd[:10])
-        except ValueError: rel = None
-    return (rel >= adult_from) if rel else (y is not None and y >= bd.year + 19)
+ADULT_GENRES = ("hardcore", "softcore")  # explore cast counts use the Reports age rule (_adult_ok above)
 
 
 def explore(c, where, args, lim=12):
