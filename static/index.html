@@ -95,6 +95,11 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .rp-t{width:100%;border-collapse:collapse;font-size:13px}.rp-t th{position:static;cursor:default}.rp-t td,.rp-t th{padding:5px 8px}.rp-t .n{text-align:right;font-variant-numeric:tabular-nums}.rp-t tbody tr{cursor:pointer}.rp-g{cursor:pointer}.rp-g text{fill:var(--m);font-size:11px}.rp-g text.v{fill:var(--t)}.rp-g:hover rect{opacity:.8}
 .rp-t th.rp-s{cursor:pointer;user-select:none;white-space:nowrap}.rp-t th.rp-s:hover{color:var(--t)}.rp-t th.rp-s.on{color:var(--a)}
 #navRow button.on{border-color:var(--a);color:var(--a)}
+.dsh-stat.sel{border-color:var(--a);background:linear-gradient(#5b9cff1a,#5b9cff08),var(--p);box-shadow:0 0 0 1px var(--a) inset}.dsh-stat.ai.sel{border-color:var(--ai);background:linear-gradient(#c58bff1f,#c58bff08),var(--p);box-shadow:0 0 0 1px var(--ai) inset}
+.dsh-scope{display:flex;align-items:center;gap:10px;font-size:12.5px;margin:-2px 2px 12px;color:var(--t)}.dsh-scope.muted{color:var(--m)}.dsh-scope svg{color:var(--a)}.dsh-scope button{padding:3px 10px;font-size:12px}.dsh-scope button:first-of-type{margin-left:auto}
+.dsh-crumb a{color:var(--a);cursor:pointer}.dsh-crumb a:hover{text-decoration:underline}.dsh-sum{font-size:12.5px;color:var(--m);margin-top:3px}.dsh-big{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums}
+.dsh-tg{display:inline-flex;margin-left:8px}.dsh-tg button{padding:1px 8px;font-size:11.5px;border-radius:0;color:var(--m)}.dsh-tg button:first-child{border-radius:6px 0 0 6px}.dsh-tg button:last-child{border-radius:0 6px 6px 0}.dsh-tg button+button{border-left:0}.dsh-tg button.on{color:var(--a);border-color:var(--a)}
+.dsh-hr.nc{cursor:default}.dsh-pt:hover circle{r:5}.dsh-nb text{fill:var(--m)}
 #navRow button{display:inline-flex;align-items:center;gap:6px;line-height:1.2}#navRow button .nic{flex:none;display:block}
 .dsh{max-width:1400px;margin:0 auto;padding:4px 6px 30px;--warn:#f0b450}
 .dsh-head{display:flex;align-items:flex-end;gap:10px;margin:2px 2px 14px}.dsh-head h2{margin:0;font-size:21px;font-weight:600}.dsh-head .crumb{font-size:13px;color:var(--m)}.dsh-head .upd{margin-left:auto;font-size:12px;color:var(--m);display:flex;gap:8px;align-items:center}
@@ -146,7 +151,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 <div id="main">
  <div id="scanNote" class="muted" style="display:none;padding:8px 12px"></div>
  <div id="bar">
-  <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
+  <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_month"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
   <div id="libPop" onclick="event.stopPropagation()"><input id="libSearch" placeholder="Filter folders…" autocomplete="off"><div id="libTree"></div></div></div>
   <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="people">Search in: People</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="studio">Search in: Studio</option><option value="resolution">Search in: Resolution</option><option value="subtitles">Search in: Subtitles</option></select>
   <input id="q" placeholder="Search everything…">
@@ -185,7 +190,7 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON.stringify(o.body);o.headers={'Content-Type':'application/json'}}
  const r=await fetch(u,o);const j=await r.json().catch(()=>({}));if(!r.ok){toast(j.error||r.statusText);throw j}return j}
 function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
-const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','studio','decade','res','pgenre','aznude','subs'];
+const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','studio','decade','res','pgenre','aznude','subs','month'];
 const INPH={'':'Search everything…',people:'Search people (actors, directors, writers…)…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',studio:'Search studios…',resolution:'Search resolutions (e.g. 1080p)…',subtitles:'Search subtitles (e.g. English, SRT)…'};
 function setIn(v){$('f_in').value=v||'';localStorage.searchIn=$('f_in').value;$('q').placeholder=INPH[$('f_in').value]}
 const RESL=['SD','480p','576p','720p','1080p','1440p','4K'];
@@ -200,9 +205,9 @@ function histSave(){if(S.restoring)return;const st=navState(),cur=history.state;
  const base={...cur};delete base.film;delete base.scroll;delete base.n;delete base.page;if(JSON.stringify(st)==JSON.stringify(base)&&!cur.film&&!cur.page)return;
  const onlyQ=!cur.film&&!cur.page&&Object.keys(st).every(k=>k=='q'||st[k]==base[k]);if(onlyQ){history.replaceState({...st,film:null},'');return}
  snap();history.pushState({...st,film:null},'')}
-function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id,page:S.page||null},'')}
+function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id,page:S.page||null,...(S.page=='dash'?{dscope:DSH.scope||'',ex:DSH.ex||null}:{})},'')}
 window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.restoring=true;try{FK.forEach(k=>{if(k=='lib')setLib(q.lib||'');else if(k=='in')setIn(q.in||'');else $('f_'+k).value=q[k]||''});$('q').value=q.q||'';$('sort').value=q.sort||'title';S.order=q.order||'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';renderMpaa();
- if(q.page=='dash'){await showDash({nohist:true})}
+ if(q.page=='dash'){await showDash({nohist:true,scope:q.dscope||'',ex:q.ex||null})}
  else if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
  else{S.page=null;const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;await searchPeople();render();personHeader();$('content').scrollTop=q.scroll||0}
  if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
@@ -1078,17 +1083,19 @@ document.addEventListener('click',e=>{if(FW.moved){FW.moved=false;e.stopPropagat
 document.addEventListener('dblclick',e=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&fwBar(e.target)){delete localStorage['win.'+b._fwKey];FW.apply(b,FW.def())}});
 addEventListener('resize',()=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&b._fw)FW.apply(b,{...b._fw})});
 /* Dashboard: library summary shown at startup (text and SVG only, no posters). Data: /api/dashboard (cached ~60 s). */
-const DSH={IC:{film:'<rect x=3 y=5 width=18 height=14 rx=2 /><path d="M7 5v14M17 5v14M3 12h4M17 12h4"/>',scene:'<rect x=3 y=6 width=13 height=12 rx=2 /><path d="m16 10 5-3v10l-5-3"/>',star:'<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',ppl:'<circle cx=9 cy=8 r=4 /><path d="M2 21c0-4 3-6 7-6s7 2 7 6M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-5.6"/>',tag:'<path d="M20 12l-8 8-9-9V3h8z"/><circle cx=7.5 cy=7.5 r=1.5 />',clock:'<circle cx=12 cy=12 r=9 /><path d="M12 7v5l3 2"/>',disk:'<ellipse cx=12 cy=6 rx=8 ry=3 /><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',bars:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',globe:'<circle cx=12 cy=12 r=9 /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',dir:'<rect x=3 y=7 width=14 height=12 rx=2 /><path d="m17 11 4-2v8l-4-2"/>',cal:'<rect x=3 y=5 width=18 height=16 rx=2 /><path d="M3 10h18M8 3v4M16 3v4"/>',plus:'<path d="M12 5v14M5 12h14"/>',heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/>',ask:'<path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>',studio:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',check:'<path d="M5 12l5 5L20 7"/>'},
+const DSH={scope:'',ex:null,IC:{film:'<rect x=3 y=5 width=18 height=14 rx=2 /><path d="M7 5v14M17 5v14M3 12h4M17 12h4"/>',scene:'<rect x=3 y=6 width=13 height=12 rx=2 /><path d="m16 10 5-3v10l-5-3"/>',star:'<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',ppl:'<circle cx=9 cy=8 r=4 /><path d="M2 21c0-4 3-6 7-6s7 2 7 6M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-5.6"/>',tag:'<path d="M20 12l-8 8-9-9V3h8z"/><circle cx=7.5 cy=7.5 r=1.5 />',clock:'<circle cx=12 cy=12 r=9 /><path d="M12 7v5l3 2"/>',disk:'<ellipse cx=12 cy=6 rx=8 ry=3 /><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',bars:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',globe:'<circle cx=12 cy=12 r=9 /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',dir:'<rect x=3 y=7 width=14 height=12 rx=2 /><path d="m17 11 4-2v8l-4-2"/>',cal:'<rect x=3 y=5 width=18 height=16 rx=2 /><path d="M3 10h18M8 3v4M16 3v4"/>',plus:'<path d="M12 5v14M5 12h14"/>',heart:'<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/>',ask:'<path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>',studio:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',arrow:'<path d="M5 12h14M13 6l6 6-6 6"/>',check:'<path d="M5 12l5 5L20 7"/>'},
  RP:[['ask','ask','Plain-English questions about the library'],['country','globe','Filter by genre and tag'],['directors','dir','By decade, count or share'],['tag_decades','tag','How a tag rises and falls'],['genres','bars','Genre mix per decade'],['studios','studio','Biggest studios by decade'],['performers','ppl','Most-credited performers']]};
 const dIc=(n,z=18)=>`<svg width=${z} height=${z} viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round>${DSH.IC[n]}</svg>`;
 const dN=n=>Number(n||0).toLocaleString();
 function dashNav(on){document.querySelectorAll('#navRow button').forEach(b=>b.classList.toggle('on',on&&b.id=='dashBtn'))}
 async function showDash(opt={}){
- if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='dash'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'dash'},'')}}
+ if(opt.scope!==undefined)DSH.scope=opt.scope||'';const ex='ex' in opt?opt.ex:(opt.keep?DSH.ex:null);
+ if(!S.restoring&&!opt.nohist){const cur=history.state,want={page:'dash',dscope:DSH.scope||'',ex:ex||null};if(!(cur&&cur.page=='dash'&&!cur.film&&(cur.dscope||'')==want.dscope&&JSON.stringify(cur.ex||null)==JSON.stringify(want.ex))){snap();history.pushState({...navState(),film:null,...want},'')}}
  if(!opt.keep&&!S.restoring)closeM();S.page='dash';S.sel.clear();$('personHdr').style.display='none';$('bulk').style.display='none';$('count').textContent='';$('selAllBtn').style.display='none';dashNav(true);
  if(!opt.keep){$('content').innerHTML='<div class=dsh><p class=muted>Loading dashboard…</p></div>';$('content').scrollTop=0}
- let d;try{d=await api('/api/dashboard'+(opt.force?'?force=1':''))}catch(e){if(S.page=='dash')$('content').innerHTML='<div class=dsh><p class=muted>Could not load the dashboard.</p></div>';return}
- if(S.page!='dash')return;DSH.d=d;const st=$('content').scrollTop;$('content').innerHTML=dashHtml(d);if(opt.keep)$('content').scrollTop=st}
+ if(ex)return showEx(ex,opt);DSH.ex=null;
+ let d;try{d=await api('/api/dashboard?scope='+encodeURIComponent(DSH.scope||'')+(opt.force?'&force=1':''))}catch(e){if(S.page=='dash')$('content').innerHTML='<div class=dsh><p class=muted>Could not load the dashboard.</p></div>';return}
+ if(S.page!='dash'||DSH.ex)return;DSH.d=d;DSH.acts=[];const st=$('content').scrollTop;$('content').innerHTML=dashHtml(d);if(opt.keep)$('content').scrollTop=st}
 function dshGo(set,filmsOnly){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';if($('f_in').value=='people')setIn('');setLib('');S.sel.clear();
  for(const k in set){if(k=='lib')setLib(set[k]);else $('f_'+k).value=set[k]}if(filmsOnly)$('f_special').value='films_only';renderMpaa();$('content').scrollTop=0;load()}
 function dshMovies(){const v=DSH.d&&DSH.d.stats&&DSH.d.stats.movies_lib;if(v)dshGo({lib:v})}
@@ -1098,20 +1105,25 @@ function dshNoBday(){const l=(DSH.d&&DSH.d.no_birthday_people)||[];
 function dashHtml(d){const s=d.stats,h=d.health,hrs=Math.round(s.runtime_min/60),tb=s.bytes/1e12;
  const hr=new Date().getHours(),greet=hr<5?'Good evening':hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
  const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
- const stat=(ic,v,l,sub,cls,go)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="Show in the library"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
- const stats=[stat('film',dN(s.films),'Films','not scenes','',"dshGo({special:'films_only'})"),stat('film',dN(s.movies||0),'Movies',s.films?Math.round(100*(s.movies||0)/s.films)+'% of films':'','',s.movies_lib?'dshMovies()':''),
-  stat('star',dN(s.classic),'Classic Porn',s.films?Math.round(100*s.classic/s.films)+'% of films':'','ai',"dshGo({pgenre:'Hardcore'},true)"),stat('scene',dN(s.scenes),'Scenes','from studios','ai',"dshGo({special:'scenes'})"),stat('ppl',dN(s.people),'People','cast &amp; crew'),
-  stat('tag',dN(s.tags),'Tags',dN(s.tag_uses)+' tag uses'),stat('clock',dN(hrs)+' h','Runtime','≈ '+dN(Math.round(hrs/24))+' days','ok'),
+ const scp=d.scope||'',SF=d.scope_filter||{},SC=d.scopes||{},sel=k=>scp==k?' sel':'',SN={films:'Films',movies:'Movies',classic:'Classic Porn',scenes:'Scenes'};
+ const stat=(ic,v,l,sub,cls,go,tip)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="${tip||'Explore'}"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
+ const tip=k=>scp==k?'Showing only '+SN[k]+' — click again to show everything':'Focus the whole dashboard on '+SN[k];
+ const stats=[stat('film',dN(s.films),'Films','not scenes',sel('films'),"dshScope('films')",tip('films')),stat('film',dN(s.movies||0),'Movies',s.films?Math.round(100*(s.movies||0)/s.films)+'% of films':'',sel('movies'),SC.movies?"dshScope('movies')":'',tip('movies')),
+  stat('star',dN(s.classic),'Classic Porn',s.films?Math.round(100*s.classic/s.films)+'% of films':'','ai'+sel('classic'),"dshScope('classic')",tip('classic')),stat('scene',dN(s.scenes),'Scenes','from studios','ai'+sel('scenes'),"dshScope('scenes')",tip('scenes')),
+  stat('ppl',dN(scp?s.people_in_scope:s.people),'People',scp?'credited here':'cast &amp; crew','',"dshExplore('people')",'People by role and most frequent cast'),
+  stat('tag',dN(s.tags),'Tags',dN(s.tag_uses)+' tag uses','',"dshExplore('tags')",'Most-used tags'),stat('clock',dN(hrs)+' h','Runtime','≈ '+dN(Math.round(hrs/24))+' days','ok'),
   stat('disk',tb>=1?tb.toFixed(1)+' TB':(s.bytes/1e9).toFixed(0)+' GB','Storage',dN(s.files)+' files','ok')].join('');
+ const scopeBar=scp?`<div class=dsh-scope>${dIc('check',14)}<span>Showing <b>${SN[scp]}</b> only · ${dN(s.in_scope)} titles</span><button onclick="dshScope('')" title="Show the whole library again">All</button><button class=pri onclick="dshGoF(DSH.d.scope_filter)">Show these titles (${dN(s.in_scope)})</button></div>`:`<div class="dsh-scope muted">Click <b>Films</b>, <b>Movies</b>, <b>Classic Porn</b> or <b>Scenes</b> to focus the dashboard · click any bar or row to explore it</div>`;
  // decades: stacked films (blue) + scenes (purple)
  const dec=d.decades,W=640,H=272,bw=W/Math.max(1,dec.length),mx=Math.max(1,...dec.map(x=>x.films+x.scenes)),y0=H-30,sc=(H-70)/mx;
  const peak=dec.reduce((a,x)=>x.films>(a?a.films:-1)?x:a,null);
  const bars=dec.map((x,i)=>{const bx=i*bw+Math.min(9,bw*.15),w=bw-2*Math.min(9,bw*.15),hf=x.films*sc,hs=x.scenes*sc;
-  return `<g class=dsh-bar onclick="dshGo({decade:'${x.decade}'})"><title>${x.decade}s: ${dN(x.films)} films, ${dN(x.scenes)} scenes (click to show)</title><rect x=${bx} y=0 width=${w} height=${H} fill=transparent></rect><rect x=${bx} y=${y0-hf} width=${w} height=${Math.max(hf,1)} rx=3 fill="#5b9cff"></rect>${x.scenes?`<rect x=${bx} y=${y0-hf-hs} width=${w} height=${hs} rx=3 fill="#c58bff"></rect>`:''}<text x=${bx+w/2} y=${y0-hf-hs-6} text-anchor=middle class=v>${dN(x.films+x.scenes)}</text><text x=${bx+w/2} y=${H-12} text-anchor=middle>${x.decade<1900?x.decade:String(x.decade).slice(2)}s</text></g>`}).join('');
+  return `<g class=dsh-bar onclick="dshDrill({decade:'${x.decade}'},'${x.decade}s')"><title>${x.decade}s: ${dN(x.films)} films, ${dN(x.scenes)} scenes (click to explore)</title><rect x=${bx} y=0 width=${w} height=${H} fill=transparent></rect><rect x=${bx} y=${y0-hf} width=${w} height=${Math.max(hf,1)} rx=3 fill="#5b9cff"></rect>${x.scenes?`<rect x=${bx} y=${y0-hf-hs} width=${w} height=${hs} rx=3 fill="#c58bff"></rect>`:''}<text x=${bx+w/2} y=${y0-hf-hs-6} text-anchor=middle class=v>${dN(x.films+x.scenes)}</text><text x=${bx+w/2} y=${H-12} text-anchor=middle>${x.decade<1900?x.decade:String(x.decade).slice(2)}s</text></g>`}).join('');
  const decH=`<svg viewBox="0 0 ${W} ${H}" width=100% height=272 preserveAspectRatio="xMidYMid meet"><line x1=0 x2=${W} y1=${y0+.5} y2=${y0+.5} stroke="#333944"></line>${bars}</svg><div class=dsh-legend><span><i style="background:#5b9cff"></i>Films</span><span><i style="background:#c58bff"></i>Scenes</span><span class=muted>${peak?`Peak: ${peak.decade}s · ${dN(peak.films)} films`:''}${d.undated?` · ${dN(d.undated)} undated`:''}</span></div>`;
- const hlist=(rows,color,click,hl)=>{const m=Math.max(1,...rows.map(r=>r.n));return rows.map(r=>`<div class=dsh-hr title="${esc(r.name)}: ${dN(r.n)} films (click to show)" onclick="${click(r)}"><span class=dsh-hk>${esc(r.name.replace(/^United States of America$/,'USA').replace(/^United Kingdom$/,'UK'))}</span><span class=dsh-ht><span style="width:${(100*r.n/m).toFixed(1)}%;background:${r.name==hl?'#c58bff':color}"></span></span><span class=dsh-hn>${dN(r.n)}</span></div>`).join('')||'<p class=muted>Nothing yet.</p>'};
- const genH=hlist(d.genres,'#5b9cff',r=>`dshGo({pgenre:'${jsq(r.name)}'},true)`,'Hardcore'),ctyH=hlist(d.countries,'#3fbf7f',r=>`dshGo({country:'${jsq(r.name)}'},true)`);
- const dirH=d.directors.length?'<ol class=dsh-rank>'+d.directors.map(r=>`<li title="Show ${esc(r.name)}'s films" onclick="dshGo({person:'${jsq(r.name)}',prole:'director'},true)"><span>${esc(r.name)}</span><b>${dN(r.n)}</b></li>`).join('')+'</ol>':'<p class=muted>No directors yet.</p>';
+ const hlist=(rows,color,click,hl)=>{const m=Math.max(1,...rows.map(r=>r.n));return rows.map(r=>`<div class=dsh-hr title="${esc(r.name)}: ${dN(r.n)} ${r.u||'films'} (click to explore)" onclick="${click(r)}"><span class=dsh-hk>${esc(r.name.replace(/^United States of America$/,'USA').replace(/^United Kingdom$/,'UK'))}</span><span class=dsh-ht><span style="width:${(100*r.n/m).toFixed(1)}%;background:${r.name==hl?'#c58bff':color}"></span></span><span class=dsh-hn>${dN(r.n)}</span></div>`).join('')||'<p class=muted>Nothing yet.</p>'};
+ const genH=hlist(d.genres,'#5b9cff',r=>`dshDrill({pgenre:'${jsq(r.name)}',special:'films_only'},'${jsq(r.name)}')`,'Hardcore'),ctyH=hlist(d.countries,'#3fbf7f',r=>`dshDrill({country:'${jsq(r.name)}',special:'films_only'},'${jsq(r.name)}')`);
+ const stuH=hlist((d.studios||[]).map(r=>({...r,u:'scenes'})),'#c58bff',r=>`dshDrill({studio:'${jsq(r.name)}'},'${jsq(r.name)}')`);
+ const dirH=d.directors.length?'<ol class=dsh-rank>'+d.directors.map(r=>`<li title="Explore ${esc(r.name)}'s films" onclick="dshDrill({person:'${jsq(r.name)}',prole:'director',special:'films_only'},'${jsq(r.name)}')"><span>${esc(r.name)}</span><b>${dN(r.n)}</b></li>`).join('')+'</ol>':'<p class=muted>No directors yet.</p>';
  const today=new Date(d.today+'T12:00:00'),dayMs=864e5,rel=ts=>{const t=new Date(ts*1000),dd=Math.round((new Date(today.toDateString())-new Date(t.toDateString()))/dayMs);return dd<=0?'Today':dd==1?'Yesterday':t.toLocaleDateString(undefined,{month:'short',day:'numeric'})};
  const tl=(rows,right)=>rows.length?'<ul class=dsh-tl>'+rows.map(f=>`<li title="Open ${esc(f.title)}" onclick="openFilm(${f.id})"><span class=dsh-tt>${esc(f.title)}</span><span class=dsh-ty>${f.year||''}</span><span class=dsh-td>${right(f)}</span></li>`).join('')+'</ul>':'';
  const recH=tl(d.recent,f=>rel(f.added_at))||'<p class=muted>Nothing added yet.</p>';
@@ -1127,15 +1139,100 @@ function dashHtml(d){const s=d.stats,h=d.health,hrs=Math.round(s.runtime_min/60)
   chip(h.untagged,'Untagged titles',h.untagged?'no tags yet':'everything is tagged','info',"dshGo({special:'untagged'})")].join('');
  const reps=DSH.RP.filter(([k])=>RP.pages[k]).map(([k,ic,sub])=>`<div class=dsh-ql onclick="dshReport('${k}')">${dIc(ic,16)}<span><b>${esc(RP.pages[k][0])}</b><small>${sub}</small></span></div>`).join('');
  const at=new Date(d.computed_at*1000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
- return `<div class=dsh><div class=dsh-head><div><div class=crumb>Film Tagger › <b>Dashboard</b></div><h2>${greet}</h2></div><div class=upd>Updated ${at}<button onclick="showDash({keep:true,nohist:true,force:true})" title="Recount now">⟳ Refresh</button><button onclick="goHome()" title="Show the whole library">Browse library</button></div></div>
- <div class=dsh-stats>${stats}</div><div class=dsh-grid>
- ${card('dsh-w2','bars','Titles by decade',decH,'click a bar to show that decade')}
- ${card('','heart','Library health','<div class=dsh-chips>'+chips+'</div>','click to fix')}
- ${card('','bars','Top primary genres',genH,d.no_genre?dN(d.no_genre)+' unset':'films')}
- ${card('','globe','Top countries',ctyH,dN(d.n_countries)+' countries')}
- ${card('','dir','Top directors',dirH,'films')}
+ return `<div class=dsh><div class=dsh-head><div><div class=crumb>Film Tagger › <b>Dashboard</b></div><h2>${greet}${scp?' · '+SN[scp]:''}</h2></div><div class=upd>Updated ${at}<button onclick="showDash({keep:true,nohist:true,force:true})" title="Recount now">⟳ Refresh</button><button onclick="goHome()" title="Show the whole library">Browse library</button></div></div>
+ <div class=dsh-stats>${stats}</div>${scopeBar}<div class=dsh-grid>
+ ${card('dsh-w2','bars','Titles by decade',decH,'click a bar to explore that decade')}
+ ${card('','heart','Library health','<div class=dsh-chips>'+chips+'</div>',scp?'whole library · click to fix':'click to fix')}
+ ${d.genres.length||!(d.studios||[]).length?card('','bars','Top primary genres',genH,d.no_genre?dN(d.no_genre)+' unset':'films'):''}
+ ${d.countries.length||!(d.studios||[]).length?card('','globe','Top countries',ctyH,dN(d.n_countries)+' countries'):''}
+ ${d.directors.length||!(d.studios||[]).length?card('','dir','Top directors',dirH,'films · click to explore'):card('','studio','Top studios',stuH,'scenes · click to explore')}
  ${card('','plus','Recently added',recH,'last 10 · no adult titles')}
  ${card('','cal','On this day · '+esc(md),otdH,'release date')}
  ${card('','bars','Reports','<div class=dsh-qls>'+reps+'</div>','quick links')}
  </div></div>`}
+/* Dashboard scope + explore (drill-down charts, text and SVG only). Scope tiles focus the whole dashboard; clicking a bar,
+   point or row opens an explore view in place (history-aware). 'Show these titles' = the same filters in the library list. */
+const MON=['Unknown month','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DSC={films:'Films',movies:'Movies',classic:'Classic Porn',scenes:'Scenes'};
+function dshA(i){const f=DSH.acts&&DSH.acts[i];if(f)f()}
+function dAct(fn){(DSH.acts=DSH.acts||[]).push(fn);return `dshA(${DSH.acts.length-1})`}
+function dshScope(k){DSH.scope=(DSH.scope==k?'':k)||'';showDash({ex:null})}
+function dshGoF(f){const o={...f};dshGo(o)}
+function dshDrill(add,label){const SF=(DSH.d&&DSH.d.scope_filter)||{};const f={...SF,...add};showDash({ex:{f,trail:[{label,f}]}})}
+function dshExplore(focus){const SF=(DSH.d&&DSH.d.scope_filter)||{};showDash({ex:{f:{...SF},focus,trail:[{label:focus=='people'?'People':'Tags',f:{...SF}}]}})}
+function dshPush(ex,label,add,del=[]){const f={...ex.f,...add};del.forEach(k=>delete f[k]);showDash({ex:{f,trail:[...ex.trail,{label,f}]}})}
+function dshCrumb(i){const ex=DSH.ex;if(!ex)return;if(i<0)return showDash({ex:null});const t=ex.trail.slice(0,i+1);showDash({ex:{f:t[t.length-1].f,trail:t}})}
+function dshSet(k,v){if(!DSH.ex)return;DSH.ex={...DSH.ex,[k]:v};if(k=='chart')localStorage.dshChart=v;const c=history.state;if(c&&c.page=='dash')history.replaceState({...c,ex:DSH.ex},'');renderEx()}
+function exParams(f){const p=new URLSearchParams();for(const k in f){if(f[k]===''||f[k]==null)continue;if(k=='special')p.set(f[k],1);else p.set(k,f[k])}return p}
+async function showEx(ex,opt={}){DSH.ex=ex;if(!opt.keep){$('content').innerHTML='<div class=dsh><p class=muted>Crunching numbers…</p></div>';$('content').scrollTop=0}
+ let r;try{r=await api('/api/dash/explore?'+exParams(ex.f))}catch(e){if(S.page=='dash')$('content').innerHTML='<div class=dsh><p class=muted>Could not load this view.</p></div>';return}
+ if(S.page!='dash'||DSH.ex!==ex)return;DSH.er=r;renderEx(opt.keep)}
+function dTime(rows,o){/* rows:[{k,label,films,scenes}] -> SVG bar (stacked) or line chart; o:{mode,click(k)->js,title(r)} */
+ const W=680,H=250,L=40,T=14,B=30,n=Math.max(1,rows.length),pw=(W-L-8)/n,y0=H-B,mx=Math.max(1,...rows.map(r=>r.films+(o.line?0:r.scenes)),...(o.line?rows.map(r=>r.scenes):[0]));
+ const nice=v=>{const p=Math.pow(10,Math.floor(Math.log10(v))),m=v/p;return (m<=1?1:m<=2?2:m<=5?5:10)*p},top=Math.max(4,nice(mx)),sc=(y0-T)/top;
+ const step=Math.max(1,Math.ceil(n/(pw<14?16:24)));let g='';
+ for(let i=0;i<=4;i++){const v=top*i/4,y=y0-v*sc;g+=`<line x1=${L} x2=${W} y1=${y.toFixed(1)} y2=${y.toFixed(1)} stroke="#2a2f37"></line><text x=${L-6} y=${(y+4).toFixed(1)} text-anchor=end>${dN(Math.round(v))}</text>`}
+ let body='',lf='',ls='';const hasS=rows.some(r=>r.scenes);
+ rows.forEach((r,i)=>{const x=L+i*pw,cx=x+pw/2,tip=esc(o.title(r)),js=o.click?o.click(r):'';
+  const lab=(i%step==0||n<=24)?`<text x=${cx.toFixed(1)} y=${H-12} text-anchor=middle>${esc(r.label)}</text>`:'';
+  if(!o.line){const pad=Math.min(9,pw*.18),w=Math.max(1,pw-2*pad),hf=r.films*sc,hs=r.scenes*sc;
+   body+=`<g class=${js?'dsh-bar':'dsh-nb'}${js?` onclick="${js}"`:''}><title>${tip}</title><rect x=${x.toFixed(1)} y=0 width=${pw.toFixed(1)} height=${H} fill=transparent></rect>${r.films?`<rect x=${(x+pad).toFixed(1)} y=${(y0-hf).toFixed(1)} width=${w.toFixed(1)} height=${Math.max(hf,1).toFixed(1)} rx=${Math.min(3,w/3).toFixed(1)} fill="#5b9cff"></rect>`:''}${r.scenes?`<rect x=${(x+pad).toFixed(1)} y=${(y0-hf-hs).toFixed(1)} width=${w.toFixed(1)} height=${Math.max(hs,1).toFixed(1)} rx=${Math.min(3,w/3).toFixed(1)} fill="#c58bff"></rect>`:''}${n<=16&&(r.films+r.scenes)?`<text x=${cx.toFixed(1)} y=${(y0-hf-hs-6).toFixed(1)} text-anchor=middle class=v>${dN(r.films+r.scenes)}</text>`:''}${lab}</g>`}
+  else{const yf=y0-r.films*sc,ys=y0-r.scenes*sc;lf+=`${i?'L':'M'}${cx.toFixed(1)} ${yf.toFixed(1)}`;ls+=`${i?'L':'M'}${cx.toFixed(1)} ${ys.toFixed(1)}`;
+   body+=`<g class=${js?'dsh-bar dsh-pt':'dsh-nb'}${js?` onclick="${js}"`:''}><title>${tip}</title><rect x=${x.toFixed(1)} y=0 width=${pw.toFixed(1)} height=${H} fill=transparent></rect>${n<=60||r.films?`<circle cx=${cx.toFixed(1)} cy=${yf.toFixed(1)} r=${n>60?2:3.5} fill="#5b9cff"></circle>`:''}${hasS&&(n<=60||r.scenes)?`<circle cx=${cx.toFixed(1)} cy=${ys.toFixed(1)} r=${n>60?2:3.5} fill="#c58bff"></circle>`:''}${lab}</g>`}});
+ const lines=o.line?`<path d="${lf}" fill=none stroke="#5b9cff" stroke-width=2 stroke-linejoin=round></path>${hasS?`<path d="${ls}" fill=none stroke="#c58bff" stroke-width=2 stroke-linejoin=round></path>`:''}`:'';
+ return `<svg viewBox="0 0 ${W} ${H}" width=100% height=${H} preserveAspectRatio="xMidYMid meet"><line x1=${L} x2=${W} y1=${y0+.5} y2=${y0+.5} stroke="#333944"></line>${g}${lines}${body}</svg>`}
+function dLine(rows,o){/* single % series: rows [{k,label,v,tip}] */
+ const W=680,H=200,L=40,T=14,B=30,n=Math.max(1,rows.length),pw=(W-L-8)/n,y0=H-B,mx=Math.max(1,...rows.map(r=>r.v)),top=mx>50?100:mx>20?50:mx>10?20:mx>5?10:5,sc=(y0-T)/top;let g='',d='',b='';
+ for(let i=0;i<=4;i++){const v=top*i/4,y=y0-v*sc;g+=`<line x1=${L} x2=${W} y1=${y.toFixed(1)} y2=${y.toFixed(1)} stroke="#2a2f37"></line><text x=${L-6} y=${(y+4).toFixed(1)} text-anchor=end>${v}%</text>`}
+ rows.forEach((r,i)=>{const cx=L+i*pw+pw/2,y=y0-r.v*sc,js=o.click?o.click(r):'';d+=`${i?'L':'M'}${cx.toFixed(1)} ${y.toFixed(1)}`;
+  b+=`<g class=${js?'dsh-bar dsh-pt':'dsh-nb'}${js?` onclick="${js}"`:''}><title>${esc(r.tip)}</title><rect x=${(L+i*pw).toFixed(1)} y=0 width=${pw.toFixed(1)} height=${H} fill=transparent></rect><circle cx=${cx.toFixed(1)} cy=${y.toFixed(1)} r=3.5 fill="#3fbf7f"></circle>${n<=16?`<text x=${cx.toFixed(1)} y=${(y-8).toFixed(1)} text-anchor=middle class=v>${r.v.toFixed(r.v<10?1:0)}%</text>`:''}<text x=${cx.toFixed(1)} y=${H-12} text-anchor=middle>${esc(r.label)}</text></g>`});
+ return `<svg viewBox="0 0 ${W} ${H}" width=100% height=${H} preserveAspectRatio="xMidYMid meet"><line x1=${L} x2=${W} y1=${y0+.5} y2=${y0+.5} stroke="#333944"></line>${g}<path d="${d}" fill=none stroke="#3fbf7f" stroke-width=2 stroke-linejoin=round></path>${b}</svg>`}
+function dHl(rows,color,click,unit='titles'){const m=Math.max(1,...rows.map(r=>r.n));return rows.map(r=>{const js=click?click(r):'';return `<div class="dsh-hr${js?'':' nc'}" title="${esc(r.name)}: ${dN(r.n)} ${unit}${js?' (click to explore)':''}"${js?` onclick="${js}"`:''}><span class=dsh-hk>${esc(String(r.name).replace(/^United States of America$/,'USA').replace(/^United Kingdom$/,'UK'))}</span><span class=dsh-ht><span style="width:${(100*r.n/m).toFixed(1)}%;background:${color}"></span></span><span class=dsh-hn>${dN(r.n)}</span></div>`}).join('')||'<p class=muted>Nothing here.</p>'}
+function fill(series,a,b,step=1){const m={};series.forEach(x=>m[x.k]=x);const out=[];for(let k=a;k<=b;k+=step)out.push(m[k]||{k,films:0,scenes:0});return out}
+function renderEx(keep){const ex=DSH.ex,r=DSH.er,f=ex.f;if(!r)return;DSH.acts=[];const st=$('content').scrollTop;
+ const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
+ const yr=f.year_min&&f.year_min==f.year_max?+f.year_min:null,isDir=f.prole=='director'&&f.person,isGen=!!f.pgenre&&f.pgenre!=((DSH.d&&DSH.d.scope_filter||{}).pgenre),isCty=!!f.country;
+ const mode=ex.chart||((isGen||isCty)?'line':localStorage.dshChart||'bar'),line=mode=='line';
+ const gran=ex.gran||(isDir||r.decades.length<=2?'year':'decade');
+ const tot=r.films+r.scenes,unit=x=>x.films&&x.scenes?`${dN(x.films)} films, ${dN(x.scenes)} scenes`:x.scenes?`${dN(x.scenes)} scene${x.scenes==1?'':'s'}`:`${dN(x.films)} film${x.films==1?'':'s'}`;
+ // time chart
+ let tH='',tT='',tSub='';
+ if(f.month!==undefined&&f.month!==''&&yr){tT=`${MON[+f.month]} ${yr}`;tH=`<p class=muted style="margin:6px 2px">${dN(r.total)} title${r.total==1?'':'s'} ${+f.month?'released in '+MON[+f.month]+' '+yr:'from '+yr+' with no known release month'} (release date${+f.month?'':' is year-only or missing'}).</p>`}
+ else if(yr){tT=`${yr} by month`;tSub='release dates; click a month';const m={};r.months.forEach(x=>m[x.k]=x);const rows=[];for(let k=1;k<=12;k++)rows.push({k,label:MON[k],...(m[k]||{films:0,scenes:0})});if(m[0])rows.push({k:0,label:'?',...m[0]});
+  tH=dTime(rows,{line,title:x=>`${x.k?MON[x.k]+' '+yr:yr+', unknown month'}: ${unit(x)}`,click:x=>(x.films+x.scenes)?dAct(()=>dshPush(ex,x.k?MON[x.k]:'Unknown month',{month:String(x.k)})):''})+(m[0]?`<div class=dsh-foot>? = ${dN(m[0].films+m[0].scenes)} title${m[0].films+m[0].scenes==1?'':'s'} with a year-only (or missing) release date.</div>`:'')}
+ else if(f.decade||gran=='year'){const d=f.decade?+f.decade:null,a=d??r.year_min,b=d!=null?d+9:r.year_max;tT=d?`${d}s by year`:'By year';tSub='click a year';
+  const rows=a==null?[]:fill(r.years,a,b).map(x=>({...x,label:String(x.k).slice(b-a>=30?2:0)}));
+  tH=rows.length?dTime(rows,{line,title:x=>`${x.k}: ${unit(x)}`,click:x=>(x.films+x.scenes)?dAct(()=>dshPush(ex,String(x.k),{year_min:String(x.k),year_max:String(x.k)},['decade','month'])):''}):'<p class=muted>No dated titles.</p>'}
+ else{tT='By decade';tSub='click a decade';const rows=r.decades.length?fill(r.decades,r.decades[0].k,r.decades[r.decades.length-1].k,10).map(x=>({...x,label:(x.k<1900?x.k:String(x.k).slice(2))+'s'})):[];
+  tH=rows.length?dTime(rows,{line,title:x=>`${x.k}s: ${unit(x)}`,click:x=>(x.films+x.scenes)?dAct(()=>dshPush(ex,x.k+'s',{decade:String(x.k)},['year_min','year_max','month'])):''}):'<p class=muted>No dated titles.</p>'}
+ const tg=(k,v,l)=>`<button class="${(k=='chart'?mode:gran)==v?'on':''}" onclick="${dAct(()=>dshSet(k,v))}">${l}</button>`;
+ const tools=(f.month!==undefined&&f.month!==''&&yr)?'':`<span class=dsh-tg>${tg('chart','bar','Bar')}${tg('chart','line','Line')}</span>${!f.decade&&!yr?`<span class=dsh-tg>${tg('gran','decade','Decades')}${tg('gran','year','Years')}</span>`:''}`;
+ const leg=r.scenes&&r.films?`<div class=dsh-legend><span><i style="background:#5b9cff"></i>Films</span><span><i style="background:#c58bff"></i>Scenes</span>${r.undated?`<span class=muted>${dN(r.undated)} undated</span>`:''}</div>`:r.undated?`<div class=dsh-legend><span class=muted>${dN(r.undated)} undated (not on the chart)</span></div>`:'';
+ const timeC=`<section class="dsh-card dsh-w2"><div class=dsh-ch>${dIc('bars',16)}<h3>${esc(tT)}</h3>${tools}<span class=dsh-sub>${tSub}</span></div>${tH}${leg}</section>`;
+ // share of all films per decade (genre / country slices)
+ let shareC='';
+ if((isGen||isCty)&&r.films&&!f.decade&&!yr){const base={};r.base_decades.forEach(x=>base[x.k]=x.films);const rows=r.decades.filter(x=>base[x.k]).map(x=>({k:x.k,label:(x.k<1900?x.k:String(x.k).slice(2))+'s',v:100*x.films/base[x.k],tip:`${x.k}s: ${dN(x.films)} of ${dN(base[x.k])} films (${(100*x.films/base[x.k]).toFixed(1)}%)`}));
+  if(rows.length>1)shareC=card('dsh-w2','bars',`Share of all films per decade`,dLine(rows,{click:x=>dAct(()=>dshPush(ex,x.k+'s',{decade:String(x.k)},['year_min','year_max','month']))}),'% of the library’s films in each decade')}
+ const filmsOnly={special:'films_only'};
+ const genC=!f.pgenre&&r.genres.length?card('','bars','Genre mix',dHl(r.genres,'#5b9cff',x=>dAct(()=>dshPush(ex,x.name,{pgenre:x.name,...filmsOnly})),'films'),`${dN(r.n_genres)} genres${r.no_genre?' · '+dN(r.no_genre)+' unset':''}`):'';
+ const ctyC=!f.country&&r.countries.length?card('','globe','Top countries',dHl(r.countries,'#3fbf7f',x=>dAct(()=>dshPush(ex,x.name,{country:x.name,...filmsOnly})),'films'),dN(r.n_countries)+' countries'):'';
+ const dirC=!isDir&&r.directors.length?card('','dir','Top directors',dHl(r.directors,'#5b9cff',x=>dAct(()=>dshPush(ex,x.name,{person:x.name,prole:'director',...filmsOnly})),'films'),dN(r.n_directors)+' directors'):'';
+ const stuC=!f.studio&&r.scenes&&r.studios.length?card(ex.focus?'':'','studio','Top studios',dHl(r.studios,'#c58bff',x=>dAct(()=>dshPush(ex,x.name,{studio:x.name})),'titles'),dN(r.n_studios)+' studios'):'';
+ const tagC=r.tags.length?card(ex.focus=='tags'?'dsh-w2':'','tag','Most-used tags',dHl(r.tags,'#c58bff',x=>dAct(()=>dshPush(ex,'Tag: '+x.name,{all:f.all?f.all+', '+x.name:x.name})),'titles'),'approved tags'):(ex.focus=='tags'?card('','tag','Most-used tags','<p class=muted>No tags here yet.</p>'):'');
+ const ageNote=r.adult_titles?`<div class=dsh-foot>On adult titles only performers with a known birth date who were 18+ at release are counted (${dN(r.known_birthdays)} people have one).</div>`:'';
+ const castC=r.cast.length?card('','ppl','Most frequent cast',dHl(r.cast,'#3fbf7f',x=>dAct(()=>openPersonByName(x.name)),'titles')+ageNote,'click a name for their page'):'';
+ const RL={director:'Directors',cast:'Cast',writer:'Writers',producer:'Producers',cinematographer:'Cinematographers',composer:'Composers'};
+ const roleRows=Object.entries(r.roles||{}).map(([k,n])=>({name:RL[k]||k,n})).filter(x=>x.n).sort((a,b)=>b.n-a.n);
+ const roleC=ex.focus=='people'?card('','ppl','People by role',dHl(roleRows,'#5b9cff',null,'people')+ageNote,'distinct names credited'):'';
+ let spanC='';
+ if(isDir&&r.year_min){const pk=r.years.reduce((a,x)=>x.films>(a?a.films:-1)?x:a,null);spanC=card('','cal','Career span',`<div class=dsh-big>${r.year_min}–${r.year_max}</div><p class=muted style="margin:4px 0 0">${r.year_max-r.year_min+1} years · ${dN(r.films)} film${r.films==1?'':'s'}${pk?` · busiest year ${pk.k} (${dN(pk.films)})`:''}</p>`,esc(f.person))}
+ // header
+ const sc=DSH.scope,crumbs=[`<a onclick="${dAct(()=>dshCrumb(-1))}">Dashboard</a>`,...(sc?[`<span>${DSC[sc]}</span>`]:[]),...ex.trail.map((t,i)=>i<ex.trail.length-1?`<a onclick="${dAct(()=>dshCrumb(i))}">${esc(t.label)}</a>`:`<b>${esc(t.label)}</b>`)].join(' › ');
+ const span=r.year_min?` · ${r.year_min==r.year_max?r.year_min:r.year_min+'–'+r.year_max}`:'';
+ const title=ex.trail.map(t=>t.label).slice(-3).join(' · ');
+ const go=dAct(()=>dshGoF(f));
+ const head=`<div class=dsh-head><div><div class="crumb dsh-crumb">Film Tagger › ${crumbs}</div><h2>${esc(title)}</h2><div class=dsh-sum>${dN(r.total)} title${r.total==1?'':'s'}${r.films&&r.scenes?` · ${dN(r.films)} films · ${dN(r.scenes)} scenes`:''}${span}</div></div><div class=upd><button onclick="${dAct(()=>history.length>1&&history.state&&history.state.ex?history.back():dshCrumb(-1))}" title="Back">‹ Back</button><button onclick="${dAct(()=>dshCrumb(-1))}">Back to Dashboard</button><button class=pri onclick="${go}" title="Open these titles in the library list">Show these titles (${dN(r.total)})</button></div></div>`;
+ const cards=ex.focus=='people'?[roleC,castC,dirC,stuC,timeC]:ex.focus=='tags'?[tagC,timeC,genC,stuC]:[timeC,shareC,spanC,genC,ctyC,dirC,stuC,tagC,castC];
+ $('content').innerHTML=`<div class="dsh dsh-ex">${head}<div class=dsh-grid>${cards.filter(Boolean).join('')}</div>${r.total?'':'<p class=muted>Nothing matches these filters.</p>'}</div>`;
+ if(keep)$('content').scrollTop=st}
 </script></body></html>

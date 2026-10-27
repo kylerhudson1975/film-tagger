@@ -127,6 +127,9 @@ def build_query(q):
         cols = [db.PEOPLE_ROLES[role]] if role in db.PEOPLE_ROLES else list(db.PEOPLE_ROLES.values())
         names = db.ALIAS_SEP.join(db.expand_person(C(), person))  # the person under any of their aliases
         where.append("(" + " OR ".join(f"person_in_any(f.{col}, ?)" for col in cols) + ")"); args += [names] * len(cols)
+    mo = str(q.get("month") or "").strip()
+    if mo.isdigit():  # month of release (Dashboard explore): 1-12, or 0 = unknown month (same expression as the chart)
+        where.append(f"{repmod.MONTH_SQL}=?"); args.append(int(mo))
     decs = [int(x) for x in split_list(q.get("decade")) if x.isdigit()]
     if decs:  # OR across decades
         where.append("(" + " OR ".join("(f.year>=? AND f.year<?)" for _ in decs) + ")")
@@ -3132,7 +3135,9 @@ def reports_ask():
     except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
     return jsonify(res)
 
-DASH = {"at": 0, "day": None, "data": None}
+DASH = {}  # scope -> {"at", "day", "data"}; ~60 s per scope
+EXPL = {}  # explore query -> (at, day, data)
+
 
 def dash_movies(c):
     """(film count, library path) for the 'Movies' library: the configured root named Movies, counted the same
@@ -3149,20 +3154,73 @@ def dash_movies(c):
     n = c.execute("SELECT COUNT(*) FROM films f WHERE f.id IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")", args).fetchone()[0]
     return n, lib
 
+DASH_SCOPES = ("films", "movies", "classic", "scenes")
+
+def dash_scopes(c):
+    """Dashboard scope tiles -> the library filters (front-end filter keys) they stand for. Movies only when a
+    library folder named Movies exists."""
+    out = dict(films={"special": "films_only"}, classic={"pgenre": repmod.ADULT_GENRE, "special": "films_only"},
+               scenes={"special": "scenes"})
+    n, lib = dash_movies(c)
+    if lib: out["movies"] = {"lib": lib}
+    return out
+
+def fk_api(fk):
+    """Front-end filter keys -> /api/films query params ('special' becomes its own flag, as params() does)."""
+    q = {k: v for k, v in fk.items() if v not in (None, "") and k != "special"}
+    if fk.get("special"): q[fk["special"]] = "1"
+    return q
+
 @app.get("/api/dashboard")
 def dashboard():
-    """Dashboard summary (read-only queries), cached ~60 s; ?force=1 recomputes."""
+    """Dashboard summary (read-only queries), cached ~60 s per scope; ?force=1 recomputes. ?scope=films|movies|classic|scenes
+    limits everything except the scope tiles to that part of the library (the same filter as 'Show these titles')."""
     import datetime as _dt
     today = _dt.date.today()
-    if not request.args.get("force") and DASH["data"] and DASH["day"] == today and time.time() - DASH["at"] < 60:
-        return jsonify(dict(DASH["data"], cached=True))
+    scope = request.args.get("scope") or ""
+    if scope not in DASH_SCOPES: scope = ""
+    e = DASH.get(scope)
+    if not request.args.get("force") and e and e["day"] == today and time.time() - e["at"] < 60:
+        return jsonify(dict(e["data"], cached=True))
     c = C()
     try:
-        d = repmod.dashboard(c, today)
-        d["health"]["rename_waiting"] = len(soft_match_ids(c))  # same set as the Rename waiting view, from stored paths
+        scopes = dash_scopes(c)
+        if scope and scope not in scopes: scope = ""
+        S = "1"
+        if scope:
+            where, args = build_query(fk_api(scopes[scope]))
+            c.execute("CREATE TEMP TABLE IF NOT EXISTS dash_scope(id INTEGER PRIMARY KEY)"); c.execute("DELETE FROM temp.dash_scope")
+            c.execute(f"INSERT INTO temp.dash_scope SELECT f.id FROM films f {where}", args)
+            S = "id IN (SELECT id FROM temp.dash_scope)"
+        d = repmod.dashboard(c, today, S)
+        d["health"]["rename_waiting"] = len(soft_match_ids(c))  # same set as the Rename waiting view (whole library), from stored paths
         d["stats"]["movies"], d["stats"]["movies_lib"] = dash_movies(c)
+        d["scope"], d["scopes"], d["scope_filter"] = scope, scopes, scopes.get(scope, {})
     finally: c.close()
-    d["computed_at"] = time.time(); DASH.update(at=time.time(), day=today, data=d)
+    d["computed_at"] = time.time(); DASH[scope] = dict(at=time.time(), day=today, data=d)
+    return jsonify(dict(d, cached=False))
+
+@app.get("/api/dash/explore")
+def dash_explore():
+    """Drill-down aggregates for the Dashboard explore view. Takes the same filter params as /api/films (plus month=0-12
+    and an optional scope=), so 'total' always equals the library list for the same filters. Read-only, cached ~60 s."""
+    import datetime as _dt
+    today = _dt.date.today()
+    q = {k: request.args.get(k) for k in request.args if k not in ("force", "_", "sort", "order", "limit", "offset")}
+    scope = q.pop("scope", "") or ""
+    key = json.dumps([scope, sorted(q.items())])
+    e = EXPL.get(key)
+    if not request.args.get("force") and e and e[1] == today and time.time() - e[0] < 60:
+        return jsonify(dict(e[2], cached=True))
+    c = C()
+    try:
+        if scope:
+            for k, v in fk_api(dash_scopes(c).get(scope, {})).items(): q.setdefault(k, v)
+        where, args = build_query(q)
+        d = repmod.explore(c, where, args)
+    finally: c.close()
+    if len(EXPL) > 300: EXPL.clear()
+    EXPL[key] = (time.time(), today, d)
     return jsonify(dict(d, cached=False))
 
 @app.get("/api/about")

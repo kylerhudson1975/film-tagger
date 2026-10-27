@@ -583,53 +583,162 @@ NO_POSTER_SQL = ("COALESCE(custom_poster,'')='' AND COALESCE(poster,'')='' "
                  "AND NOT (kind='scene' AND COALESCE(poster_wide,'')<>'')")
 
 
-def dashboard(c, today=None):
+def dashboard(c, today=None, S="1"):
     """Library summary for the Dashboard. Text and numbers only (never poster paths). 'Recently added' and 'On this day'
-    leave out scenes and Hardcore/Softcore films; 'Classic Porn' = films (not scenes) whose primary genre is Hardcore."""
+    leave out scenes and Hardcore/Softcore films; 'Classic Porn' = films (not scenes) whose primary genre is Hardcore.
+    `S` is an SQL condition on films.id limiting everything except the top scope tiles to the selected scope
+    (e.g. "id IN (SELECT id FROM temp.dash_scope)"); "1" = the whole library."""
     today = today or datetime.date.today()
     one = lambda sql, a=(): c.execute(sql, a).fetchone()[0] or 0
     FILM = "COALESCE(kind,'')<>'scene'"
+    SF = "1" if S == "1" else S.replace("id IN", "film_id IN", 1)
     pc = {r[1] for r in c.execute("PRAGMA table_info(people)")}  # people table/columns appear once People is first used
     PW = "merged_into IS NULL" if "merged_into" in pc else "1"
     s = dict(films=one(f"SELECT COUNT(*) FROM films WHERE {FILM}"),
              scenes=one("SELECT COUNT(*) FROM films WHERE kind='scene'"),
              classic=one(f"SELECT COUNT(*) FROM films WHERE {FILM} AND primary_genre=?", (ADULT_GENRE,)),
              people=one(f"SELECT COUNT(*) FROM people WHERE {PW}") if pc else 0,
-             tags=one("SELECT COUNT(*) FROM tags"),
-             tag_uses=one("SELECT COUNT(*) FROM film_tags WHERE status='approved'"),
-             runtime_min=one("SELECT SUM(runtime) FROM films WHERE runtime>0"),
-             bytes=one("SELECT SUM(size) FROM files WHERE COALESCE(missing,0)=0"),
-             files=one("SELECT COUNT(*) FROM files"))
+             tags=one(f"SELECT COUNT(DISTINCT tag_id) FROM film_tags WHERE status='approved' AND {SF}") if S != "1" else one("SELECT COUNT(*) FROM tags"),
+             tag_uses=one(f"SELECT COUNT(*) FROM film_tags WHERE status='approved' AND {SF}"),
+             runtime_min=one(f"SELECT SUM(runtime) FROM films WHERE runtime>0 AND {S}"),
+             bytes=one(f"SELECT SUM(size) FROM files WHERE COALESCE(missing,0)=0 AND {SF}"),
+             files=one(f"SELECT COUNT(*) FROM files WHERE {SF}"),
+             in_scope=one(f"SELECT COUNT(*) FROM films WHERE {S}"))
+    if S != "1":  # people credited on titles in scope (distinct names over every role column)
+        cols = [x for x in ("director", "cast_", "writers", "producers", "cinematographer", "composer")
+                if x in {r[1] for r in c.execute("PRAGMA table_info(films)")}]
+        names = set()
+        for row in c.execute(f"SELECT {','.join(cols)} FROM films WHERE {S}"):
+            for v in row:
+                for x in _split(v): names.add(" ".join(x.split()).casefold())
+        s["people_in_scope"] = len(names)
     dec = [dict(decade=d, films=f or 0, scenes=sc or 0) for d, f, sc in c.execute(
-        f"SELECT (year/10)*10 d, SUM({FILM}), SUM(kind='scene') FROM films WHERE year>0 GROUP BY d ORDER BY d")]
-    undated = one("SELECT COUNT(*) FROM films WHERE year IS NULL OR year<=0")
+        f"SELECT (year/10)*10 d, SUM({FILM}), SUM(kind='scene') FROM films WHERE year>0 AND {S} GROUP BY d ORDER BY d")]
+    undated = one(f"SELECT COUNT(*) FROM films WHERE (year IS NULL OR year<=0) AND {S}")
     genres = [dict(name=n, n=k) for n, k in c.execute(
-        f"SELECT primary_genre, COUNT(*) FROM films WHERE {FILM} AND COALESCE(primary_genre,'')<>'' GROUP BY primary_genre COLLATE NOCASE ORDER BY 2 DESC, 1 LIMIT 8")]
-    no_genre = one(f"SELECT COUNT(*) FROM films WHERE {FILM} AND COALESCE(primary_genre,'')=''")
+        f"SELECT primary_genre, COUNT(*) FROM films WHERE {FILM} AND {S} AND COALESCE(primary_genre,'')<>'' GROUP BY primary_genre COLLATE NOCASE ORDER BY 2 DESC, 1 LIMIT 8")]
+    no_genre = one(f"SELECT COUNT(*) FROM films WHERE {FILM} AND {S} AND COALESCE(primary_genre,'')=''")
     cc, dc = {}, {}
-    for co, d in c.execute(f"SELECT country, director FROM films WHERE {FILM}"):
+    for co, d in c.execute(f"SELECT country, director FROM films WHERE {FILM} AND {S}"):
         for x in _split(co): cc[x] = cc.get(x, 0) + 1
         for x in _split(d): dc[x] = dc.get(x, 0) + 1
     top = lambda m, n: [dict(name=k, n=v) for k, v in sorted(m.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:n]]
+    studios = []
+    if S != "1":  # scene studios in scope (shown instead of directors when the scope is mostly scenes)
+        studios = [dict(name=n, n=k) for n, k in c.execute(
+            f"SELECT studio, COUNT(*) FROM films WHERE kind='scene' AND {S} AND COALESCE(studio,'')<>'' GROUP BY studio COLLATE NOCASE ORDER BY 2 DESC, 1 LIMIT 10")]
     recent = [dict(id=i, title=t, year=y, added_at=a) for i, t, y, a in c.execute(
-        f"SELECT id, title, year, added_at FROM films WHERE {NON_ADULT_SQL} AND added_at IS NOT NULL ORDER BY added_at DESC, id DESC LIMIT 10")]
+        f"SELECT id, title, year, added_at FROM films WHERE {NON_ADULT_SQL} AND {S} AND added_at IS NOT NULL ORDER BY added_at DESC, id DESC LIMIT 10")]
     md = today.strftime("-%m-%d")
     otd = [dict(id=i, title=t, year=int(rd[:4]), release_date=rd) for i, t, rd in c.execute(
-        f"SELECT id, title, release_date FROM films WHERE {NON_ADULT_SQL} AND release_date LIKE ? ORDER BY release_date, title COLLATE NOCASE",
+        f"SELECT id, title, release_date FROM films WHERE {NON_ADULT_SQL} AND {S} AND release_date LIKE ? ORDER BY release_date, title COLLATE NOCASE",
         ("____" + md,)) if rd[:4].isdigit()]
-    otd_all = one("SELECT COUNT(*) FROM films WHERE release_date LIKE ?", ("____" + md,))
+    otd_all = one(f"SELECT COUNT(*) FROM films WHERE {S} AND release_date LIKE ?", ("____" + md,))
     NB = f"FROM people WHERE {PW} AND COALESCE(birthday,'')=''"
     no_bday = [dict(id=i, name=n, source=src) for i, n, src in c.execute(
         f"SELECT id, name, {'source' if 'source' in pc else 'NULL'} {NB} ORDER BY name COLLATE NOCASE LIMIT 500")] if pc else []
-    health = dict(
+    health = dict(  # always the whole library (the fix-it lists use their own filters)
         no_poster=one(f"SELECT COUNT(*) FROM films WHERE {NO_POSTER_SQL}"),
         no_poster_scenes=one(f"SELECT COUNT(*) FROM films WHERE kind='scene' AND {NO_POSTER_SQL}"),
-        needs_tmdb=one("SELECT COUNT(*) FROM films WHERE tmdb_status='needs_match'"),
-        missing=one("SELECT COUNT(*) FROM films WHERE missing=1"),
+        needs_tmdb=one(f"SELECT COUNT(*) FROM films WHERE tmdb_status='needs_match'"),
+        missing=one(f"SELECT COUNT(*) FROM films WHERE missing=1"),
         no_birthday=one(f"SELECT COUNT(*) {NB}") if pc else 0,
-        untagged=one("SELECT COUNT(*) FROM films WHERE id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')"),
-        pending=one("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'"))
+        untagged=one(f"SELECT COUNT(*) FROM films WHERE id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')"),
+        pending=one(f"SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'"))
     return dict(stats=s, decades=dec, undated=undated, genres=genres, no_genre=no_genre, countries=top(cc, 8),
-                n_countries=len(cc), directors=top(dc, 10), recent=recent, on_this_day=otd, on_this_day_all=otd_all,
+                n_countries=len(cc), directors=top(dc, 10), studios=studios, recent=recent, on_this_day=otd, on_this_day_all=otd_all,
                 on_this_day_hidden=max(0, otd_all - len(otd)), today=today.isoformat(), health=health,
                 no_birthday_people=no_bday, reports=REPORTS)
+
+
+# ---------- Dashboard explore (drill-down charts; read-only) ----------
+# Month of a title for the explore view: from release_date when it is at least YYYY-MM and its year matches films.year,
+# else 0 ('unknown month'). app.build_query's `month` filter uses this same expression, so counts always match the list.
+MONTH_SQL = ("(CASE WHEN length(COALESCE(f.release_date,''))>=7 AND substr(f.release_date,1,4)=printf('%04d',f.year) "
+             "AND substr(f.release_date,6,2) GLOB '[0-9][0-9]' THEN CAST(substr(f.release_date,6,2) AS INTEGER) ELSE 0 END)")
+ADULT_GENRES = ("hardcore", "softcore")
+
+
+def _adult_ok(bd, rd, y):
+    """The Reports age rule: a performer counts on a title only if they were 18+ on its release date
+    (year-only dates: released in or after the year they turned 19)."""
+    adult_from = bd.replace(year=bd.year + 18) if not (bd.month == 2 and bd.day == 29) else datetime.date(bd.year + 18, 3, 1)
+    rel = None
+    if rd:
+        try: rel = datetime.date.fromisoformat(rd[:10])
+        except ValueError: rel = None
+    return (rel >= adult_from) if rel else (y is not None and y >= bd.year + 19)
+
+
+def explore(c, where, args, lim=12):
+    """Aggregates over the titles matched by app.build_query(where, args) (the same filter as the library list, so
+    `total` always equals the list count). Text and numbers only."""
+    import db
+    fc = {r[1] for r in c.execute("PRAGMA table_info(films)")}
+    roles = [(k, col) for k, col in db.PEOPLE_ROLES.items() if col in fc]
+    cols = ["f.id", "f.year", "f.release_date", "COALESCE(f.kind,'')='scene'", "f.primary_genre", "tag_norm(f.primary_genre)",
+            "f.country", "f.studio", MONTH_SQL] + [f"f.{col}" for _, col in roles]
+    rows = c.execute(f"SELECT {','.join(cols)} FROM films f {where}", args).fetchall()
+    nrm = lambda x: " ".join(x.split()).casefold()
+    dec, yrs, mon = {}, {}, {}
+    gen, gname, cty, dirs, stu, cast = {}, {}, {}, {}, {}, {}
+    rolen = {k: set() for k, _ in roles}
+    films = scenes = undated = no_genre = 0
+    pc = {r[1] for r in c.execute("PRAGMA table_info(people)")}
+    bdays = {}
+    if pc:
+        for n, b in c.execute("SELECT name,birthday FROM people WHERE " + ("merged_into IS NULL AND " if "merged_into" in pc else "") +
+                              "birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
+            try: bdays[nrm(n)] = datetime.date.fromisoformat(b)
+            except ValueError: pass
+    adult_titles = 0
+    for r in rows:
+        fid, y, rd, sc, pg, pgk, co, st, m = r[:9]
+        credits = dict(zip([k for k, _ in roles], r[9:]))
+        k2 = 1 if sc else 0
+        if sc: scenes += 1
+        else: films += 1
+        if y and y > 0:
+            for mp, key in ((dec, (y // 10) * 10), (yrs, y)):
+                v = mp.setdefault(key, [0, 0]); v[k2] += 1
+        else: undated += 1
+        v = mon.setdefault(m or 0, [0, 0]); v[k2] += 1
+        if not sc:
+            if pg and pg.strip():
+                gen[pgk] = gen.get(pgk, 0) + 1; gname.setdefault(pgk, {}); gname[pgk][pg] = gname[pgk].get(pg, 0) + 1
+            else: no_genre += 1
+            for x in _split(co): cty.setdefault(nrm(x), [x, 0])[1] += 1
+            for x in _split(credits.get("director")): dirs.setdefault(nrm(x), [x, 0])[1] += 1
+        if st and st.strip(): stu.setdefault(db.studio_key(st), [st.strip(), 0])[1] += 1
+        adult = sc or (pg or "").strip().lower() in ADULT_GENRES
+        if adult: adult_titles += 1
+        for x in _split(credits.get("cast")):
+            k = nrm(x)
+            if adult:  # adult titles: only performers with a known birth date who were adults at release
+                bd = bdays.get(k)
+                if not bd or not _adult_ok(bd, rd, y): continue
+            cast.setdefault(k, [x, 0])[1] += 1
+        for rk, _ in roles:
+            for x in _split(credits.get(rk)):
+                if rk == "cast" and adult and not (bdays.get(nrm(x)) and _adult_ok(bdays[nrm(x)], rd, y)): continue
+                rolen[rk].add(nrm(x))
+    rank = lambda m, n: [dict(name=v[0], n=v[1]) for v in sorted(m.values(), key=lambda v: (-v[1], v[0].lower()))[:n]]
+    genres = sorted(([max(gname[k].items(), key=lambda kv: kv[1])[0], n] for k, n in gen.items()), key=lambda v: (-v[1], v[0].lower()))
+    ids_sql = f"SELECT f.id FROM films f {where}"
+    tags = [dict(name=n, n=k) for n, k in c.execute(
+        f"SELECT MIN(t.name), COUNT(DISTINCT ft.film_id) FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' "
+        f"AND ft.film_id IN ({ids_sql}) GROUP BY tag_norm(t.name) ORDER BY 2 DESC, 1 LIMIT 20", args)]
+    ser = lambda m: [dict(k=k, films=v[0], scenes=v[1]) for k, v in sorted(m.items())]
+    years = [k for k in yrs]
+    base = [dict(k=d, films=f or 0, scenes=s or 0) for d, f, s in c.execute(
+        "SELECT (year/10)*10 d, SUM(COALESCE(kind,'')<>'scene'), SUM(kind='scene') FROM films WHERE year>0 GROUP BY d ORDER BY d")]
+    base_y = [dict(k=d, films=f or 0, scenes=s or 0) for d, f, s in c.execute(
+        "SELECT year, SUM(COALESCE(kind,'')<>'scene'), SUM(kind='scene') FROM films WHERE year>0 GROUP BY year ORDER BY year")]
+    return dict(total=len(rows), films=films, scenes=scenes, undated=undated, no_genre=no_genre,
+                year_min=min(years) if years else None, year_max=max(years) if years else None,
+                decades=ser(dec), years=ser(yrs), months=ser(mon),
+                genres=[dict(name=g, n=n) for g, n in genres[:lim]], n_genres=len(genres),
+                countries=rank(cty, lim), n_countries=len(cty), directors=rank(dirs, lim), n_directors=len(dirs),
+                studios=rank(stu, 15), n_studios=len(stu), tags=tags, cast=rank(cast, lim), adult_titles=adult_titles,
+                known_birthdays=len(bdays), roles={k: len(v) for k, v in rolen.items()},
+                base_decades=base, base_years=base_y)
