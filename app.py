@@ -3134,6 +3134,21 @@ def reports_ask():
 
 DASH = {"at": 0, "day": None, "data": None}
 
+def dash_movies(c):
+    """(film count, library path) for the 'Movies' library: the configured root named Movies, counted the same
+    way the library filter (?lib=) matches it. (0, None) when there is no such library."""
+    sr = [os.path.normcase(x) for x in db.scene_roots(c)]
+    lib = next((r.rstrip("\\/") for r in db.get_setting(c, "roots", []) or []
+                if r and os.path.normcase(r.rstrip("\\/")) not in sr
+                and _re.split(r"[\\/]", r.rstrip("\\/"))[-1].lower() == "movies"), None)
+    if not lib: return 0, None
+    likes, args = [], []
+    for pre in db.lib_prefixes(c, lib):
+        esc_ = pre.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        likes += ["LOWER(path) LIKE ? ESCAPE '\\'", "LOWER(path) LIKE ? ESCAPE '\\'"]; args += [esc_ + "\\\\%", esc_ + "/%"]
+    n = c.execute("SELECT COUNT(*) FROM films f WHERE f.id IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")", args).fetchone()[0]
+    return n, lib
+
 @app.get("/api/dashboard")
 def dashboard():
     """Dashboard summary (read-only queries), cached ~60 s; ?force=1 recomputes."""
@@ -3145,6 +3160,7 @@ def dashboard():
     try:
         d = repmod.dashboard(c, today)
         d["health"]["rename_waiting"] = len(soft_match_ids(c))  # same set as the Rename waiting view, from stored paths
+        d["stats"]["movies"], d["stats"]["movies_lib"] = dash_movies(c)
     finally: c.close()
     d["computed_at"] = time.time(); DASH.update(at=time.time(), day=today, data=d)
     return jsonify(dict(d, cached=False))

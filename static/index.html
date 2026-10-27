@@ -97,7 +97,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 #navRow button.on{border-color:var(--a);color:var(--a)}
 .dsh{max-width:1400px;margin:0 auto;padding:4px 6px 30px;--warn:#f0b450}
 .dsh-head{display:flex;align-items:flex-end;gap:10px;margin:2px 2px 14px}.dsh-head h2{margin:0;font-size:21px;font-weight:600}.dsh-head .crumb{font-size:13px;color:var(--m)}.dsh-head .upd{margin-left:auto;font-size:12px;color:var(--m);display:flex;gap:8px;align-items:center}
-.dsh-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(116px,1fr));gap:10px;margin-bottom:12px}
+.dsh-stats{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;margin-bottom:12px}@media(max-width:1280px){.dsh-stats{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:560px){.dsh-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .dsh-stat{background:var(--p);border:1px solid var(--b);border-radius:10px;padding:11px 13px;position:relative;overflow:hidden}.dsh-stat:after{content:"";position:absolute;left:0;right:0;top:0;height:2px;background:var(--a);opacity:.7}.dsh-stat.ai:after{background:var(--ai)}.dsh-stat.ok:after{background:var(--ok)}
 .dsh-stat.go{cursor:pointer}.dsh-stat.go:hover{border-color:var(--a)}.dsh-stat svg{color:var(--m);float:right}.dsh-sv{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.01em}.dsh-sl{font-size:12.5px}.dsh-ss{font-size:11.5px;color:var(--m)}
 .dsh-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(296px,1fr));gap:12px;grid-auto-flow:dense}.dsh-w2{grid-column:span 2}@media(max-width:760px){.dsh-w2{grid-column:auto}}
@@ -1089,7 +1089,8 @@ async function showDash(opt={}){
  let d;try{d=await api('/api/dashboard'+(opt.force?'?force=1':''))}catch(e){if(S.page=='dash')$('content').innerHTML='<div class=dsh><p class=muted>Could not load the dashboard.</p></div>';return}
  if(S.page!='dash')return;DSH.d=d;const st=$('content').scrollTop;$('content').innerHTML=dashHtml(d);if(opt.keep)$('content').scrollTop=st}
 function dshGo(set,filmsOnly){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';if($('f_in').value=='people')setIn('');setLib('');S.sel.clear();
- for(const k in set)$('f_'+k).value=set[k];if(filmsOnly)$('f_special').value='films_only';renderMpaa();$('content').scrollTop=0;load()}
+ for(const k in set){if(k=='lib')setLib(set[k]);else $('f_'+k).value=set[k]}if(filmsOnly)$('f_special').value='films_only';renderMpaa();$('content').scrollTop=0;load()}
+function dshMovies(){const v=DSH.d&&DSH.d.stats&&DSH.d.stats.movies_lib;if(v)dshGo({lib:v})}
 function dshReport(k){RP.cur=k;openReports()}
 function dshNoBday(){const l=(DSH.d&&DSH.d.no_birthday_people)||[];
  openM(`<h3 style="margin-top:0">People without a birth date <span class=muted style="font-weight:400">(${l.length})</span></h3><p class=muted style="margin-top:0">Birth dates are used for age checks in Reports. Click a name to open their page.</p><div class=dsh-pl>${l.map(p=>`<div onclick="closeM();showPerson(${p.id})">${esc(p.name)}<span>${esc(p.source=='tpdb'?'ThePornDB':p.source=='tmdb'?'TMDB':'added by hand')}</span></div>`).join('')||'<p class=muted>Everyone has a birth date.</p>'}</div>`)}
@@ -1097,8 +1098,8 @@ function dashHtml(d){const s=d.stats,h=d.health,hrs=Math.round(s.runtime_min/60)
  const hr=new Date().getHours(),greet=hr<5?'Good evening':hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
  const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
  const stat=(ic,v,l,sub,cls,go)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="Show in the library"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
- const stats=[stat('film',dN(s.films),'Films','not scenes','',"dshGo({special:'films_only'})"),stat('scene',dN(s.scenes),'Scenes','from studios','ai',"dshGo({special:'scenes'})"),
-  stat('star',dN(s.classic),'Classic Porn',s.films?Math.round(100*s.classic/s.films)+'% of films':'','ai',"dshGo({pgenre:'Hardcore'},true)"),stat('ppl',dN(s.people),'People','cast &amp; crew'),
+ const stats=[stat('film',dN(s.films),'Films','not scenes','',"dshGo({special:'films_only'})"),stat('film',dN(s.movies||0),'Movies',s.films?Math.round(100*(s.movies||0)/s.films)+'% of films':'','',s.movies_lib?'dshMovies()':''),
+  stat('star',dN(s.classic),'Classic Porn',s.films?Math.round(100*s.classic/s.films)+'% of films':'','ai',"dshGo({pgenre:'Hardcore'},true)"),stat('scene',dN(s.scenes),'Scenes','from studios','ai',"dshGo({special:'scenes'})"),stat('ppl',dN(s.people),'People','cast &amp; crew'),
   stat('tag',dN(s.tags),'Tags',dN(s.tag_uses)+' tag uses'),stat('clock',dN(hrs)+' h','Runtime','≈ '+dN(Math.round(hrs/24))+' days','ok'),
   stat('disk',tb>=1?tb.toFixed(1)+' TB':(s.bytes/1e9).toFixed(0)+' GB','Storage',dN(s.files)+' files','ok')].join('');
  // decades: stacked films (blue) + scenes (purple)
