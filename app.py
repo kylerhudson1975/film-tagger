@@ -127,6 +127,11 @@ def build_query(q):
         cols = [db.PEOPLE_ROLES[role]] if role in db.PEOPLE_ROLES else list(db.PEOPLE_ROLES.values())
         names = db.ALIAS_SEP.join(db.expand_person(C(), person))  # the person under any of their aliases
         where.append("(" + " OR ".join(f"person_in_any(f.{col}, ?)" for col in cols) + ")"); args += [names] * len(cols)
+    cc = [int(x) for x in str(q.get("cocredit") or "").split(",") if x.strip().isdigit()][:3]
+    if len(cc) >= 2:  # "Credited with": titles every listed person is credited on (same set and age rule as /api/people/cocredit)
+        import people as _pm
+        ids = sorted(_pm.COCREDIT["ids"](C(), cc)) if _pm.COCREDIT.get("ids") else []
+        where.append(f"f.id IN ({','.join(str(int(i)) for i in ids) or 'NULL'})")
     mo = str(q.get("month") or "").strip()
     if mo.isdigit():  # month of release (Dashboard explore): 1-12, or 0 = unknown month (same expression as the chart)
         where.append(f"{repmod.MONTH_SQL}=?"); args.append(int(mo))

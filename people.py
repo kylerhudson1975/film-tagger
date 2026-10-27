@@ -1,5 +1,6 @@
 """Person pages: library people index, TMDB person resolution/caching, filmography with owned-film matching."""
 import os, re, json, time, threading, urllib.request, urllib.error, urllib.parse
+from collections import Counter as Counter_
 from flask import request, jsonify, send_from_directory
 import db
 
@@ -63,6 +64,8 @@ TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", 
              ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
+COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
+RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
 
 def migrate(c):
     have = {r[1] for r in c.execute("PRAGMA table_info(people)")}
@@ -713,3 +716,285 @@ def init(app, tmdb, posters_dir):
                 os.replace(path + ".tmp", path)
             except Exception as ex: return jsonify(error=f"Photo unavailable: {ex}"), 502
         return send_from_directory(PHOTO_DIR, name, max_age=86400 * 30)
+
+    # ---------- Credited with (co-credits): what two or three people made together ----------
+    CO = {}  # (ids, data key) -> (at, result)
+    CO_ADULT_GENRES = ("hardcore", "softcore")
+    def _bd(s):
+        import datetime
+        try: return datetime.date.fromisoformat(s[:10]) if s and len(s) >= 10 else None
+        except ValueError: return None
+    def _adult_ok(bd, rd, y):
+        import reports as repmod
+        return repmod._adult_ok(bd, rd, y)
+    def co_canon(c, pid):
+        row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone(); hops = 0
+        while row and row["merged_into"] and hops < 5:
+            t = c.execute("SELECT * FROM people WHERE id=?", (row["merged_into"],)).fetchone()
+            if not t: break
+            row = t; hops += 1
+        return row
+    def co_keys(c, row, e):
+        ks = {row["name_norm"]} | {fold(n) for n in e["names"]} | {fold(n) for n in db.expand_person(c, row["name"])}
+        try: ks |= {fold(" ".join(a.split())) for a in json.loads(row["aliases"] or "[]") if isinstance(a, str)}
+        except Exception: pass
+        return {k for k in ks if k}
+    def co_items(c, row, e, lib_tp):
+        """Everything we know this person made: library films (L<id>), TMDB credits not in the library (T<tmdb id>),
+        ThePornDB scenes not in the library (P<scene id>). Cached data only: no network."""
+        items = {}
+        for fid in e["films"]:
+            items["L%d" % fid] = dict(film_id=fid, roles=sorted(ro for ro, s in e["roles"].items() if fid in s), xroles=[])
+        if row["credits_json"] and (row["tmdb_person_id"] or 0) > 0:
+            try: groups = filmography(c, json.loads(row["credits_json"]))
+            except Exception: groups = []
+            for g in groups:
+                for x in g["credits"]:
+                    k = "L%d" % x["film_id"] if x["film_id"] else "T%d" % x["tmdb_id"]
+                    it = items.setdefault(k, dict(film_id=x["film_id"], roles=[], xroles=[]))
+                    it.setdefault("tmdb_id", x["tmdb_id"]); it.setdefault("title", x["title"]); it.setdefault("year", x["year"]); it.setdefault("date", x["date"])
+                    lab = "Actor" if g["dept"] == "Acting" else (x["role"] or g["dept"])
+                    for part in (lab.split(" / ") if g["dept"] != "Acting" else [lab]):
+                        if part and part not in it["xroles"]: it["xroles"].append(part)
+        names = [row["name_norm"]] + [fold(n) for n in db.expand_person(c, row["name"])][1:]
+        for r2 in c.execute(f"SELECT tpdb_scenes_json FROM people WHERE tpdb_scenes_json IS NOT NULL AND (id=? OR name_norm IN ({','.join('?' * len(names))}))", [row["id"]] + names):
+            try: lst = json.loads(r2[0] or "[]")
+            except Exception: lst = []
+            for x in lst:
+                ids = [str(x.get("id") or ""), str(x.get("_id") or "")]
+                fid = next((lib_tp[i] for i in ids if i and i in lib_tp), None)
+                k = "L%d" % fid if fid else "P%s" % ids[0]
+                it = items.setdefault(k, dict(film_id=fid, roles=[], xroles=[]))
+                if not fid:
+                    it.update(title=x.get("title"), date=(x.get("date") or "")[:10], studio=x.get("studio"),
+                              url=f"https://theporndb.net/scenes/{x.get('slug') or x.get('id')}")
+                    it["year"] = int(it["date"][:4]) if it["date"][:4].isdigit() else None
+                if "Performer" not in it["xroles"]: it["xroles"].append("Performer")
+        return items
+
+    def cocredit_data(c, pids):
+        key = (tuple(pids), tuple(c.execute("SELECT COUNT(*), MAX(updated_at), SUM(COALESCE(rating,0)), SUM(COALESCE(watched,0)) FROM films").fetchone()),
+               tuple(c.execute("SELECT COUNT(*), MAX(COALESCE(fetched_at,0)), MAX(COALESCE(tpdb_scenes_at,0)), SUM(LENGTH(COALESCE(birthday,''))), MAX(id) FROM people").fetchone()))
+        hit = CO.get(key)
+        if hit and time.time() - hit[0] < 120: return hit[1]
+        lib_tp = {str(r[1]): r[0] for r in c.execute("SELECT id, tpdb_id FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''")}
+        P = []
+        for pid in pids:
+            row = co_canon(c, pid)
+            if not row: return None
+            if any(p["row"]["id"] == row["id"] for p in P): continue
+            e = person_entry(c, row)
+            P.append(dict(row=row, e=e, keys=co_keys(c, row, e), items=co_items(c, row, e, lib_tp), bd=_bd(row["birthday"])))
+        if len(P) < 2: return dict(people=P, rows=[], excluded=[], ids=set(), error="Pick two different people.")
+        adult_ids = adult_film_ids(c)
+        anyadult = any(p["e"]["films"] & adult_ids for p in P)
+        shared = set(P[0]["items"])
+        for p in P[1:]: shared &= set(p["items"])
+        fids = [int(k[1:]) for k in shared if k[0] == "L"]
+        F = {}
+        for i in range(0, len(fids), 500):
+            ch = fids[i:i + 500]
+            for r in c.execute(f"SELECT id, title, year, release_date, kind, studio, director, cast_, writers, producers, cinematographer, composer, primary_genre, country, rating, watched, runtime, tmdb_id FROM films WHERE id IN ({','.join('?' * len(ch))})", ch):
+                F[r["id"]] = r
+        rows, excluded = [], []
+        for k in shared:
+            it0 = P[0]["items"][k]
+            if k[0] == "L":
+                f = F.get(int(k[1:]))
+                if not f: continue
+                adult = f["id"] in adult_ids or f["kind"] == "scene" or (f["primary_genre"] or "").strip().lower() in CO_ADULT_GENRES
+                r = dict(key=k, film_id=f["id"], title=f["title"], year=f["year"], date=f["release_date"] or "", kind=f["kind"] or "film",
+                         studio=f["studio"] or "", director=f["director"] or "", genre=(f["primary_genre"] or "").strip(), country=f["country"] or "",
+                         rating=f["rating"], watched=f["watched"], runtime=f["runtime"], tmdb_id=f["tmdb_id"], in_library=True, adult=adult)
+            else:
+                adult = k[0] == "P" or anyadult
+                r = dict(key=k, film_id=None, title=it0.get("title") or "?", year=it0.get("year"), date=it0.get("date") or "", kind="scene" if k[0] == "P" else "film",
+                         studio=it0.get("studio") or "", director="", genre="", country="", rating=None, watched=None, runtime=None,
+                         tmdb_id=it0.get("tmdb_id"), url=it0.get("url") or (f"https://www.themoviedb.org/movie/{it0.get('tmdb_id')}" if it0.get("tmdb_id") else None),
+                         in_library=False, adult=adult)
+            if r["year"] is None and (r["date"] or "")[:4].isdigit(): r["year"] = int(r["date"][:4])
+            r["roles"] = []
+            for p in P:
+                it = p["items"][k]
+                labs = [RLBL_CO.get(ro, ro) for ro in it["roles"]] or it["xroles"]
+                if adult and r["kind"] == "scene": labs = ["Performer" if x in ("Actor",) else x for x in labs]
+                r["roles"].append(labs or ["Credited"])
+            if adult:
+                why = None
+                for p in P:
+                    if not p["bd"]: why = "no birth date for " + p["row"]["name"]; break
+                    if not _adult_ok(p["bd"], r["date"] or None, r["year"]): why = "under 18 (or too close to tell) at release"; break
+                if why:
+                    excluded.append(dict(title=r["title"], year=r["year"], in_library=r["in_library"], why=why)); continue
+            rows.append(r)
+        rows.sort(key=lambda r: (r["year"] is None, r["date"] or (str(r["year"]) if r["year"] else ""), fold(r["title"] or "")))
+        res = dict(people=P, rows=rows, excluded=excluded, ids={r["film_id"] for r in rows if r["film_id"]}, F=F, anyadult=anyadult)
+        CO[key] = (time.time(), res)
+        if len(CO) > 64: CO.pop(next(iter(CO)))
+        return res
+
+    def cocredit_ids(c, pids):
+        d = cocredit_data(c, pids)
+        return set() if not d else d["ids"]
+    COCREDIT["ids"] = cocredit_ids
+
+    def co_pids(s):
+        out = []
+        for x in str(s or "").split(","):
+            x = x.strip()
+            if x.isdigit() and int(x) not in out: out.append(int(x))
+        return out[:3]
+
+    @app.get("/api/people/cocredit")
+    def people_cocredit():
+        """Read-only: titles two or three people are credited on together (library + cached TMDB/ThePornDB filmographies),
+        with stats. Adult titles count only when every compared person has a known birth date and was 18+ at release."""
+        pids = co_pids(request.args.get("ids"))
+        if len(pids) < 2: return jsonify(error="Give two or three person ids, e.g. ids=12,34"), 400
+        c = C(); d = cocredit_data(c, pids)
+        if d is None: return jsonify(error="Unknown person"), 404
+        P = d["people"]
+        def prof(p):
+            row, e, its = p["row"], p["e"], p["items"]
+            yrs = []
+            for k, it in its.items():
+                y = it.get("year")
+                if y is None and k[0] == "L":
+                    f = d.get("F", {}).get(it["film_id"])
+                    y = f["year"] if f else None
+                if y: yrs.append(y)
+            if not yrs and e["films"]:
+                yrs = [r[0] for r in c.execute(f"SELECT year FROM films WHERE year IS NOT NULL AND id IN ({','.join('?' * len(e['films']))})", list(e["films"]))]
+            rated = [r[0] for r in c.execute(f"SELECT rating FROM films WHERE rating>0 AND id IN ({','.join('?' * len(e['films']))})", list(e["films"]))] if e["films"] else []
+            fetched = bool(row["fetched_at"] or row["tpdb_fetched_at"] or row["tmdb_person_id"] == NO_MATCH or row["source"] == "manual")
+            return dict(id=row["id"], name=row["name"], photo=photo_url(row), known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None),
+                        birthday=row["birthday"], deathday=row["deathday"], career=[min(yrs), max(yrs)] if yrs else None,
+                        credits=len(its), in_library=len(e["films"]), roles={ro: len(s) for ro, s in e["roles"].items()},
+                        has_filmography=bool(row["credits_json"] or row["tpdb_scenes_json"]), fetched=fetched,
+                        avg_rating=round(sum(rated) / len(rated), 2) if rated else None, rated=len(rated))
+        out = dict(people=[prof(p) for p in P], error=d.get("error"))
+        if request.args.get("lite"): return jsonify(people=[dict(id=x["id"], name=x["name"]) for x in out["people"]], in_library=len(d["ids"]))
+        rows = d["rows"]; libr = [r for r in rows if r["in_library"]]
+        from collections import Counter
+        def top(cnt, n=12): return [dict(name=k, n=v) for k, v in sorted(cnt.items(), key=lambda kv: (-kv[1], fold(kv[0])))[:n]]
+        dirs, stud, gen, cty = Counter(), Counter(), Counter(), Counter()
+        selfk = [p["keys"] for p in P]
+        dir_is = {}
+        for r in rows:
+            if r["studio"]: stud[r["studio"]] += 1
+        for r in libr:
+            for nm in (r["director"] or "").split(","):
+                nm = " ".join(nm.split())
+                if nm:
+                    dirs[nm] += 1
+                    for i, ks in enumerate(selfk):
+                        if fold(nm) in ks: dir_is[nm] = i
+            if r["genre"]: gen[r["genre"][:1].upper() + r["genre"][1:]] += 1
+            for x in (r["country"] or "").split(","):
+                x = x.strip()
+                if x: cty[x] += 1
+        # third people credited on the shared library titles (adult titles: performers with a known birth date, 18+ at release)
+        allself = set().union(*selfk)
+        ag = db.alias_groups(c)
+        prow = {r["name_norm"]: r for r in c.execute("SELECT id, name, name_norm, birthday, merged_into FROM people")}
+        also, also_name, also_role = Counter(), {}, {}
+        for r in libr:
+            f = d["F"][r["film_id"]]; seen = set()
+            for ro, col in ROLE_COLS.items():
+                if ro == "director": continue  # directors have their own card
+                for nm in (f[col] or "").split(","):
+                    nm = " ".join(nm.split()); k = fold(nm)
+                    if not nm or k in allself: continue
+                    g = ag.get(k); ck = fold(g[0]) if g else k
+                    if ck in allself or ck in seen: continue
+                    if r["adult"] and ro == "cast":
+                        pr = None
+                        for kk in ([k] + [fold(x) for x in (g or [])]):
+                            if kk in prow and prow[kk]["birthday"]: pr = prow[kk]; break
+                        bd = _bd(pr["birthday"]) if pr else None
+                        if not bd or not _adult_ok(bd, r["date"] or None, r["year"]): continue
+                    seen.add(ck); also[ck] += 1
+                    also_name.setdefault(ck, Counter())[nm] += 1; also_role.setdefault(ck, Counter())[ro] += 1
+        also_l = []
+        for ck, n in sorted(also.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+            nm = also_name[ck].most_common(1)[0][0]; pr = prow.get(fold(nm)) or prow.get(ck); hops = 0
+            while pr and pr["merged_into"] and hops < 5:
+                t = next((x for x in prow.values() if x["id"] == pr["merged_into"]), None); hops += 1
+                if not t: break
+                pr = t
+            also_l.append(dict(name=pr["name"] if pr else nm, pid=pr["id"] if pr else None, n=n, role=also_role[ck].most_common(1)[0][0]))
+        watched_tracked = bool(c.execute("SELECT 1 FROM films WHERE watched=1 LIMIT 1").fetchone())
+        rated = [r["rating"] for r in libr if r["rating"] and r["rating"] > 0]
+        rts = [r["runtime"] for r in libr if r["runtime"]]
+        excl = d["excluded"]
+        notes = []
+        if excl:
+            nb = [p["row"]["name"] for p in P if not p["bd"]]
+            if nb: notes.append(f"{' and '.join(nb)} {'has' if len(nb) == 1 else 'have'} no known birth date, so adult titles are left out ({len(excl)}).")
+            else: notes.append(f"{len(excl)} adult title{'s' if len(excl) != 1 else ''} left out: someone was under 18 (or too close to tell) at release.")
+        for r in rows: r.pop("rating_hidden", None)
+        out.update(rows=rows, total=len(rows), in_library=len(libr), not_in_library=len(rows) - len(libr),
+                   excluded=len(excl), excluded_in_library=sum(1 for x in excl if x["in_library"]), excluded_rows=excl[:200], notes=notes,
+                   directors=[dict(x, is_person=dir_is.get(x["name"])) for x in top(dirs)], studios=top(stud), genres=top(gen), countries=top(cty), also=also_l,
+                   ratings=dict(avg=round(sum(rated) / len(rated), 2), n=len(rated)) if rated else None,
+                   watched=dict(n=sum(1 for r in libr if r["watched"] == 1), of=len(libr)) if watched_tracked else None,
+                   runtime=dict(avg=round(sum(rts) / len(rts)), total=sum(rts), n=len(rts)) if rts else None,
+                   adult_rule=bool(d.get("anyadult")))
+        return jsonify(out)
+
+    @app.get("/api/people/cocredit/suggest")
+    def people_cocredit_suggest():
+        """People credited with person `pid`, best first by films shared in the library; `q` matches names and aliases."""
+        c = C(); row = co_canon(c, int(request.args.get("pid") or 0))
+        if not row: return jsonify(error="Unknown person"), 404
+        e = person_entry(c, row); F = e["films"]; mine = co_keys(c, row, e)
+        q = fold(request.args.get("q") or "").split(); lim = min(int(request.args.get("limit", 10)), 50)
+        idx = index(c); ag = db.alias_groups(c)
+        cand = {}
+        for k, x in idx.items():
+            if k in mine: continue
+            n = len(x["films"] & F)
+            if not n and not q: continue
+            names = ag.get(k) or [best_name(x)]
+            if q and not any(all(w in fold(nm) for w in q) for nm in names + [k]): continue
+            ck = fold(names[0]) if ag.get(k) else k
+            if ck in mine: continue
+            cur = cand.get(ck)
+            if not cur: cand[ck] = cur = dict(names=set(), films=set(), roles=Counter_(), key=k)
+            cur["names"].add(best_name(x)); cur["films"] |= (x["films"] & F)
+            for ro, s in x["roles"].items(): cur["roles"][ro] += len(s & F) if F else len(s)
+            cur["all"] = cur.get("all", 0) + len(x["films"])
+        # same age rule as the results page: adult titles only count when both have a known birth date and were 18+
+        adult_ids = adult_film_ids(c); my_bd = _bd(row["birthday"])
+        FD = {}
+        if F & adult_ids:
+            fl = sorted(F)
+            for i in range(0, len(fl), 500):
+                ch = fl[i:i + 500]
+                for r in c.execute(f"SELECT id, release_date, year, kind, primary_genre FROM films WHERE id IN ({','.join('?' * len(ch))})", ch):
+                    if r["id"] in adult_ids or r["kind"] == "scene" or (r["primary_genre"] or "").strip().lower() in CO_ADULT_GENRES: FD[r["id"]] = r
+        rows = {r["name_norm"]: r for r in c.execute("SELECT * FROM people")}
+        for v in cand.values():
+            r = next((rows[fold(n)] for n in sorted(v["names"]) if fold(n) in rows), None)
+            if r and r["merged_into"]: r = co_canon(c, r["id"])
+            v["row"] = r
+            ad = v["films"] & set(FD)
+            if ad:
+                bd = _bd(r["birthday"]) if r else None
+                v["films"] = v["films"] - {i for i in ad if not (my_bd and bd and _adult_ok(my_bd, FD[i]["release_date"], FD[i]["year"]) and _adult_ok(bd, FD[i]["release_date"], FD[i]["year"]))}
+        def sc(v):
+            nm = min(v["names"], key=len); fk = fold(nm)
+            exact = 0 if q and fk == " ".join(q) else 1 if q and all(any(t.startswith(w) for t in fk.split()) for w in q) else 2
+            return (-len(v["films"]), exact, -v.get("all", 0), fk)
+        hits = sorted((v for v in cand.values() if v["films"] or q), key=sc)[:lim * 2]
+        out, seen = [], set()
+        for v in hits:
+            r = v["row"]
+            if r and r["id"] in seen: continue
+            if r: seen.add(r["id"])
+            nm = r["name"] if r else max(v["names"], key=len)
+            role = max(v["roles"].items(), key=lambda kv: kv[1])[0] if v["roles"] else "cast"
+            out.append(dict(name=nm, pid=r["id"] if r else None, n=len(v["films"]), role=role, known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT.get(role)),
+                            aka=sorted(n for n in v["names"] if n != nm)[:3]))
+            if len(out) >= lim: break
+        return jsonify(people=out)
