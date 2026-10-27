@@ -719,6 +719,7 @@ def init(app, tmdb, posters_dir):
 
     # ---------- Credited with (co-credits): what two or three people made together ----------
     CO = {}  # (ids, data key) -> (at, result)
+    CO_ITEMS = {}  # (person id, data key) -> that person's known credits (library + cached filmographies)
     CO_ADULT_GENRES = ("hardcore", "softcore")
     def _bd(s):
         import datetime
@@ -784,7 +785,11 @@ def init(app, tmdb, posters_dir):
             if not row: return None
             if any(p["row"]["id"] == row["id"] for p in P): continue
             e = person_entry(c, row)
-            P.append(dict(row=row, e=e, keys=co_keys(c, row, e), items=co_items(c, row, e, lib_tp), bd=_bd(row["birthday"])))
+            ik = (row["id"], key[1], key[2]); its = CO_ITEMS.get(ik)
+            if its is None:
+                its = CO_ITEMS[ik] = co_items(c, row, e, lib_tp)
+                if len(CO_ITEMS) > 256: CO_ITEMS.pop(next(iter(CO_ITEMS)))
+            P.append(dict(row=row, e=e, keys=co_keys(c, row, e), items=its, bd=_bd(row["birthday"])))
         if len(P) < 2: return dict(people=P, rows=[], excluded=[], ids=set(), error="Pick two different people.")
         adult_ids = adult_film_ids(c)
         anyadult = any(p["e"]["films"] & adult_ids for p in P)
@@ -986,7 +991,7 @@ def init(app, tmdb, posters_dir):
             nm = min(v["names"], key=len); fk = fold(nm)
             exact = 0 if q and fk == " ".join(q) else 1 if q and all(any(t.startswith(w) for t in fk.split()) for w in q) else 2
             return (-len(v["films"]), exact, -v.get("all", 0), fk)
-        hits = sorted((v for v in cand.values() if v["films"] or q), key=sc)[:lim * 2]
+        hits = sorted((v for v in cand.values() if v["films"] or q), key=sc)[:lim * 3]
         out, seen = [], set()
         for v in hits:
             r = v["row"]
@@ -994,7 +999,16 @@ def init(app, tmdb, posters_dir):
             if r: seen.add(r["id"])
             nm = r["name"] if r else max(v["names"], key=len)
             role = max(v["roles"].items(), key=lambda kv: kv[1])[0] if v["roles"] else "cast"
-            out.append(dict(name=nm, pid=r["id"] if r else None, n=len(v["films"]), role=role, known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT.get(role)),
-                            aka=sorted(n for n in v["names"] if n != nm)[:3]))
-            if len(out) >= lim: break
+            out.append(dict(name=nm, pid=r["id"] if r else None, n=len(v["films"]), total=len(v["films"]), role=role,
+                            known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT.get(role)), aka=sorted(n for n in v["names"] if n != nm)[:3],
+                            _sc=sc(v)))
+            if len(out) >= lim + 4: break
+        # exact numbers for the ones shown: the same set the comparison page counts (library + cached filmographies, age rule)
+        for x in out:
+            if not x["pid"]: continue
+            d = cocredit_data(c, [row["id"], x["pid"]])
+            if d and not d.get("error"): x["n"], x["total"] = len(d["ids"]), len(d["rows"])
+        out.sort(key=lambda x: (-x["total"], -x["n"], x["_sc"][1:]))
+        out = [x for x in out if x["total"] or q][:lim]
+        for x in out: x.pop("_sc")
         return jsonify(people=out)

@@ -55,7 +55,11 @@ assert d["in_library"] == 3 and d["excluded"] == 4 and "no known birth date" in 
 assert cl.get("/api/films?limit=1&cocredit=" + ids).json["total"] == 3
 # suggest: people sharing films with Maren, best first; alias matches
 s = cl.get(f"/api/people/cocredit/suggest?pid={pid['Maren Holt']}").json["people"]
-assert s[0]["name"] == "Tobias Lind" and s[0]["n"] == 3 and s[1]["name"] == "Ann Lee" and "Nobody Known" not in [x["name"] for x in s], s
+assert s[0]["name"] == "Tobias Lind" and s[0]["n"] == 3 and (s[0]["n"], s[0]["total"]) == (d["in_library"], d["total"]) and s[1]["name"] == "Ann Lee" and "Nobody Known" not in [x["name"] for x in s], s
+c.execute("UPDATE people SET birthday='1960-01-01' WHERE name='Tobias Lind'"); c.commit()
+d = cl.get("/api/people/cocredit?ids=" + ids).json
+s = cl.get(f"/api/people/cocredit/suggest?pid={pid['Maren Holt']}").json["people"]
+assert (s[0]["n"], s[0]["total"]) == (d["in_library"], d["total"]) == (5, 6), (s[0], d["total"])  # same numbers as the page
 s = cl.get(f"/api/people/cocredit/suggest?pid={pid['Maren Holt']}&q=t.+lind").json["people"]
 assert s and s[0]["name"] == "Tobias Lind", s
 assert cl.get("/api/people/cocredit?ids=" + str(pid['Maren Holt'])).status_code == 400
