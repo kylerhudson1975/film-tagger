@@ -68,7 +68,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .ppbio{max-width:900px;line-height:1.45;white-space:pre-line}.ppctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}.ppctl a{margin-right:10px}
 .ppbar{display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin:16px 0 4px;padding:8px 0;border-top:1px solid #8884;border-bottom:1px solid #8884}.ppbar a{color:inherit}
 .seg button{border-radius:0}.seg button.on{background:#2a6;color:#fff;border-color:#2a6}
-.ppdept{margin:16px 0 6px}.pplist{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
+.ppdept{margin:16px 0 6px}.pphdr{display:inline-table;width:auto;margin:0}.pphdr th{padding:2px 10px}.pplist{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
 .ppi{display:flex;gap:8px;padding:5px;border:2px solid #8883;border-radius:7px;color:inherit;text-decoration:none;position:relative}
 .ppi.own{border-color:#f5c518;background:#f5c51814;cursor:pointer}.ppi.own:hover{background:#f5c51830}.ppi.not{opacity:.45}.ppi.not:hover{opacity:.85}
 .ppt{width:46px;height:69px;flex:none;background:#4446;border-radius:3px;overflow:hidden}.ppt img{width:100%;height:100%;object-fit:cover}
@@ -831,7 +831,7 @@ async function doScan(){const roots=$('s_roots').value.split('\n').map(s=>s.trim
 async function doImport(){const f=$('s_file').files[0];if(!f)return;if(f.name.endsWith('.json')&&!confirm('This REPLACES your whole database. Continue?'))return;
  const fd=new FormData();fd.append('file',f);const r=await api('/api/import',{method:'POST',body:fd});toast('Imported: '+JSON.stringify(r));refreshMeta();load()}
 // ---------- person search + person pages ----------
-S.people=[];S.peopleTotal=0;S.page=null;S.ppOnly=localStorage.ppOnly=='1';S.ppDesc=localStorage.ppDesc=='1';S.ppScOnly=localStorage.ppScOnly=='1';
+S.people=[];S.peopleTotal=0;S.page=null;S.ppOnly=localStorage.ppOnly=='1';S.ppDesc=localStorage.ppDesc=='1';S.ppKey=localStorage.ppKey||'year';S.ppScOnly=localStorage.ppScOnly=='1';
 const RLBL={director:'Director',cast:'Actor',writer:'Writer',producer:'Producer',cinematographer:'Cinematographer',composer:'Composer'};
 const initials=n=>esc(String(n||'?').split(/\s+/).filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase());
 async function searchPeople(){const q=$('q').value.trim(),inn=$('f_in').value;
@@ -874,22 +874,22 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  </div></div>`;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
-  <span>Sort: <button onclick="ppSort()" title="Toggle year order">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span>
+  ${ppHdr('Role')}
   <span class=muted>Jump to: ${d.groups.map((g,i)=>`<a href="#" onclick="document.getElementById('ppg${i}').scrollIntoView();return false">${esc(g.dept)}</a>`).join(' · ')}</span></div>`;
-  d.groups.forEach((g,i)=>{let l=g.credits.filter(x=>!S.ppOnly||x.film_id);if(S.ppDesc)l=[...l].reverse();const own=g.credits.filter(x=>x.film_id).length;
+  d.groups.forEach((g,i)=>{let l=ppOrd(g.credits.filter(x=>!S.ppOnly||x.film_id),PPG.c);const own=g.credits.filter(x=>x.film_id).length;
    h+=`<h3 id=ppg${i} class=ppdept>${esc(g.dept)} <span class=muted>— you have ${own} of ${g.credits.length}</span></h3>`+(l.length?`<div class=pplist>${l.map(x=>{
     const img=x.film_id&&x.poster?x.poster:x.thumb,inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${x.year||'—'}</div><div class=ppn>${esc(x.title)}</div>${x.role?`<div class=muted>${esc(x.role)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
     return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title)}">${inner}</div>`:`<a class="ppi not" href="https://www.themoviedb.org/movie/${x.tmdb_id}" target=_blank rel=noopener title="Not in your library — open on TMDB">${inner}</a>`}).join('')}</div>`:'<p class=muted>None in your library.</p>')});
  }else{
-  let l=[...d.library];if(S.ppDesc)l.reverse();
-  h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
+  let l=ppOrd(d.library,PPG.l);
+  h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b>${ppHdr('Role')}</div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
- if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id),rest=S.ppScOnly?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
+ if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id),rest=S.ppScOnly?[]:d.scenes.filter(x=>!x.film_id);mine=ppOrd(mine,PPG.s);rest=ppOrd(rest,PPG.s);
   const lim=S.ppLim||200,shown=rest.slice(0,lim),ld=d.scenes_loading;
   const card=x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
    inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
    return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`};
-  h+=`<h3 class=ppdept>Scenes <span class=muted>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
+  h+=`<h3 class=ppdept>Scenes <span class=muted>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3><div class=ppbar>${ppHdr('Studio','Date')}</div>`
    +(S.ppScOnly&&!d.scenes_loading?`<p class=muted>Showing only your ${d.scenes_owned} scene(s); ${Math.max(0,(d.scenes_total||0)-d.scenes_owned)} more on ThePornDB.</p>`:'')
    +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})</p>`:'')
    +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
@@ -897,7 +897,10 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   if(ld&&!S.ppPoll){const pid=d.person.id;S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){}},3000)}}
  c.innerHTML=h+'</div>'}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
-function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
+const PPG={c:{year:x=>x.year,title:x=>x.title,role:x=>x.role},l:{year:x=>x.year,title:x=>x.title,role:x=>x.roles.map(r=>RLBL[r]).join(', ')},s:{year:x=>x.date,title:x=>x.title,role:x=>x.studio}};
+function ppOrd(l,g){const k=S.ppKey||'year',f=g[k]||g.year,dir=S.ppDesc?-1:1,v=x=>{const y=f(x);return k=='year'?(parseFloat(y)||(y?String(y):0)):String(y||'').toLowerCase()};const ix=l.map((x,i)=>[v(x),i,x]);ix.sort((a,b)=>{const A=a[0],B=b[0];return A<B?-dir:A>B?dir:a[1]-b[1]});return ix.map(x=>x[2])}
+function ppHdr(third,first){const so=S.ppKey||'year',th=(k,t)=>{const on=so==k;return `<th class="rp-s${on?' on':''}" onclick="ppSort('${k}')" title="Sort">${t}<span class=rp-ar>${on?(S.ppDesc?' \u25BC':' \u25B2'):''}</span></th>`};return `<table class="rp-t pphdr"><thead><tr>${th('year',first||'Year')}${th('title','Title')}${th('role',third)}</tr></thead></table>`}
+function ppSort(k){k=k||'year';if((S.ppKey||'year')==k)S.ppDesc=!S.ppDesc;else{S.ppKey=k;S.ppDesc=false}localStorage.ppKey=S.ppKey||'year';localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
 async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData;b.disabled=true;b.textContent='⟳ Refreshing…';
  let d;try{d=await api('/api/person/'+pid+'?refresh=1')}catch(e){if(S.page==='person:'+pid){b.disabled=false;b.textContent='↻ Refresh'}toast("Couldn't reach Film Tagger: "+(e.message||e));return}
  if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=d;renderPerson();$('content').scrollTop=st;
@@ -960,9 +963,9 @@ function rpGo(k){RP.cur=k;RP.back=null;const o=RP.opt,[t,ic]=RP.pages[k];$('rpCr
   <div>${['Which country made the most exploitation films?','Which 1970s porn director made the most films tagged Blowjob?','How common was Giallo in each decade?'].map(q=>`<span class=rp-ex onclick="$('rpQ').value=this.textContent;rpAsk()">${esc(q)}</span>`).join('')}</div>
   <p class=muted style="font-size:12.5px;margin:8px 0 0">${o.ai_configured?'Uses your Smart tagging AI connection. Only your question and a list of report types, genres, decades and tag names are sent; never images or file names.':'<b>No AI service is set up</b>, so questions can\'t be answered yet. Add one in Library &amp; Settings → Tags &amp; Categories → Smart tagging, or use the ready-made reports on the left.'} Answers reflect only this library's titles and tags.</p></div></div><div id=rpOut></div>`;return}
  if(k=='synonyms'){$('rpBody').innerHTML=`<div class=fts-card><div class=fts-cb><h3>Tag synonym groups</h3><p class=muted>One group per line, tags separated by commas. Reports treat every tag in a group as the same tag (e.g. a filter on Blowjob also counts Fellatio and Oral Sex). Your tags themselves are not changed.</p><textarea id=rpSyn rows=8 style="width:100%">${esc(o.synonyms.map(g=>g.join(', ')).join('\n'))}</textarea><button class=pri onclick="rpSaveSyn()">Save synonyms</button></div></div>`;return}
- if(k=='country')c=rpSel('rpGen',gen,'','Primary genre')+rpTagInp('Exploitation')+rpSel('rpDec',dec,'','Decade');
- if(k=='directors')c=rpSel('rpScope',[['adult','Adult films (primary genre Hardcore)'],['all','All films']],'adult','Films')+rpSel('rpDec',dec,'1970s','Decade')+rpTagInp('Blowjob')+rpSel('rpRank',[['count','Count'],['share',"Share of director's films"]],'count','Rank by');
- if(k=='tag_decades')c=rpTagInp('Exploitation');
+ if(k=='country')c=rpSel('rpGen',gen,'','Primary genre')+rpTagInp('')+rpSel('rpDec',dec,'','Decade');
+ if(k=='directors')c=rpSel('rpScope',[['adult','Adult films (primary genre Hardcore)'],['all','All films']],'adult','Films')+rpSel('rpDec',dec,'1970s','Decade')+rpTagInp('')+rpSel('rpRank',[['count','Count'],['share',"Share of director's films"]],'count','Rank by');
+ if(k=='tag_decades')c=rpTagInp('');
  if(k=='genres')c=rpSel('rpDec',dec,'','Decade')+rpTagInp('');
  if(k=='studios')c=rpSel('rpDec',dec,'','Released in')+rpTagInp('');
  if(k=='performers')c=rpSel('rpDec',dec,'','Decade');
