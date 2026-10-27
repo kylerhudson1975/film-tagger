@@ -163,7 +163,9 @@ def build_query(q):
 # Studio sort: within a studio, first billed performer A-Z (case/accent folded; none last), then newest release, then id.
 FIRST_PERFORMER = "NULLIF(TRIM(substr(COALESCE(f.cast_,''), 1, instr(COALESCE(f.cast_,'') || ',', ',') - 1)), '')"
 STUDIO_TIE = f"{FIRST_PERFORMER} IS NULL, {FIRST_PERFORMER} COLLATE FOLD, f.release_date IS NULL, f.release_date DESC, "
-SORTS = {"title": "f.title COLLATE FOLD", "year": "f.year", "rating": "f.rating", "runtime": "f.runtime",
+# Release-date sort: full/partial ISO dates compare as text; year-only films act like 'YYYY' (before any dated film that year when ascending).
+RELEASE_SORT = "COALESCE(NULLIF(f.release_date,''), CASE WHEN f.year IS NOT NULL THEN printf('%04d', f.year) END)"
+SORTS = {"title": "f.title COLLATE FOLD", "year": RELEASE_SORT, "release_date": RELEASE_SORT, "rating": "f.rating", "runtime": "f.runtime",
          "added": "f.added_at", "edited": "COALESCE(f.updated_at, f.added_at)", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
 
 def attach(c, films, full=False):
@@ -706,6 +708,20 @@ def parse_tmdb_id(v):
     if not m: raise ValueError(f"Not a TMDB id or movie URL: {s}")
     return int(m.group(1))
 
+def norm_release_date(v):
+    """'1931-02-12', '1931-02' or '1931' (exact day unknown) -> stored as typed; '' -> None. Raises ValueError otherwise."""
+    v = str(v or "").strip().replace("/", "-")
+    if not v: return None
+    m = _re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", v)
+    if not m or not 1870 <= int(m.group(1)) <= 2100: raise ValueError(f"Release date must be YYYY-MM-DD (or YYYY-MM / YYYY if the day is unknown), not {v}")
+    y, mo, dd = int(m.group(1)), m.group(2), m.group(3)
+    if mo is None: return f"{y:04d}"
+    if not 1 <= int(mo) <= 12: raise ValueError(f"Release date month must be 01-12, not {v}")
+    if dd is None: return f"{y:04d}-{int(mo):02d}"
+    import datetime as _dt
+    try: return _dt.date(y, int(mo), int(dd)).isoformat()
+    except ValueError: raise ValueError(f"Not a real date: {v}")
+
 def clean(d):
     out = {}
     for k in FILM_FIELDS:
@@ -722,9 +738,7 @@ def clean(d):
             if k == "aznude_status": v = db.norm_aznude_status(v)
             if k == "subtitles": v = " ".join((v or "").split()) or None
             if k == "tpdb_id": v = tpdb.parse_id(v if isinstance(v, str) else str(v or ""))
-            if k == "release_date":
-                v = (v or "").strip() or None
-                if v and not _re.fullmatch(r"(19|20)\d\d-\d\d-\d\d", v): raise ValueError(f"Release date must be YYYY-MM-DD, not {v}")
+            if k == "release_date": v = norm_release_date(v)
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
                 parts = v if isinstance(v, list) else (v or "").replace(";", "\n").splitlines()
@@ -733,6 +747,7 @@ def clean(d):
                     if t and t not in seen: seen.append(t)
                 v = "\n".join(seen) or None
             out[k] = v
+    if out.get("release_date"): out["year"] = int(out["release_date"][:4])  # year always follows the release date
     return out
 
 @app.post("/api/films")
@@ -758,7 +773,10 @@ def update_film(fid):
     ed = set(json.loads(old["edited_fields"] or "[]"))
     if f.get("primary_genre"):  # hand-typed primary genre: reuse the existing spelling, remember new names for the list
         f["primary_genre"] = db.remember_primary_genre(c, f["primary_genre"])
-    changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}; ed |= changed
+    if "release_date" in f and not f["release_date"] and "year" not in d: f.pop("year", None)  # clearing the date keeps the year
+    changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}
+    if changed & {"year", "release_date"}: changed |= {"year", "release_date"}  # date and year are protected together
+    ed |= changed
     if "subtitles" in changed: f["subs_manual"] = 1  # hand-edited subtitles: scans never overwrite until Re-detect
     if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports
     new_tid = f.get("tmdb_id") if "tmdb_id" in f and f.get("tmdb_id") and f.get("tmdb_id") != old["tmdb_id"] else None
@@ -1476,7 +1494,7 @@ def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
 # Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
-TMDB_NEVER = {"kind", "release_date", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
+TMDB_NEVER = {"kind", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
@@ -1489,7 +1507,7 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
         for x in crew.get("crew", []):
             if x.get("job") in js and x.get("name") and x["name"] not in seen: seen.append(x["name"])
         return ", ".join(seen)
-    upd = dict(title=m.get("title"), year=int(m["release_date"][:4]) if m.get("release_date") else None,
+    upd = dict(title=m.get("title"), year=int(m["release_date"][:4]) if m.get("release_date") else None, release_date=(m.get("release_date") or "")[:10] or None,
                director=", ".join(x["name"] for x in crew.get("crew", []) if x.get("job") == "Director"),
                cast_=", ".join(x["name"] for x in crew.get("cast", [])[:10]), runtime=m.get("runtime"),
                plot=m.get("overview"),
@@ -1511,7 +1529,10 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
         if studios_of(m): upd["studio"] = db.canon_studio(studios_of(m), c)
         upd["studio_checked"] = 1
     ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
-    upd = {k: v for k, v in upd.items() if k not in ed and k not in TMDB_NEVER and k not in set(keep)}
+    lock = ed | set(keep)
+    if lock & {"year", "release_date"}: lock |= {"year", "release_date"}  # a hand-set year or date blocks both
+    if is_scene(c, fid): lock |= {"release_date"}  # scenes keep their ThePornDB/file-name date
+    upd = {k: v for k, v in upd.items() if k not in lock and k not in TMDB_NEVER}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
     if upd.get("title"): upd["title"] = db.strip_title_quotes(upd["title"])
     upd["updated_at"] = time.time()
@@ -2292,6 +2313,7 @@ def apply_scene(c, fid, s, keep=(), override=False):
     f = tpdb.scene_fields(s)
     locked = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
     ed = (set(keep) | ({"poster", "poster_wide"} if "poster" in locked or "poster_wide" in locked else set())) if override else locked | set(keep)
+    if ed & {"year", "release_date"}: ed |= {"year", "release_date"}  # date and year are protected together
     upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
     if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
     if upd.get("studio"): upd["studio"] = db.canon_studio(upd["studio"], c)  # 'angels.love' -> 'Angels Love'
