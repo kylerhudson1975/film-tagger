@@ -41,6 +41,6 @@ class ReleaseDate(unittest.TestCase):
     def test_sort(self):
         self.c.execute("UPDATE films SET release_date='1931-02-12' WHERE id=?", (self.drac,)); self.c.commit()
         rows = self.c.execute(f"SELECT f.id FROM films f WHERE f.id IN (?,?,?) ORDER BY {A.RELEASE_SORT}", (self.drac, self.frank, self.y)).fetchall()
-        self.assertEqual([r[0] for r in rows], [self.y, self.drac, self.frank])
+        self.assertEqual([r[0] for r in rows], [self.drac, self.y, self.frank])  # year-only sorts as 1931-07-01
 
 if __name__ == "__main__": unittest.main()

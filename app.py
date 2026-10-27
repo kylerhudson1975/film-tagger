@@ -163,8 +163,9 @@ def build_query(q):
 # Studio sort: within a studio, first billed performer A-Z (case/accent folded; none last), then newest release, then id.
 FIRST_PERFORMER = "NULLIF(TRIM(substr(COALESCE(f.cast_,''), 1, instr(COALESCE(f.cast_,'') || ',', ',') - 1)), '')"
 STUDIO_TIE = f"{FIRST_PERFORMER} IS NULL, {FIRST_PERFORMER} COLLATE FOLD, f.release_date IS NULL, f.release_date DESC, "
-# Release-date sort: full/partial ISO dates compare as text; year-only films act like 'YYYY' (before any dated film that year when ascending).
-RELEASE_SORT = "COALESCE(NULLIF(f.release_date,''), CASE WHEN f.year IS NOT NULL THEN printf('%04d', f.year) END)"
+# Release-date sort (sort key only; stored/displayed values unchanged): year-only sorts as YYYY-07-01, YYYY-MM as YYYY-MM-15.
+_RD = "COALESCE(NULLIF(f.release_date,''), CASE WHEN f.year IS NOT NULL THEN printf('%04d', f.year) END)"
+RELEASE_SORT = f"CASE length({_RD}) WHEN 4 THEN {_RD} || '-07-01' WHEN 7 THEN {_RD} || '-15' ELSE {_RD} END"
 SORTS = {"title": "f.title COLLATE FOLD", "year": RELEASE_SORT, "release_date": RELEASE_SORT, "rating": "f.rating", "runtime": "f.runtime",
          "added": "f.added_at", "edited": "COALESCE(f.updated_at, f.added_at)", "director": "f.director COLLATE FOLD", "country": "f.country COLLATE FOLD", "studio": "f.studio COLLATE FOLD", "resolution": "CASE f.resolution WHEN 'SD' THEN 1 WHEN '480p' THEN 2 WHEN '576p' THEN 3 WHEN '720p' THEN 4 WHEN '1080p' THEN 5 WHEN '1440p' THEN 6 WHEN '4K' THEN 7 END", "watched": "f.watched", "id": "f.id", "primary_genre": "NULLIF(f.primary_genre,'') COLLATE FOLD", "aznude_status": "f.aznude_status"}
 
