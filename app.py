@@ -8,7 +8,7 @@ import tpdb
 import focus as focusmod
 import gallery as gallerymod
 
-APP_VERSION = "1.2.15"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.2.16"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")

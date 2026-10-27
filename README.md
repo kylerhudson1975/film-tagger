@@ -7,7 +7,26 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.2.16
+Covers everything since v1.2.3 (versions 1.2.4 to 1.2.15 were not published separately).
+
+### ⚙ New Library & Settings window
+- **Windows-style layout:** a sidebar of categories, breadcrumbs, and a search box that finds any setting. Each category (Library folders, Connections, Tags & Categories, background jobs and more) has its own page.
+- **Quit button** in the main header and in the settings header closes Film Tagger completely.
+- The settings header shows the real Film Tagger icon.
+
+### 📁 Scanning and scene folders
+- **Scene folders are scanned completely,** including every studio subfolder, and are scanned first so a large film library cannot hide them. They no longer have to be listed under Library folders too.
+- **A scene folder is never treated as a film library,** so its files are not sent to TMDB. Files already imported from a scene folder become scenes.
+- **Browse…** buttons open the normal Windows folder chooser for film and scene folders.
+- Scans save progress as they go, show the folder being read, and report per folder how many videos were found, which folders could not be opened, and how many files were skipped because you removed them earlier.
+
+### 🎭 Matching and editing
+- **ThePornDB lookups show progress** in the bar at the top and can be cancelled.
+- **Primary genre:** type any genre, or pick from a list built from your Genre tags, genres TMDB saved on your films, genres you used before, and the standard TMDB genres.
+- Updates to the app show straight away without a hard refresh.
 
 ## What's new in v1.2.3
 ### 🖼 Photo galleries
