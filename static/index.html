@@ -867,7 +867,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
  ${p.links&&Object.keys(p.links).length?`<div class=plinks>${Object.entries(p.links).map(([k,u])=>`<a href="${esc(u)}" target=_blank rel=noopener>${esc(k)} ↗</a>`).join(' · ')}</div>`:''}
  ${p.adult?`<div class=ppctl>${p.tpdb_url?`<a href="${esc(p.tpdb_url)}" target=_blank rel=noopener>ThePornDB page ↗</a>`:''}<span class=muted>ThePornDB performer:</span><input id=ppTpdb placeholder="id or ThePornDB URL" value="${esc(p.tpdb_performer_id||'')}" style="width:220px"><button onclick="setPersonTpdb(${p.id})">Load</button>${p.tpdb_manual?`<button onclick="setPersonTpdb(${p.id},true)" title="Forget the manual id and search by name again">Auto</button>`:''}</div>`:''}
- <div class=ppctl><button onclick="editPerson()">✎ Edit profile</button><button onclick="addAlias(${p.id})" title="Add another name this person is credited under (kept when the profile is refreshed)">+ Alias</button><button onclick="mergePerson(${p.id})" title="Fold a duplicate person (e.g. the same performer under another name) into this one">⇄ Merge…</button>${p.merged&&p.merged.length?`<span class=muted>Merged here: ${p.merged.map(m=>`${esc(m.name)} <a href="#" title="Undo this merge" onclick="unmergePerson(${m.id},${p.id});return false">undo</a>`).join(', ')}</span>`:''}</div><div id=ppEdit style="display:none"></div>
+ <div class=ppctl>${p.photo?`<button onclick="cropPhoto(${p.id})" title="Choose the portrait part of the photo (always cut from the full original)">✂ Crop photo</button>`:''}${p.photo_cropped?`<button onclick="resetCrop(${p.id})" title="Go back to the full, uncropped photo">Reset crop</button>`:''}<button onclick="editPerson()">✎ Edit profile</button><button onclick="addAlias(${p.id})" title="Add another name this person is credited under (kept when the profile is refreshed)">+ Alias</button><button onclick="mergePerson(${p.id})" title="Fold a duplicate person (e.g. the same performer under another name) into this one">⇄ Merge…</button>${p.merged&&p.merged.length?`<span class=muted>Merged here: ${p.merged.map(m=>`${esc(m.name)} <a href="#" title="Undo this merge" onclick="unmergePerson(${m.id},${p.id});return false">undo</a>`).join(', ')}</span>`:''}</div><div id=ppEdit style="display:none"></div>
  <div class=ppctl>${p.tmdb_url?`<a href="${esc(p.tmdb_url)}" target=_blank rel=noopener>TMDB page ↗</a>`:''}
  <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
  <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
@@ -916,6 +916,30 @@ async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{
  const fd=new FormData(),f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
  if(f||u){try{await api('/api/person/'+pid+'/photo/upload',{method:'POST',body:fd})}catch(e){toast(e.message||String(e))}}
  showPerson(pid,{keep:true,nohist:true})}
+// ---------- person photo crop: fixed 2:3 portrait frame (the TMDB profile-photo ratio, w300 = 300x450); drag pans, wheel/slider zooms ----------
+const PC_W=300,PC_H=450;
+function cropPhoto(pid){let ov=$('pcOv');if(ov)ov.remove();ov=document.createElement('div');ov.id='pcOv';
+ ov.style.cssText='position:fixed;inset:0;z-index:2100;background:#000d;display:flex;align-items:center;justify-content:center';
+ ov.innerHTML=`<div style="background:var(--bg,#222);padding:14px;border-radius:8px;text-align:center"><div id=pcFr style="position:relative;width:${PC_W}px;height:${PC_H}px;overflow:hidden;background:#111;cursor:grab;outline:2px solid #fff;margin:auto;touch-action:none"><img id=pcImg draggable=false style="position:absolute;left:0;top:0;transform-origin:0 0;max-width:none;user-select:none"></div>
+ <div style="margin:10px 0"><input id=pcZoom type=range min=1 max=6 step=0.01 value=1 style="width:${PC_W}px"></div><div class=muted style="font-size:.85em;margin-bottom:8px">Drag to move, wheel or slider to zoom</div>
+ <button id=pcSave>Save</button> <button onclick="$('pcOv').remove()">Cancel</button></div>`;document.body.appendChild(ov);
+ const img=$('pcImg'),fr=$('pcFr'),z=$('pcZoom');let s0=1,s=1,tx=0,ty=0,W=0,H=0;
+ const clamp=()=>{tx=Math.min(0,Math.max(PC_W-W*s,tx));ty=Math.min(0,Math.max(PC_H-H*s,ty));img.style.transform=`translate(${tx}px,${ty}px) scale(${s})`};
+ const zoomTo=(ns,cx=PC_W/2,cy=PC_H/2)=>{ns=Math.max(s0,Math.min(s0*6,ns));tx=cx-(cx-tx)*ns/s;ty=cy-(cy-ty)*ns/s;s=ns;z.value=s/s0;clamp()};
+ img.onload=()=>{W=img.naturalWidth;H=img.naturalHeight;s0=s=Math.max(PC_W/W,PC_H/H);tx=(PC_W-W*s)/2;ty=(PC_H-H*s)/2;clamp()};
+ img.onerror=()=>{toast('Could not load the photo');ov.remove()};
+ img.src='/api/person/'+pid+'/photo/orig?t='+Date.now();
+ z.oninput=()=>zoomTo(s0*parseFloat(z.value));
+ fr.onwheel=e=>{e.preventDefault();const r=fr.getBoundingClientRect();zoomTo(s*(e.deltaY<0?1.1:1/1.1),e.clientX-r.left,e.clientY-r.top)};
+ let drag=null;fr.onpointerdown=e=>{drag={x:e.clientX-tx,y:e.clientY-ty};fr.setPointerCapture(e.pointerId);fr.style.cursor='grabbing'};
+ fr.onpointermove=e=>{if(!drag)return;tx=e.clientX-drag.x;ty=e.clientY-drag.y;clamp()};
+ fr.onpointerup=fr.onpointercancel=()=>{drag=null;fr.style.cursor='grab'};
+ ov.onclick=e=>{if(e.target===ov)ov.remove()};
+ $('pcSave').onclick=async()=>{if(!W)return;const b={x:-tx/s,y:-ty/s,w:PC_W/s,h:PC_H/s};
+  try{await api('/api/person/'+pid+'/photo/crop',{method:'POST',body:b})}catch(e){toast(e.message||String(e));return}
+  ov.remove();toast('Photo cropped (original kept)');showPerson(pid,{keep:true,nohist:true})}}
+async function resetCrop(pid){try{await api('/api/person/'+pid+'/photo/reset_crop',{method:'POST',body:{}})}catch(e){toast(e.message||String(e));return}
+ toast('Crop removed - showing the full photo');showPerson(pid,{keep:true,nohist:true})}
 async function addAlias(pid){const p=S.ppData.person,a=(prompt('Add an alias for '+p.name+' (another name they are credited under):')||'').trim();if(!a)return;
  try{await api('/api/person/'+pid+'/edit',{method:'POST',body:{aliases:[...(p.aliases||[]),a]}})}catch(e){toast(e.message||String(e));return}showPerson(pid,{keep:true,nohist:true})}
 async function mergePerson(pid){const p=S.ppData.person,n=(prompt('Merge which person into '+p.name+'? Type their name:')||'').trim();if(!n)return;

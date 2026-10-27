@@ -60,7 +60,7 @@ TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing 
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
-             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER")]
+             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 
@@ -476,7 +476,7 @@ def init(app, tmdb, posters_dir):
             tpdb_url=tpid and f"https://theporndb.net/performers/{tpid}", aliases=json.loads(row["aliases"] or "[]"),
             nationality=row["nationality"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
-            edited=json.loads(row["edited_fields"] or "[]"),
+            edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
@@ -531,7 +531,7 @@ def init(app, tmdb, posters_dir):
         name = f"manual-{pid}-{int(time.time())}{ext}"
         with open(os.path.join(PHOTO_DIR, name), "wb") as fh: fh.write(data)
         ed = set(json.loads(c.execute("SELECT edited_fields FROM people WHERE id=?", (pid,)).fetchone()[0] or "[]")) | {"photo"}
-        c.execute("UPDATE people SET photo_file=?, edited_fields=?, fetched_at=? WHERE id=?", (name, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
+        c.execute("UPDATE people SET photo_file=?, photo_orig=NULL, edited_fields=?, fetched_at=? WHERE id=?", (name, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
 
     def photo_from_request(c, pid):
         f = request.files.get("photo")
@@ -571,6 +571,75 @@ def init(app, tmdb, posters_dir):
         if not c.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone(): return jsonify(error="Unknown person"), 404
         err = photo_from_request(c, pid)
         return (jsonify(error=err), 502) if err else jsonify(ok=True)
+
+    # ---------- profile photo crop: always cut from the full original (kept as <name>.orig.<ext>), Reset crop restores it ----------
+    def photo_source(row):
+        """Full-size photo to crop from: the kept original, else the current photo file (downloaded/cached if needed)."""
+        if row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"])): return row["photo_orig"]
+        if row["photo_file"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_file"])): return row["photo_file"]
+        r = person_photo(row["id"])
+        if isinstance(r, tuple): return None
+        for n in os.listdir(PHOTO_DIR) if os.path.isdir(PHOTO_DIR) else []:
+            tp = row["source"] == "tpdb" and row["image_url"]
+            if tp:
+                import hashlib
+                if n.startswith("tpdb-" + hashlib.sha1(row["image_url"].encode()).hexdigest()[:16]): return n
+            elif row["profile_path"] and n == f"person-{row['tmdb_person_id']}-{os.path.basename(row['profile_path'])}": return n
+        return None
+
+    @app.get("/api/person/<int:pid>/photo/orig")
+    def person_photo_orig(pid):
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        n = row and photo_source(row)
+        if not n: return jsonify(error="No photo"), 404
+        return send_from_directory(PHOTO_DIR, n, max_age=0)
+
+    @app.post("/api/person/<int:pid>/photo/crop")
+    def person_photo_crop(pid):
+        """{x, y, w, h} in pixels of the full original -> cropped JPEG/PNG becomes the photo (marked hand-edited)."""
+        import cv2
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        src = photo_source(row)
+        if not src: return jsonify(error="This person has no photo to crop"), 404
+        with open(os.path.join(PHOTO_DIR, src), "rb") as fh: data = fh.read()
+        import numpy as np
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None: return jsonify(error="Could not read the photo"), 400
+        h, w = img.shape[:2]; d = request.get_json(silent=True) or {}
+        try:
+            x = min(max(0, int(round(float(d["x"])))), w - 1); y = min(max(0, int(round(float(d["y"])))), h - 1)
+            cw = min(max(1, int(round(float(d["w"])))), w - x); ch = min(max(1, int(round(float(d["h"])))), h - y)
+        except Exception: return jsonify(error="Bad crop box"), 400
+        stem, ext = os.path.splitext(src)
+        if stem.endswith(".orig"): stem = stem[:-5]
+        orig = src if src == row["photo_orig"] else f"{stem}.orig{ext}"
+        if orig != src:
+            import shutil; shutil.copyfile(os.path.join(PHOTO_DIR, src), os.path.join(PHOTO_DIR, orig))
+        png = ext.lower() == ".png"
+        ok, buf = cv2.imencode(".png" if png else ".jpg", img[y:y + ch, x:x + cw], [] if png else [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not ok: return jsonify(error="Could not encode the cropped photo"), 500
+        name = f"{stem}.crop-{int(time.time())}{'.png' if png else '.jpg'}"
+        with open(os.path.join(PHOTO_DIR, name), "wb") as fh: fh.write(buf.tobytes())
+        old = row["photo_file"]
+        ed = set(json.loads(row["edited_fields"] or "[]")) | {"photo"}
+        c.execute("UPDATE people SET photo_file=?, photo_orig=?, edited_fields=?, fetched_at=? WHERE id=?", (name, orig, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
+        if old and old not in (name, orig) and ".crop-" in old:
+            try: os.remove(os.path.join(PHOTO_DIR, old))
+            except OSError: pass
+        return jsonify(ok=True, width=cw, height=ch, orig_width=w, orig_height=h, photo=f"/api/person/{pid}/photo?v={int(time.time())}")
+
+    @app.post("/api/person/<int:pid>/photo/reset_crop")
+    def person_photo_reset_crop(pid):
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        if not (row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))): return jsonify(error="The photo is not cropped"), 400
+        old = row["photo_file"]
+        c.execute("UPDATE people SET photo_file=?, photo_orig=NULL, fetched_at=? WHERE id=?", (row["photo_orig"], time.time(), pid)); c.commit()
+        if old and ".crop-" in old:
+            try: os.remove(os.path.join(PHOTO_DIR, old))
+            except OSError: pass
+        return jsonify(ok=True)
 
     @app.post("/api/person/<int:pid>/merge")
     def person_merge(pid):
