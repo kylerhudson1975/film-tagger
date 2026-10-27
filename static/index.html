@@ -957,7 +957,7 @@ async function saveNewPerson(){const n=$('ppe_name').value.trim();if(!n){toast('
  PPF.forEach(([k])=>{const v=$('ppe_'+k).value.trim();if(v)fd.append(k,v)});const f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
  let r;try{r=await api('/api/people/new',{method:'POST',body:fd})}catch(e){toast(e.message||String(e));return}if(r.warning)toast(r.warning);closeM();showPerson(r.id)}
 async function setPersonTmdb(pid,auto){await api('/api/person/'+pid+'/tmdb',{method:'POST',body:{tmdb:auto?'':$('ppTmdb').value}});showPerson(pid,{keep:true,nohist:true})}
-S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');setIn(localStorage.searchIn||'');$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();api('/api/about').then(a=>{if($('ver'))$('ver').textContent='v'+a.version}).catch(()=>{});
+S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLib('');$('q').value='';setIn('');/* always start on Search in: Everything with an empty search */$('f_in').addEventListener('change',e=>{setIn(e.target.value);if($('q').value.trim())load()});loadLibs().then(load);refreshMeta();pollJob();api('/api/about').then(a=>{if($('ver'))$('ver').textContent='v'+a.version}).catch(()=>{});
 
 // Back to top: tracks whichever container scrolls (#content library/person pages, #modal, any long panel)
 (function(){const b=document.getElementById('totop');let el=null;
