@@ -12,6 +12,7 @@ button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:v
 .row>.sidebtn{flex:0 0 auto;width:auto;white-space:nowrap;padding-left:10px;padding-right:10px;align-self:center}
 #main{flex:1;display:flex;flex-direction:column;min-width:0}
 #bar{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid var(--b);background:var(--p);flex-wrap:wrap}
+#navRow{flex:0 0 100%;width:100%;display:flex;gap:8px;align-items:center;justify-content:flex-start;flex-wrap:wrap}
 #q{flex:1;min-width:200px}#count{color:var(--m)}
 #bulk{display:none;gap:6px;padding:8px 10px;background:#1d2a40;border-bottom:1px solid var(--b);align-items:center;flex-wrap:wrap}
 #totop{position:fixed;right:22px;bottom:22px;z-index:50;width:42px;height:42px;border-radius:50%;border:1px solid var(--b);background:var(--p2);color:var(--t);font-size:20px;line-height:1;cursor:pointer;box-shadow:0 2px 10px #0008;opacity:0;pointer-events:none;transition:opacity .2s}#totop.on{opacity:.9;pointer-events:auto}#totop:hover{opacity:1;border-color:var(--a);color:var(--a)}
@@ -123,7 +124,6 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 <div id="main">
  <div id="scanNote" class="muted" style="display:none;padding:8px 12px"></div>
  <div id="bar">
-  <button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button>
   <input type=hidden id="f_lib"><input type=hidden id="f_person"><input type=hidden id="f_prole"><div style="position:relative"><button id="libBtn" onclick="event.stopPropagation();toggleLibPop()" title="Library folder">📁 All libraries ▾</button>
   <div id="libPop" onclick="event.stopPropagation()"><input id="libSearch" placeholder="Filter folders…" autocomplete="off"><div id="libTree"></div></div></div>
   <select id="f_in" title="Which field the text search looks in"><option value="">Search in: Everything</option><option value="people">Search in: People</option><option value="title">Search in: Title</option><option value="plot">Search in: Plot</option><option value="cast">Search in: Cast</option><option value="director">Search in: Director</option><option value="notes">Search in: Notes</option><option value="tags">Search in: Tags</option><option value="path">Search in: File path</option><option value="country">Search in: Country</option><option value="studio">Search in: Studio</option><option value="resolution">Search in: Resolution</option><option value="subtitles">Search in: Subtitles</option></select>
@@ -136,9 +136,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
   <button onclick="openQueue()" id="queueBtn">Queue</button>
   <button onclick="newFilm()">+ Film</button>
   <button onclick="newPerson()" title="Add a performer or other person by hand">+ Person</button>
-  <button onclick="openReports()" title="Reports and questions about your library">📊 Reports</button><button onclick="openSettings()">⚙ Library & Settings</button>
-  <button onclick="openAbout()" title="About Film Tagger">ⓘ About</button>
-  <button id="updBtn" onclick="openUpdates(true)" title="Check for Updates" style="position:relative">⟳ Updates<span id="updDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:#e5484d"></span></button>
+  <div id="navRow"><button id="homeBtn" onclick="goHome()" title="Home: reset all filters (Alt+H)">🏠 Home</button><button onclick="openSettings()">⚙ Library & Settings</button><button onclick="openReports()" title="Reports and questions about your library">📊 Reports</button><button onclick="openAbout()" title="About Film Tagger">ⓘ About</button><button id="updBtn" onclick="openUpdates(true)" title="Check for Updates" style="position:relative">⟳ Updates<span id="updDot" style="display:none;position:absolute;top:2px;right:2px;width:8px;height:8px;border-radius:50%;background:#e5484d"></span></button></div>
  </div>
  <div id="jobbar"><b id="jbLabel"></b><div class="track"><div class="fill" id="jbFill"></div></div><span id="jbText"></span><button id="jbCancel" onclick="cancelJob()">Cancel</button><button id="jbClose" onclick="$('jobbar').style.display='none';S.jbHide=S.jbKey">×</button></div>
  <div id="bulk"><b id="selN"></b>
