@@ -74,6 +74,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .ppt{width:46px;height:69px;flex:none;background:#4446;border-radius:3px;overflow:hidden}.ppt img{width:100%;height:100%;object-fit:cover}
 .ppx{min-width:0}.ppy{font-weight:bold}.ppn{overflow:hidden;text-overflow:ellipsis}.pplib{position:static;display:inline-block;margin-top:3px;background:#f5c518;color:#000}
 .fts-box{width:min(1180px,97vw)!important;padding:0!important;overflow:hidden!important}.fts-box>.mclose{top:14px;right:16px}
+#mbox.fts-win{position:fixed;margin:0;max-width:none!important}#mbox.fts-win>.fts{height:100%!important}#mbox.fts-win .fts-head,#mbox.fts-win .fts-brand{cursor:move;user-select:none}.fw-h{position:absolute;z-index:6}.fw-h[data-d=n],.fw-h[data-d=s]{left:16px;right:16px;height:6px;cursor:ns-resize}.fw-h[data-d=n]{top:0}.fw-h[data-d=s]{bottom:0}.fw-h[data-d=e],.fw-h[data-d=w]{top:16px;bottom:16px;width:6px;cursor:ew-resize}.fw-h[data-d=e]{right:0}.fw-h[data-d=w]{left:0}.fw-h[data-d=ne],.fw-h[data-d=nw],.fw-h[data-d=se],.fw-h[data-d=sw]{width:16px;height:16px}.fw-h[data-d=ne]{top:0;right:0;cursor:nesw-resize}.fw-h[data-d=sw]{bottom:0;left:0;cursor:nesw-resize}.fw-h[data-d=nw]{top:0;left:0;cursor:nwse-resize}.fw-h[data-d=se]{bottom:0;right:0;cursor:nwse-resize}body.fw-busy,body.fw-busy *{user-select:none!important}
 .fts{display:flex;height:min(820px,calc(100vh - 60px))}.fts-nav{width:260px;flex-shrink:0;background:var(--p);border-right:1px solid var(--b);display:flex;flex-direction:column;overflow:auto;padding-bottom:10px}
 .fts-brand{display:flex;gap:10px;align-items:center;padding:16px 16px 8px;font-weight:600}.fts-brand small{display:block;color:var(--m);font-weight:400;font-size:11px}.fts-logo{width:34px;height:34px;border-radius:9px;object-fit:contain;flex-shrink:0}
 .fts-search{position:relative;margin:6px 12px 10px}.fts-search svg{position:absolute;left:9px;top:9px;color:var(--m)}.fts-search input{width:100%;padding:7px 10px 7px 30px;border-radius:8px;background:var(--bg)}.fts-search input:focus{outline:none;border-color:var(--a)}
@@ -316,7 +317,7 @@ async function loadStudios(){try{const l=await api('/api/studios');$('studiolist
 async function loadCountries(){try{const l=await api('/api/countries');$('countrylist').innerHTML=l.map(c=>`<option value="${esc(c.name)}">${esc(c.name)} (${c.n})</option>`).join('')}catch(e){}}
 function filterTag(n){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');renderMpaa();S.sel.clear();$('f_all').value=n;load()}
 function closeM(){if(!S.restoring&&!S.keepFilm&&history.state&&history.state.film)history.replaceState({...history.state,film:null},'');$('modal').style.display='none';S.openId=null;S.tpGen=(S.tpGen||0)+1}
-function openM(h){$('mbox').classList.remove('fts-box');S.openId=S.pendOpen||null;S.pendOpen=null;S.tpGen=(S.tpGen||0)+1;$('mbox').innerHTML='<button class=mclose title="Close (Esc)" onclick="closeM()">×</button>'+h;$('modal').style.display='flex'}
+function openM(h){$('mbox').classList.remove('fts-box','fts-win');$('mbox').removeAttribute('style');S.openId=S.pendOpen||null;S.pendOpen=null;S.tpGen=(S.tpGen||0)+1;$('mbox').innerHTML='<button class=mclose title="Close (Esc)" onclick="closeM()">×</button>'+h;$('modal').style.display='flex'}
 const catOpts=sel=>'<option value="">(no category)</option>'+S.cats.map(c=>`<option ${c==sel?'selected':''}>${esc(c)}</option>`).join('');
 function pendHtml(f){return f.pending.length?`<div class=pend><b style="color:var(--ai)">Pending AI tags</b> <button onclick="review(${f.id},null,'approve')">Approve all</button> <button onclick="review(${f.id},null,'reject')">Reject all</button><br>`+
  f.pending.map(t=>`<span class="tag ai">${t.category?`<span class=c>${esc(t.category)}</span>`:''}${esc(t.name)} <x style="color:var(--ok)" onclick="review(${f.id},[${t.id}],'approve')">✓</x><x style="color:var(--bad)" onclick="review(${f.id},[${t.id}],'reject')">✗</x></span>`).join('')+'</div>':''}
@@ -696,7 +697,7 @@ async function openSettings(){const s=await api('/api/settings');setTimeout(load
  `,stop:`<h3>Stop the app</h3><p class=muted>Film Tagger runs quietly in the background. Use this to stop it completely.</p><button onclick="quitApp()" style="color:var(--bad)">Quit Film Tagger</button>`,dbpath:`<p class=muted>Database file: ${esc(s.db_path)}</p>`};
  const P=FTS.pages(F);let h='<div class=fts><nav class=fts-nav><div class=fts-brand><img class=fts-logo src="/static/logo-icon.png" alt=""><div>Film Tagger<small>Library &amp; Settings</small></div><button class=ft-quit onclick="quitApp()" title="Quit Film Tagger (stops the app completely)" aria-label="Quit Film Tagger"><svg width=14 height=14 viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=2.2 stroke-linecap=round><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>Quit</button></div><div class=fts-search>'+FTS.ic('search',15)+'<input id=ftsQ placeholder="Find a setting" autocomplete=off oninput="FTS.find(this.value)"><div id=ftsRes></div></div><div id=ftsNav></div></nav><main class=fts-main><header class=fts-head><button class=fts-back id=ftsBack onclick="FTS.back()" title="Back">'+FTS.ic('back',16)+'</button><div><div id=ftsCrumb class=fts-crumb></div><h2 id=ftsTitle></h2></div></header><div class=fts-body id=ftsBody>';
  for(const k in P)h+='<section class=fts-page id="ftsp_'+k+'" style="display:none">'+P[k].html+'</section>';
- openM(h+'</div></main></div>');$('mbox').classList.add('fts-box');FTS.P=P;FTS.go(FTS.cur&&P[FTS.cur]?FTS.cur:'libraries',true);pollJob()}
+ openM(h+'</div></main></div>');$('mbox').classList.add('fts-box');ftsWin('settings');FTS.P=P;FTS.go(FTS.cur&&P[FTS.cur]?FTS.cur:'libraries',true);pollJob()}
 const FTS={cur:null,hist:[],P:{},
  I:{film:'<rect x=3 y=5 width=18 height=14 rx=2 /><path d="M7 5v14M17 5v14M3 12h4M17 12h4"/>',search:'<circle cx=11 cy=11 r=7 /><path d="m20 20-4-4"/>',back:'<path d="M15 18l-6-6 6-6"/>',lib:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',scan:'<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',tag:'<path d="M20 12l-8 8-9-9V3h8z"/><circle cx=7.5 cy=7.5 r=1.5 />',ppl:'<circle cx=9 cy=8 r=4 /><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/><path d="M17 4a4 4 0 0 1 0 8M22 21c0-3-2-5-4-5.5"/>',gal:'<rect x=3 y=3 width=18 height=18 rx=2 /><circle cx=9 cy=9 r=2 /><path d="m21 15-5-5L5 21"/>',file:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M9 15h6"/>',plug:'<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/>',ai:'<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>',info:'<circle cx=12 cy=12 r=9 /><path d="M12 11v6M12 7.5v.5"/>',studio:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/>',db:'<ellipse cx=12 cy=5 rx=8 ry=3 /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',power:'<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>',key:'<circle cx=7 cy=15 r=4 /><path d="m10 12 10-10M17 5l3 3"/>',post:'<rect x=5 y=2 width=14 height=20 rx=2 /><path d="M9 7h6M9 11h6"/>',chev:'<path d="m9 6 6 6-6 6"/>'},
  COL:['#5b9cff','#3fbf7f','#c58bff','#f08a5d','#4fc3c9','#8b93a1','#e0b341','#ef5b5b','#f48fb1','#9ccc65','#ff7043','#7986cb','#a1887f','#4db6ac'],
@@ -974,7 +975,7 @@ const RP={cur:'ask',opt:null,last:null,
  ic(n,z=18){return `<svg width=${z} height=${z} viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round>${RP.I[n]}</svg>`}};
 async function openReports(){if(!RP.opt)RP.opt=await api('/api/reports/options');
  openM(`<div class=fts><nav class=fts-nav><div class=fts-brand><img class=fts-logo src="/static/logo-icon.png" alt=""><div>Film Tagger<small>Reports</small></div></div><div id=rpNav></div></nav><main class=fts-main><header class=fts-head><button class=fts-back id=rpBack onclick="rpGo(RP.back||'ask')" title="Back">${RP.ic('chart',16)}</button><div><div id=rpCrumb class=fts-crumb></div><h2 id=rpTitle></h2></div></header><div class=fts-body id=rpBody></div></main></div>`);
- $('mbox').classList.add('fts-box');rpGo(RP.cur)}
+ $('mbox').classList.add('fts-box');ftsWin('reports');rpGo(RP.cur)}
 function rpSel(id,list,val,lab){return `<label class=rp-l>${lab}<select id=${id} onchange="rpRun()">${list.map(x=>{const v=Array.isArray(x)?x[0]:x,t=Array.isArray(x)?x[1]:x;return `<option value="${esc(v)}"${v==val?' selected':''}>${esc(t)}</option>`}).join('')}</select></label>`}
 function rpTagInp(val){return `<label class=rp-l>Tag<input id=rpTag list=rpTags value="${esc(val||'')}" placeholder="any tag" onchange="rpRun()" style="width:200px"><datalist id=rpTags>${RP.opt.tags.map(t=>`<option value="${esc(t)}">`).join('')}</datalist></label>`}
 function rpGo(k){RP.cur=k;RP.back=null;const o=RP.opt,[t,ic]=RP.pages[k];$('rpCrumb').innerHTML=`Reports › <b>${t}</b>`;$('rpTitle').textContent=t;$('rpBack').disabled=true;
@@ -1030,4 +1031,28 @@ function rpDlTable(){const L=RP.dl.films,so=RP.dl.sort,sc=L.filter(f=>f.scene).l
  const th=(k,t,n)=>{const on=so&&so.key==k;return `<th class="rp-s${n?' n':''}${on?' on':''}" onclick="rpDlSort('${k}')" title="Sort">${t}<span class=rp-ar>${on?(so.dir<0?' \u25BC':' \u25B2'):''}</span></th>`};
  return `<table class=rp-t><thead><tr>${th('t','Title')}${th('d',c2)}${th('y','Year',1)}</tr></thead><tbody>${l.map(([f])=>`<tr onclick="openFilm(${f.id})"><td>${esc(f.title)}</td><td class=muted>${f.scene?esc(f.studio||'scene'):esc(f.director||'')}</td><td class="n muted">${f.year||''}</td></tr>`).join('')}</tbody></table>`}
 function rpDlSort(k){const so=RP.dl.sort;RP.dl.sort=so&&so.key==k?{key:k,dir:-so.dir}:{key:k,dir:1};$('rpDlT').innerHTML=rpDlTable()}
+
+/* Movable / resizable Settings and Reports windows: drag the title bar, resize from any edge or corner, double-click the title bar to reset. Geometry is remembered per window. */
+const FW={min:[560,380],moved:false,
+ def(){const W=innerWidth,H=innerHeight,w=Math.min(1180,Math.round(W*.97)),h=Math.min(822,H-58);return {x:Math.round((W-w)/2),y:30,w,h}},
+ clamp(g){const W=innerWidth,H=innerHeight;g.w=Math.max(Math.min(FW.min[0],W),Math.min(g.w,W));g.h=Math.max(Math.min(FW.min[1],H),Math.min(g.h,H));g.y=Math.min(Math.max(0,g.y),H-48);g.x=Math.min(Math.max(80-g.w,g.x),W-80);return g},
+ apply(b,g){FW.clamp(g);for(const[k,v]of[['left',g.x],['top',g.y],['width',g.w],['height',g.h]])b.style.setProperty(k,Math.round(v)+'px','important');b._fw=g},
+ save(){const b=$('mbox');if(b._fwKey&&b._fw)localStorage['win.'+b._fwKey]=JSON.stringify(b._fw)}};
+function ftsWin(key){const b=$('mbox');if(innerWidth<=760)return;let g=null;try{g=JSON.parse(localStorage['win.'+key]||'null')}catch(e){}
+ if(!g||!(g.w>0&&g.h>0))g=FW.def();b.classList.add('fts-win');b._fwKey=key;FW.apply(b,g);
+ for(const d of['n','s','e','w','ne','nw','se','sw']){const h=document.createElement('div');h.className='fw-h';h.dataset.d=d;b.appendChild(h)}}
+function fwBar(t){const bar=t.closest&&t.closest('#mbox.fts-win .fts-head,#mbox.fts-win .fts-brand');if(!bar)return false;const c=t.closest('button,input,select,textarea,a,label,[onclick],[contenteditable]');return !(c&&bar.contains(c))}
+document.addEventListener('mousedown',e=>{if(e.button!==0)return;const b=$('mbox');if(!b||!b.classList.contains('fts-win'))return;
+ const hd=e.target.closest&&e.target.closest('.fw-h'),bar=!hd&&fwBar(e.target);if(!hd&&!bar)return;
+ e.preventDefault();const d=hd?hd.dataset.d:'',g0={...b._fw},sx=e.clientX,sy=e.clientY;let moved=false;document.body.classList.add('fw-busy');
+ const mv=ev=>{const dx=ev.clientX-sx,dy=ev.clientY-sy;if(Math.abs(dx)+Math.abs(dy)>2)moved=true;const g={...g0};
+  if(!d){g.x+=dx;g.y+=dy}else{const W=FW.min[0],H=FW.min[1];
+   if(d.includes('e'))g.w=Math.max(W,g0.w+dx);if(d.includes('s'))g.h=Math.max(H,g0.h+dy);
+   if(d.includes('w')){g.w=Math.max(W,g0.w-dx);g.x=g0.x+g0.w-g.w}if(d.includes('n')){const ny=Math.max(0,g0.y+dy);g.h=Math.max(H,g0.h-(ny-g0.y));g.y=g0.y+g0.h-g.h}}
+  FW.apply(b,g)};
+ const up=()=>{removeEventListener('mousemove',mv);removeEventListener('mouseup',up);document.body.classList.remove('fw-busy');if(moved){FW.moved=true;FW.save();setTimeout(()=>FW.moved=false,0)}};
+ addEventListener('mousemove',mv);addEventListener('mouseup',up)});
+document.addEventListener('click',e=>{if(FW.moved){FW.moved=false;e.stopPropagation();e.preventDefault()}},true);
+document.addEventListener('dblclick',e=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&fwBar(e.target)){delete localStorage['win.'+b._fwKey];FW.apply(b,FW.def())}});
+addEventListener('resize',()=>{const b=$('mbox');if(b&&b.classList.contains('fts-win')&&b._fw)FW.apply(b,{...b._fw})});
 </script></body></html>
