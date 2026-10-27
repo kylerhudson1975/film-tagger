@@ -295,3 +295,190 @@ def parse_spec(text):
     v = json.loads(t[i:j + 1])
     if not isinstance(v, dict): raise ValueError("The AI reply was not a JSON object")
     return {k: v[k] for k in ("report", "genre", "tag", "decade", "scope", "rank", "limit") if k in v}
+
+
+# ---------- Ask a question, free form: the AI writes ONE read-only SELECT ----------
+# Safety: separate read-only connection (URI mode=ro + PRAGMA query_only), one SELECT/WITH statement only, a
+# keyword blacklist, a ~10 s progress-handler timeout and a 200-row cap. Performer data is only reachable through
+# the TEMP table film_cast, which holds only (film, person) pairs for people with a known birth date on titles
+# released when they were adults; TEMP 'films' and 'people' shadow the real tables so cast_ cannot be read directly.
+import sqlite3, time
+SQL_MAX_ROWS, SQL_TIMEOUT = 200, 10.0
+_BAD = re.compile(r"\b(attach|detach|pragma|insert|update|delete|drop|create|alter|vacuum|reindex|analyze|"
+                  r"load_extension|readfile|writefile|main|sqlite_master|sqlite_schema|sqlite_temp_master|cast_|"
+                  r"birthday|merged_into)\b", re.I)
+_ADULT_ON = "(kind IS NULL OR kind!='scene') AND primary_genre='Hardcore'"
+
+
+def _db_file(c):
+    for r in c.execute("PRAGMA database_list"):
+        if r[1] == "main": return r[2]
+
+
+def _adult_ok(bd, rd, y):
+    adult_from = bd.replace(year=bd.year + 18) if not (bd.month == 2 and bd.day == 29) else datetime.date(bd.year + 18, 3, 1)
+    rel = None
+    if rd:
+        try: rel = datetime.date.fromisoformat(rd[:10])
+        except ValueError: rel = None
+    return (rel >= adult_from) if rel else (y is not None and y >= bd.year + 19)
+
+
+def _ro_conn(c):
+    """Read-only connection with pre-expanded TEMP tables; returns (conn, names of every cast member, safe names)."""
+    path = _db_file(c)
+    r = sqlite3.connect("file:" + path.replace("\\", "/").replace("?", "%3F") + "?mode=ro", uri=True, timeout=10)
+    cols = [x[1] for x in r.execute("PRAGMA table_info(films)") if x[1] != "cast_"]
+    r.execute("CREATE TEMP TABLE films AS SELECT " + ",".join('"%s"' % x for x in cols) + " FROM main.films")
+    r.execute("CREATE TEMP TABLE film_directors(film_id INTEGER, director TEXT)")
+    r.execute("CREATE TEMP TABLE film_cast(film_id INTEGER, person TEXT)")
+    people = {}
+    try:
+        pcols = [x[1] for x in r.execute("PRAGMA main.table_info(people)") if x[1] not in ("birthday", "merged_into")]
+        r.execute("CREATE TEMP TABLE people AS SELECT " + ",".join('"%s"' % x for x in pcols) + ", substr(birthday,1,4)+0 AS birth_year"
+                  " FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'")
+        for n, b in r.execute("SELECT name,birthday FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
+            try: people[n.lower()] = (n, datetime.date.fromisoformat(b))
+            except ValueError: pass
+    except sqlite3.OperationalError:
+        r.execute("CREATE TEMP TABLE people(name TEXT, birth_year INTEGER)")
+    dirs, cast, everyone = [], set(), set()
+    for fid, d, ca, rd, y in r.execute("SELECT id,director,cast_,release_date,year FROM main.films"):
+        for x in _split(d): dirs.append((fid, x))
+        for nm in _split(ca):
+            everyone.add(nm.lower()); p = people.get(nm.lower())
+            if p and _adult_ok(p[1], rd, y): cast.add((fid, p[0]))
+    r.executemany("INSERT INTO film_directors VALUES(?,?)", dirs)
+    r.executemany("INSERT INTO film_cast VALUES(?,?)", sorted(cast))
+    r.execute("PRAGMA query_only=1")
+    safe = {p for _, p in cast}
+    return r, everyone, {s.lower() for s in safe}
+
+
+def sql_schema(c):
+    tags = [t for t in options(c)["tags"][:60]]
+    return (
+        "SQLite tables (use ONLY these):\n"
+        " films(id, title, year, release_date 'YYYY-MM-DD' or NULL, director (comma-separated), country, studio, primary_genre,"
+        " kind ('scene' for scenes, NULL for films))\n"
+        " film_directors(film_id, director)  -- one row per film per director (already split)\n"
+        " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
+        " people(name, birth_year, ...)  -- performers/people\n"
+        " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'\n"
+        "Notes:\n"
+        " - 'Classic Porn' / porn / adult films = films WHERE " + _ADULT_ON + ".\n"
+        " - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres. Common tags: " + json.dumps(tags) + "\n"
+        " - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(synonyms(c)) + "\n"
+        " - Decade: (year/10)*10. Compare names case-insensitively (LIKE or COLLATE NOCASE).\n"
+        " - When each row is ONE film, include films.id AS id. When rows are groups (GROUP BY a person, country, decade...),"
+        " do NOT select films.id; instead include group_concat(DISTINCT films.id) AS film_ids so the user can click through.\n"
+        " - For 'which ... the most' questions return the top 10 ranked rows (ORDER BY count DESC LIMIT 10), not just 1.\n"
+        " - Give columns readable aliases (e.g. director, films, decade).\n"
+        "Examples:\n"
+        " Q: Which director did Jane Doe work with the most? -> SELECT d.director, COUNT(DISTINCT d.film_id) AS films,"
+        " group_concat(DISTINCT d.film_id) AS film_ids FROM film_directors d JOIN film_cast fc ON fc.film_id=d.film_id"
+        " WHERE fc.person LIKE 'Jane Doe' GROUP BY d.director ORDER BY films DESC LIMIT 10\n"
+        " Q: How many horror films per decade? -> SELECT (year/10)*10 AS decade, COUNT(*) AS films, group_concat(id) AS film_ids"
+        " FROM films WHERE primary_genre LIKE 'Horror' AND year IS NOT NULL GROUP BY decade ORDER BY decade\n"
+        " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n")
+
+
+def sql_prompt(c, question):
+    return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) +
+            'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>"}\n'
+            "Limit results to at most 50 rows unless asked otherwise.\nQuestion: " + question.strip()[:500])
+
+
+def _parse_sql_reply(text):
+    t = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t)
+    i, j = t.find("{"), t.rfind("}")
+    v = None
+    if i >= 0 and j > i:
+        try: v = json.loads(t[i:j + 1])
+        except ValueError: v = None
+    if not isinstance(v, dict):
+        m = re.search(r"((?:SELECT|WITH)\b.*)", t, re.S | re.I)
+        if not m: raise ValueError("The AI reply had no query")
+        v = {"sql": m.group(1), "reading": ""}
+    return str(v.get("reading") or "").strip(), str(v.get("sql") or "").strip()
+
+
+def check_sql(sql):
+    s = re.sub(r"--[^\n]*|/\*.*?\*/", " ", sql, flags=re.S).strip().rstrip(";").strip()
+    if not re.match(r"(?is)^(select|with)\b", s): raise ValueError("Only SELECT queries are allowed")
+    if ";" in s: raise ValueError("Only one statement is allowed")
+    m = _BAD.search(re.sub(r"'(?:[^']|'')*'", "''", s))
+    if m: raise ValueError(f"'{m.group(0)}' is not allowed in the query")
+    return s
+
+
+def run_sql(r, sql, everyone, safe):
+    s = check_sql(sql)
+    t0 = time.monotonic()
+    r.set_progress_handler(lambda: 1 if time.monotonic() - t0 > SQL_TIMEOUT else 0, 2000)
+    try:
+        cur = r.execute(s)
+        cols = [d[0] for d in cur.description or []]
+        raw = cur.fetchmany(SQL_MAX_ROWS + 1)
+        if re.search(r"\bgroup\s+by\b", s, re.I) and "id" in cols:  # a bare id in a grouped row is an arbitrary film
+            k = cols.index("id"); cols = cols[:k] + cols[k + 1:]; raw = [tuple(x[:k]) + tuple(x[k + 1:]) for x in raw]
+    except sqlite3.OperationalError as e:
+        if "interrupt" in str(e).lower(): raise ValueError("The query took too long (over 10 seconds)")
+        raise
+    finally: r.set_progress_handler(None, 0)
+    unsafe = set()
+    if re.search(r"\b(film_cast|people)\b", s, re.I):  # film_cast is already safe; this also catches names leaking via other columns
+        dirs = {d.lower() for (d,) in r.execute("SELECT DISTINCT director FROM film_directors")}
+        unsafe = everyone - safe - dirs
+    rows, dropped = [], 0
+    for row in raw[:SQL_MAX_ROWS]:  # age rule post-filter: no row may name a performer outside the safe list
+        if any(isinstance(v, str) and any(p.strip().lower() in unsafe for p in v.split(",")) for v in row): dropped += 1; continue
+        rows.append(list(row))
+    return cols, rows, len(raw) > SQL_MAX_ROWS, dropped
+
+
+def ask(c, question, chat):
+    """chat(prompt)->text. Returns a result dict; mode 'sql' or (fallback) the old spec report."""
+    tries, err, reading, sql = [], None, "", ""
+    try:
+        r, everyone, safe = _ro_conn(c)
+    except Exception as e:
+        r, err = None, e
+    prompt = sql_prompt(c, question) if r else None
+    for attempt in range(2):
+        if not r: break
+        try:
+            reading, sql = _parse_sql_reply(chat(prompt))
+            cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
+            if attempt == 0 and not rows: raise ValueError("the query ran but returned no rows; check names, joins and filters")
+            break
+        except Exception as e:
+            err = e; tries.append(dict(sql=sql, error=str(e)))
+            prompt = (sql_prompt(c, question) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
+    else:
+        r = None
+    if r is None:
+        try:
+            res = run(c, parse_spec(chat(ask_prompt(c, question))))
+            res.update(question=question, mode="spec", sql_errors=tries)
+            res.setdefault("notes", []).insert(0, "Couldn't write a query for that, so this is the closest ready-made report.")
+            return res
+        except Exception as e2:
+            raise ValueError(f"Could not answer: {err or e2}")
+    notes = []
+    if dropped: notes.append(f"{dropped} row(s) were hidden because they involve performers without a known adult birth date.")
+    if more: notes.append(f"Showing the first {SQL_MAX_ROWS} rows.")
+    answer = ""
+    try:
+        sample = [dict(zip(cols, [v for v in x])) for x in rows[:25]]
+        for d in sample: d.pop("film_ids", None)
+        answer = re.sub(r"<think>.*?</think>", "", chat(
+            "Answer the question in ONE short plain-English sentence using only these query results (no SQL talk). "
+            "Rows are ranked/ordered as shown; mention the top result with its number, or for a breakdown (per decade etc.) summarise the pattern with the biggest values. "
+            "If there are no rows say nothing matched.\nQuestion: " + question + "\nColumns: " + json.dumps(cols) +
+            "\nRows: " + json.dumps(sample, default=str)[:6000]) or "", flags=re.S).strip().strip('"')
+    except Exception: answer = ""
+    r.close()
+    return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
+                notes=notes, retried=bool(tries))

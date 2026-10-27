@@ -3126,10 +3126,9 @@ def reports_ask():
     if not (url and model):
         return jsonify(error="No AI service is set up. Add one in Library & Settings \u2192 Tags & Categories \u2192 Smart tagging, or use the ready-made reports."), 400
     try:
-        spec = repmod.parse_spec(ai_chat(url, key, model, repmod.ask_prompt(c, q), timeout=90))
+        res = repmod.ask(c, q, lambda p: ai_chat(url, key, model, p, timeout=90))  # AI writes a read-only SELECT; falls back to a report spec
     except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
-    res = repmod.run(c, spec); res["question"] = q; res["ai_spec"] = spec
     return jsonify(res)
 
 @app.get("/api/about")
