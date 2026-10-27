@@ -1497,6 +1497,11 @@ def studios_of(m):
 TMDB_NEVER = {"kind", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
+def tmdb_date(d):
+    """TMDB date -> stored release date; TMDB's placeholder 'YYYY-01-01' (only the year known) is stored as 'YYYY'."""
+    d = (d or "")[:10] or None
+    return d[:4] if d and d.endswith("-01-01") else d
+
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     """Apply TMDB details to a film. Never removes or alters existing tags (approved or pending): genres are only
     added when the film does not already have that tag. Hand-edited fields (edited_fields) are never replaced,
@@ -1507,7 +1512,7 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
         for x in crew.get("crew", []):
             if x.get("job") in js and x.get("name") and x["name"] not in seen: seen.append(x["name"])
         return ", ".join(seen)
-    upd = dict(title=m.get("title"), year=int(m["release_date"][:4]) if m.get("release_date") else None, release_date=(m.get("release_date") or "")[:10] or None,
+    upd = dict(title=m.get("title"), year=int(m["release_date"][:4]) if m.get("release_date") else None, release_date=tmdb_date(m.get("release_date")),
                director=", ".join(x["name"] for x in crew.get("crew", []) if x.get("job") == "Director"),
                cast_=", ".join(x["name"] for x in crew.get("cast", [])[:10]), runtime=m.get("runtime"),
                plot=m.get("overview"),

@@ -35,6 +35,9 @@ class ReleaseDate(unittest.TestCase):
         r = self.c.execute("SELECT release_date, year FROM films WHERE id=?", (self.drac,)).fetchone(); self.assertEqual(tuple(r), ("1931-02-12", 1931))
         r = self.c.execute("SELECT release_date, year FROM films WHERE id=?", (self.hand,)).fetchone(); self.assertEqual(tuple(r), (None, 1930))
 
+    def test_tmdb_jan1_is_year_only(self):
+        self.assertEqual([A.tmdb_date("1973-01-01"), A.tmdb_date("1931-02-12"), A.tmdb_date("")], ["1973", "1931-02-12", None])
+
     def test_sort(self):
         self.c.execute("UPDATE films SET release_date='1931-02-12' WHERE id=?", (self.drac,)); self.c.commit()
         rows = self.c.execute(f"SELECT f.id FROM films f WHERE f.id IN (?,?,?) ORDER BY {A.RELEASE_SORT}", (self.drac, self.frank, self.y)).fetchall()
