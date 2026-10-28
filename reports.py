@@ -411,8 +411,14 @@ def sql_prompt(c, question, hint=()):
             a, b = x[-2], x[-1]
             h += f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n"
     return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) + h +
-            'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>"}\n'
+            'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>",'
+            ' "chart": "<optional: ring, stat, bar, line, hbar, grouped, stacked, heatmap or table>"}\n'
+            "Chart guide: ring = one row with part, total and percent; stat = one row of plain numbers; bar/line = per year, decade"
+            " or month; hbar = a ranking of names; grouped = names with 2-3 numbers each; stacked/heatmap = counts by two categories.\n"
             "Limit results to at most 50 rows unless asked otherwise.\nQuestion: " + question.strip()[:500])
+
+
+PARSED = {"chart": ""}  # the AI's optional chart hint from the last parsed reply (validated in askcharts.pick)
 
 
 def _parse_sql_reply(text):
@@ -427,6 +433,7 @@ def _parse_sql_reply(text):
         m = re.search(r"((?:SELECT|WITH)\b.*)", t, re.S | re.I)
         if not m: raise ValueError("The AI reply had no query")
         v = {"sql": m.group(1), "reading": ""}
+    PARSED["chart"] = str(v.get("chart") or "").strip()[:20]
     return str(v.get("reading") or "").strip(), str(v.get("sql") or "").strip()
 
 
@@ -687,7 +694,8 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     answer = _summary(question, cols, rows, chat, reading, [x[1] if len(x) == 3 else x[-1] for x in hint])
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
-                notes=notes, retried=bool(tries), answer_rejected=SUMMARY["rejected"])
+                notes=notes, retried=bool(tries), answer_rejected=SUMMARY["rejected"], chart_hint=PARSED["chart"],
+                directors=[n for x in hint if len(x) == 3 for n in x[2]], mentions_cast=any(len(x) != 3 for x in hint))
 
 
 # ---------- Dashboard (home page summary; read-only) ----------

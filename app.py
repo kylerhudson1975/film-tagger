@@ -137,6 +137,9 @@ def build_query(q):
         import people as _pm
         ids = sorted(_pm.COCREDIT["person"](C(), int(pin))) if _pm.COCREDIT.get("person") else []
         where.append(f"f.id IN ({','.join(str(int(i)) for i in ids) or 'NULL'})")
+    fids = [int(x) for x in str(q.get("ids") or "").split(",") if x.strip().isdigit()][:5000]
+    if fids:  # an exact list of titles (Ask a question chart segments without a matching filter)
+        where.append(f"f.id IN ({','.join(map(str, fids))})")
     mo = str(q.get("month") or "").strip()
     if mo.isdigit():  # month of release (Dashboard explore): 1-12, or 0 = unknown month (same expression as the chart)
         where.append(f"{repmod.MONTH_SQL}=?"); args.append(int(mo))
@@ -3145,7 +3148,43 @@ def reports_ask():
         res = repmod.ask(c, q, lambda p: ai_chat(url, key, model, p, timeout=90, temperature=0))  # AI writes a read-only SELECT; falls back to a report spec
     except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
+    if res.get("mode") == "sql":
+        try: ask_charts(c, res)
+        except Exception as e: res["chart_error"] = type(e).__name__
     return jsonify(res)
+
+def _ids_for(c, f):
+    where, args = build_query(f)
+    return [r[0] for r in c.execute(f"SELECT f.id FROM films f {where}", args)]
+
+def ask_charts(c, res):
+    """Chart + optional per-year context chart for an Ask a question result (numbers only; the browser draws SVG)."""
+    import askcharts as ac
+    ch = ac.pick(res["columns"], res["rows"], res.get("chart_hint"), res.get("sql") or "", res.get("directors") or [])
+    if ch and ch["type"] == "ring" and ch.get("part_filter") and ch.get("total_filter"):  # exact 'other' titles for the ring
+        part = set(_ids_for(c, ch["part_filter"])); tot = _ids_for(c, ch["total_filter"])
+        other = [i for i in tot if i not in part]
+        if len(part) == (ch.get("part") or -1) and len(tot) == (ch.get("total") or -1):
+            ch["other_ids"] = ",".join(map(str, other))
+        else:  # the library filters don't reproduce the query's numbers: click through the query's own titles only
+            ch["part_filter"] = ch["total_filter"] = None
+    if ch:  # a click opens the same titles the bar counts: keep a library filter only if it reproduces the row's titles
+        cells = [x for row in ch.get("cells", []) for x in row if x] + list(ch.get("items", []))
+        for it in cells[:200]:
+            if it.get("filter") and it.get("ids"):
+                want = {int(x) for x in str(it["ids"]).split(",") if x.strip().isdigit()}
+                if set(_ids_for(c, it["filter"])) != want: it["filter"] = None
+    res["chart"] = ch
+    cs = ac.context_spec(res.get("sql") or "", res.get("directors") or [], res.get("mentions_cast"))
+    if cs:
+        where, args = build_query(cs["filter"])
+        cnt = {y: n for y, n in c.execute(f"SELECT f.year, COUNT(*) FROM films f {where} {'AND' if where else 'WHERE'} f.year>0 GROUP BY f.year", args)}
+        if cnt:
+            a, b = cs["range"]; lo, hi = min(min(cnt), a), max(max(cnt), b)
+            if hi - lo <= 150:
+                res["context"] = dict(title=ac.context_title(cs["filter"]), range=[a, b], filter=cs["filter"],
+                                      inside=sum(n for y, n in cnt.items() if a <= y <= b), total=sum(cnt.values()),
+                                      items=[dict(label=y, values=[cnt.get(y, 0)], filter=dict(cs["filter"], year_min=y, year_max=y)) for y in range(lo, hi + 1)])
 
 DASH = {}  # scope -> {"at", "day", "data"}; ~60 s per scope
 EXPL = {}  # explore query -> (at, day, data)
