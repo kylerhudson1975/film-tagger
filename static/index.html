@@ -1010,6 +1010,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  ${p.aliases&&p.aliases.length?`<div class=muted>Aliases: ${p.aliases.map(esc).join(', ')}</div>`:''}
  ${[p.nationality&&'Nationality: '+esc(p.nationality),p.height&&'Height: '+esc(p.height_display||p.height),p.measurements&&'Measurements: '+esc(p.measurements),p.career&&'Career: '+esc(p.career)].filter(Boolean).map(x=>`<span>${x}</span>`).join(' · ')}
  ${p.birthday?`<div>Born ${fmtDate(p.birthday)}${p.deathday?'':ageAt(p.birthday)}${p.place?' in '+esc(p.place):''}${bdSrc(p)}</div>`:p.place?`<div>Born in ${esc(p.place)}</div>`:''}
+ ${!p.birthday&&p.adult?`<div class=muted style="font-size:.85em">No birth date known: the age rule leaves their adult titles out of Insights, Reports and Credited with until one is added (✎ Edit profile).${d.birthday_lookup&&d.birthday_lookup.detail?` Automatic lookup: ${esc(d.birthday_lookup.detail)}.`:d.birthday_lookup&&d.birthday_lookup.status=='ambiguous'?' Automatic lookup found several possible people: pick one under Dashboard → People without a birth date.':''}</div>`:''}
  ${p.deathday?`<div>Died ${fmtDate(p.deathday)}${ageAt(p.birthday,p.deathday)}</div>`:''}
  ${bio?`<p id=ppbio class=ppbio>${esc(short)}${short!==bio?` <a href="#" onclick="$('ppbio').textContent=S.ppData.person.bio;return false">more</a>`:''}</p>`:''}
  ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
@@ -1579,7 +1580,7 @@ function ppInsDraw(pid){const el=$('ppIns');if(el&&S.page==='person:'+pid)el.inn
 function ppGo(pid,add={}){dshGo({pin:String(pid),...add})}
 async function ppCo(pid,name,opid){const id=await coPid({name,pid:opid});showCo([pid,id])}
 function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
- const head=`<div class=ppins-h onclick="ppInsToggle(${pid})" title="${open?'Hide':'Show'} the insights (remembered)">${dIc('bars',16)}<b>Insights</b><span class=muted>${d&&!d.error?`${dN(d.in_library)} in your library · ${dN(d.total)} total credits`:''}</span><span class=ppins-c>${open?'▾ hide':'▸ show'}</span></div>`;
+ const head=`<div class=ppins-h onclick="ppInsToggle(${pid})" title="${open?'Hide':'Show'} the insights (remembered)">${dIc('bars',16)}<b>Insights</b><span class=muted>${d&&!d.error?`${dN(d.in_library)} in your library · ${dN(d.total)} total credits${d.excluded?` · <b style="color:var(--warn,#f5a524)">${dN(d.excluded)} hidden: ${d.excluded_why=='no_birthday'?'no birth date':'age rule'}</b>`:''}`:''}</span><span class=ppins-c>${open?'▾ hide':'▸ show'}</span></div>`;
  if(!open)return head;
  if(!d){if(PI.busy!==pid)setTimeout(()=>ppInsLoad(pid),0);return head+'<p class=muted style="margin:6px 2px">Crunching their career…</p>'}
  if(d.error)return head+'<p class=muted>Could not load insights.</p>';
@@ -1587,13 +1588,14 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
  const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
  const stat=(ic,v,l,sub,cls,go,tip)=>`<div class="dsh-stat ${cls||''}${go?' go':''}"${go?` onclick="${go}" title="${esc(tip||'')}"`:''}>${dIc(ic,17)}<div class=dsh-sv>${v}</div><div class=dsh-sl>${l}</div><div class=dsh-ss>${sub}</div></div>`;
  const go=add=>dAct(()=>ppGo(pid,add)),cr=d.career,b=d.busiest;
- const tiles=[stat('film',`${dN(d.in_library)} <span style="font-size:14px;color:var(--m);font-weight:500">/ ${dN(d.total)}</span>`,'Credits in library / total',`${dN(d.not_in_library)} not in your library`,'',d.in_library?go({}):'','Show their titles in your library'),
+ const tiles=[stat('film',`${dN(d.in_library)} <span style="font-size:14px;color:var(--m);font-weight:500">/ ${dN(d.total)}</span>`,'Credits in library / total',`${dN(d.not_in_library)} not in your library${d.excluded?` · ${dN(d.excluded)} hidden${d.excluded_lib?` (${dN(d.excluded_lib)} in library)`:''}`:''}`,'',d.in_library?go({}):'','Show their titles in your library'),
   stat('cal',cr?`${cr[1]-cr[0]+1} yr${cr[1]-cr[0]?'s':''}`:'—','Career span',cr?`${cr[0]}–${cr[1]}`:'','ai'),
   stat('star',b?b.year:'—','Busiest year',b?`${dN(b.n)} credit${b.n==1?'':'s'} · ${dN(b.lib)} in library`:'','ai',b&&b.lib?go({year_min:b.year,year_max:b.year}):'','Show that year in your library'),
   stat('tag',d.top_genre?esc(d.top_genre.name):'—','Top genre',d.top_genre?`${dN(d.top_genre.n)} in your library`:'','',d.top_genre?go({pgenre:d.top_genre.name}):'','Show them'),
   stat('ppl',d.top_role?esc(d.top_role.name):'—','Top role',d.top_role?`${dN(d.top_role.n)} credit${d.top_role.n==1?'':'s'}${d.roles.length>1?' · then '+esc(d.roles[1].name.toLowerCase()):''}`:'',''),
   ...(d.rating?[stat('heart',(+d.rating.avg).toFixed(1),'Your average rating',`${dN(d.rating.n)} rated`,'ok')]:[])];
- let h=head+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
+ const xn=d.excluded?`<div class=co-note style="margin:6px 0 8px">${dIc('info',15)}<div><b>${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} hidden by the age rule</b>${d.excluded_lib?` (${dN(d.excluded_lib)} of them in your library)`:''}: ${d.excluded_why=='no_birthday'?`there is no known birth date, so adult titles can't be checked as 18+ at release. Everything below counts only the ${dN(d.total)} credit${d.total==1?'':'s'} that pass. Add the birth date (Edit on this page, or pick a match under Dashboard → People without a birth date) and they'll be counted.`:'they were released before this person turned 18.'}</div></div>`:'';
+ let h=head+xn+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
  if(d.years.length){const y0=d.years[0].k,y1=d.years[d.years.length-1].k,line=localStorage.ppInsChart=='line';
   const rows=fill(d.years.map(x=>({k:x.k,films:x.lib,scenes:x.other})),y0,y1).map(x=>({...x,label:(y1-y0>12?"'"+String(x.k).slice(2):String(x.k))}));
   const tg=(v,l)=>`<button class="${(localStorage.ppInsChart||'bar')==v?'on':''}" onclick="ppInsSet(${pid},'ppInsChart','${v}')">${l}</button>`;
@@ -1622,7 +1624,7 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
    (body||`<p class=muted style="margin:4px 0">Nobody has made 4 or more of these ${dN(nf)} films with ${esc(coFirst(d.name))} yet — the stable is still being built.</p>`)+
    (ok?`<div class=dsh-foot>${foot} Fewer than 4 films together isn't shown. Adult titles only count performers with a known birth date who were 18+ at release. Click a name for Credited with.</div>`:''),'')}
  h+='</div>';
- if(d.adult||d.excluded)h+=`<div class=co-note style="margin:4px 0 0">${dIc('info',15)}<div><b>Age rule:</b> adult titles only count for performers with a known birth date who were 18 or older at release${d.excluded?` — ${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} left out${d.birthday?'':' (no known birth date)'}`:''}. The same rule applies to everyone in Worked with most and the Stable.</div></div>`;
+ if(d.adult||d.excluded)h+=`<div class=co-note style="margin:4px 0 0">${dIc('info',15)}<div><b>Age rule:</b> adult titles only count for performers with a known birth date who were 18 or older at release${d.excluded?` — ${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} left out${d.excluded_why=='no_birthday'?' (no known birth date)':''}`:''}. The same rule applies to everyone in Worked with most and the Stable.</div></div>`;
  return h}
 /* ---------- Birth dates: Wikidata / Wikipedia background job, progress and review (from the Dashboard health chip) ---------- */
 function bdSrc(p){const s=p.birth_date_source||'';if(!s)return '';const m=s.match(/^wikidata (Q\d+)/),w=s.match(/^wikipedia (.+)/),t=s.match(/^tmdb person (\d+)/),tp=s.match(/^theporndb (.+)/);

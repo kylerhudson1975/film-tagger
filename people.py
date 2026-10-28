@@ -550,11 +550,23 @@ def init(app, tmdb, posters_dir):
         for f in lib: f["roles"] = [ro for ro, s in e["roles"].items() if f["id"] in s]
         groups = filmography(c, json.loads(row["credits_json"])) if row["credits_json"] and (row["tmdb_person_id"] or 0) > 0 else None
         total = owned = 0
+        role_ids = {ro: set(s) for ro, s in e["roles"].items()}
         if groups:
             allm = {}
             for g in groups:
-                for x in g["credits"]: allm[x["tmdb_id"]] = x["film_id"]
+                for x in g["credits"]:
+                    allm[x["tmdb_id"]] = x["film_id"]
+                    if not x["film_id"]: continue
+                    # library titles whose TMDB credit names them but whose own top-billed cast/crew list doesn't still count in the header
+                    if g["dept"] == "Acting": role_ids.setdefault("cast", set()).add(x["film_id"])
+                    elif g["dept"] == "Directing" and "Director" in (x["role"] or "").split(" / "): role_ids.setdefault("director", set()).add(x["film_id"])
             total, owned = len(allm), sum(1 for v in allm.values() if v)
+        bd_lookup = None
+        if not _bd(row["birthday"]):
+            try:
+                r3 = c.execute("SELECT status, detail, at FROM birthdate_lookup WHERE name_norm=?", (row["name_norm"],)).fetchone()
+                if r3: bd_lookup = dict(status=r3[0], detail=r3[1], at=r3[2])
+            except Exception: pass
         tp = row["tmdb_person_id"] if (row["tmdb_person_id"] or 0) > 0 else None
         names = list(e["names"]) or [row["name"]]
         tpid = row["tpdb_performer_id"] if row["tpdb_performer_id"] not in (None, TPDB_NONE) else None
@@ -575,7 +587,7 @@ def init(app, tmdb, posters_dir):
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"], birth_date_source=row["birth_date_source"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
-            roles={ro: len(s) for ro, s in e["roles"].items()}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes,
+            birthday_lookup=bd_lookup, roles={ro: len(s) for ro, s in role_ids.items() if s}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes,
             scenes_owned=sum(1 for z in (scenes or []) if z.get("film_id")),
             scenes_total=(max(row["tpdb_scenes_total"] or 0, tp_count) + extra_owned) if scenes is not None else None,
             scenes_tpdb_total=max(row["tpdb_scenes_total"] or 0, tp_count) or None,
@@ -783,7 +795,9 @@ def init(app, tmdb, posters_dir):
             v = clean_value(k, v)
             if v != row[col]:
                 c.execute(f"UPDATE people SET {col}=? WHERE id=?", (v, pid)); edited.add(col)
-                if col == "birthday": c.execute("UPDATE people SET birth_date_source=? WHERE id=?", ("hand edit" if v else None, pid))
+                if col == "birthday":  # optional note on where the date came from, e.g. "entered by Kyle"
+                    note = " ".join(str(d.get("birth_date_note") or "").split())[:80]
+                    c.execute("UPDATE people SET birth_date_source=? WHERE id=?", ((f"hand edit ({note})" if note else "hand edit") if v else None, pid))
         c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), pid)); c.commit()
         return jsonify(ok=True, edited=sorted(edited))
 
@@ -1419,7 +1433,11 @@ def init(app, tmdb, posters_dir):
             dlib = lib + [r for r in xrows if r["in_library"]]  # a director who also appears in their own film still directed it
             films = [dict(r, cast=(F[r["film_id"]]["cast_"] or "").split(",")) for r in dlib]
             stable = stable_tiers(c, row, e, films)
+        # credits withheld by the age rule: say how many and why, so the totals above never shrink silently
+        excluded_lib = sum(1 for r in xrows if r["in_library"])
+        excluded_why = None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday")
         res = dict(id=row["id"], name=row["name"], total=len(rows), in_library=len(lib), not_in_library=len(rows) - len(lib), excluded=excluded,
+                   excluded_lib=excluded_lib, excluded_why=excluded_why,
                    adult=any(r["adult"] for r in rows) or bool(excluded), birthday=row["birthday"],
                    career=[min(yrs), max(yrs)] if yrs else None, busiest=dict(year=busy[0], n=busy[1], lib=yl[busy[0]]) if busy else None,
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
