@@ -1110,7 +1110,7 @@ def init(app, tmdb, posters_dir):
         if not row: return jsonify(error="Unknown person"), 404
         return jsonify(people=co_suggest(c, row, request.args.get("q") or "", min(int(request.args.get("limit", 10)), 50)))
 
-    def co_suggest(c, row, qtext, lim, extra=4, roles_of=None):
+    def co_suggest(c, row, qtext, lim, extra=4, roles_of=None, pool=False):
         e = person_entry(c, row); F = e["films"]; mine = co_keys(c, row, e)
         q = fold(qtext or "").split()
         idx = index(c); ag = db.alias_groups(c)
@@ -1169,7 +1169,8 @@ def init(app, tmdb, posters_dir):
             d = cocredit_data(c, [row["id"], x["pid"]])
             if d and not d.get("error"): x["n"], x["total"] = len(d["ids"]), len(d["rows"])
         out.sort(key=lambda x: (-x["total"], -x["n"], x["_sc"][1:]))
-        out = [x for x in out if x["total"] or q][:lim]
+        out = [x for x in out if x["total"] or q]
+        if not pool: out = out[:lim]  # pool: keep the whole exact-counted pool so the caller can pick its top `lim` by either count
         for x in out: x.pop("_sc")
         return out
 
@@ -1409,8 +1410,9 @@ def init(app, tmdb, posters_dir):
         for r in rows:
             for l in r["roles"]: rol[l] += 1
         rated = [r["rating"] for r in lib if r["rating"] and r["rating"] > 0]
-        costars = co_suggest(c, row, "", 8, extra=4, roles_of="others")
-        directors = [x for x in co_suggest(c, row, "", 5, extra=3, roles_of="director") if x["total"]]
+        # Worked with most: the page sorts by in-library or total count (its switch) and shows the top costars_n / directors_n
+        costars = co_suggest(c, row, "", 8, extra=4, roles_of="others", pool=True)
+        directors = [x for x in co_suggest(c, row, "", 5, extra=3, roles_of="director", pool=True) if x["total"]]
         # Stable / Muses / Harem: performers in films they directed (or directed/wrote/produced), library titles only
         stable = None
         if e["roles"].get("director"):
@@ -1423,7 +1425,7 @@ def init(app, tmdb, posters_dir):
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
                    top_genre=top(gen, 1)[0] if gen else None, top_role=top(rol, 1)[0] if rol else None, roles=top(rol, 8),
                    rating=dict(avg=round(sum(rated) / len(rated), 2), n=len(rated)) if rated else None,
-                   genres=top(gen), studios=top(stu), countries=top(cty), costars=costars, directors=directors, stable=stable)
+                   genres=top(gen), studios=top(stu), countries=top(cty), costars=costars, directors=directors, costars_n=8, directors_n=5, stable=stable)
         INS[ck] = (time.time(), res)
         if len(INS) > 128: INS.pop(next(iter(INS)))
         return jsonify(dict(res, cached=False))
