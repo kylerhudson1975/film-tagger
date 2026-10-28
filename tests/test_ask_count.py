@@ -54,7 +54,7 @@ assert r["retried"] and r["columns"] == ["films"] and r["sql"] == GOOD; check(r)
 # 3) the AI counts only one of the OR'd tags: the direct query wins and says so
 sent.clear(); app.ai_chat = ai(NARROW, NARROW, "Brigitte Test acted in 2 films."); r = ask(Q)
 assert r["rows"] == [[4]] and any("AI's query counted 2; a direct count of the library found 4" in n for n in r["notes"]), r
-assert r["answer"] == "Brigitte Test is credited in 4 titles tagged Oral Sex or Fellatio.", r["answer"]; check(r)
+assert r["answer"] == "Brigitte Test is credited in 4 titles tagged Oral Sex or Fellatio (counting the synonyms Blowjob).", r["answer"]; check(r)
 # 4) 'per year' is a breakdown: rows of 1 are fine there, no retry
 sent.clear()
 PY = "SELECT f.year AS year, COUNT(DISTINCT f.id) AS films, group_concat(DISTINCT f.id) AS film_ids " + JOIN.format("'fellatio'") + " GROUP BY f.year"
@@ -63,6 +63,39 @@ assert not r["retried"] and len(r["rows"]) == 2 and r.get("count_ids") is None a
 # 5) a narrower question (a year) is never overridden by the person+tag direct count
 sent.clear(); app.ai_chat = ai("SELECT COUNT(DISTINCT f.id) AS films " + JOIN.format("'fellatio','oral sex','blowjob'") + " AND f.year=1977",
                               "x", "Brigitte Test acted in 2 films in 1977."); r = ask("How many films did Brigitte Test act in from 1977 tagged fellatio?")
-assert r["rows"] == [[2]] and any("ignoring the question's other conditions" in n for n in r["notes"]), r["notes"]
+assert r["rows"] == [[2]] and not any("direct count" in n for n in r["notes"]), r["notes"]
 assert [x["title"] for x in r["titles"]] == ["B", "C"]
+# 6) percentage with film_tags JOINed into the total (untagged films dropped): the direct count fixes part/total/percent
+film("Untagged", 1981, []); c.commit()
+JPCT = ("SELECT SUM(CASE WHEN lower(t.name) IN ('oral sex','fellatio','blowjob') THEN 1 ELSE 0 END) AS matching, COUNT(DISTINCT f.id) AS total,"
+        " ROUND(100.0*SUM(CASE WHEN lower(t.name) IN ('oral sex','fellatio','blowjob') THEN 1 ELSE 0 END)/NULLIF(COUNT(DISTINCT f.id),0),1) AS percent"
+        " FROM film_cast fc JOIN films f ON f.id=fc.film_id JOIN film_tags ft ON ft.film_id=f.id AND ft.status='approved' JOIN tags t ON t.id=ft.tag_id"
+        " WHERE fc.person LIKE 'Brigitte Test'")
+sent.clear(); app.ai_chat = ai(JPCT, JPCT, "x"); r = ask("What percentage of Brigitte Test films are tagged oral sex?")
+assert "EXISTS (SELECT 1 FROM film_tags" in sent[0] and r["rows"][0][:3] == [4, 6, 66.7], r["rows"]   # A-D of A-E + Untagged
+assert any("a direct count of the library found 4 of 6" in n for n in r["notes"]) and r["chart"]["type"] == "ring", r
+assert r["answer"] == "66.7% of Brigitte Test's 6 titles (4) are tagged Oral Sex.", r["answer"]
+# 7) a correct EXISTS percentage is confirmed, not replaced
+OK = ("SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=f.id AND ft.status='approved'"
+      " AND lower(t.name) IN ('oral sex','fellatio','blowjob')) THEN 1 ELSE 0 END) AS matching, COUNT(DISTINCT f.id) AS total,"
+      " ROUND(100.0*SUM(CASE WHEN EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=f.id AND ft.status='approved'"
+      " AND lower(t.name) IN ('oral sex','fellatio','blowjob')) THEN 1 ELSE 0 END)/NULLIF(COUNT(DISTINCT f.id),0),1) AS percent"
+      " FROM film_cast fc JOIN films f ON f.id=fc.film_id WHERE fc.person LIKE 'Brigitte Test'")
+app.ai_chat = ai(OK, OK, "66.7% of Brigitte Test's 6 films (4) are tagged oral sex."); r = ask("What percentage of Brigitte Test films are tagged oral sex?")
+assert r["rows"][0][:3] == [4, 6, 66.7] and any("Checked against a direct count of the library: 4 of 6" in n for n in r["notes"]) and r["answer"].startswith("66.7%"), r
+# 8) a tag the library doesn't have: no person-only 'direct check' passes for it
+app.ai_chat = ai(GOOD.replace("'fellatio','oral sex','blowjob'", "'zzz'"), "x", "Brigitte Test acted in 0 films."); r = ask("How many films did Brigitte Test act in tagged zzzunknown?")
+assert not any("direct count" in n for n in r["notes"]), r["notes"]
+# 9) year-like tags ('1977', '1970s') are never read as tags; no tag check without the word 'tag'
+c.execute("INSERT INTO tags(name,category) VALUES('1977','Themes')"); c.execute("INSERT INTO tags(name,category) VALUES('1970s','Themes')"); c.commit()
+assert R.mentioned_tags(c, "How many films did Brigitte Test make in 1977 and the 1970s?") == []
+app.ai_chat = ai("SELECT COUNT(DISTINCT f.id) AS films FROM film_cast fc JOIN films f ON f.id=fc.film_id WHERE fc.person LIKE 'Brigitte Test' AND f.year=1977", "x",
+                 "Brigitte Test made 2 films in 1977."); r = ask("How many films did Brigitte Test make in 1977?")
+assert r["rows"] == [[2]] and r["answer"] == "Brigitte Test made 2 films in 1977." and not any("direct" in n for n in r["notes"]), r
+# 10) several rows: a sentence whose numbers aren't in the rows (or that calls a year a decade) is replaced
+YQ = "SELECT f.year AS decade, COUNT(DISTINCT f.id) AS films FROM film_cast fc JOIN films f ON f.id=fc.film_id WHERE fc.person LIKE 'Brigitte Test' GROUP BY f.year ORDER BY films DESC"
+app.ai_chat = ai(YQ, YQ, "She made the most films in the 1977 decade with 57 films."); r = ask("Which year did Brigitte Test make the most films?")
+assert "57" not in r["answer"] and r["answer"].startswith("1977: 2 films"), r["answer"]
+# every response names the page build (a tab opened before an update offers a reload)
+assert cl.get("/api/reports/ask").headers.get("X-FT-Build") or cl.get("/").headers.get("X-FT-Build")
 print("OK test_ask_count")

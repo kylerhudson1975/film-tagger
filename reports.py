@@ -366,6 +366,7 @@ def sql_schema(c):
     return (
         "SQLite tables (use ONLY these):\n"
         " films(id, title, year, release_date 'YYYY-MM-DD' or NULL, director (comma-separated), country, studio, primary_genre,"
+        " runtime (minutes), rating (0-10 or NULL), watched (0/1),"
         " kind ('scene' for scenes, NULL for films))\n"
         " film_directors(film_id, director)  -- one row per film per director (already split)\n"
         " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
@@ -375,6 +376,11 @@ def sql_schema(c):
         " - 'Classic Porn' / porn / adult films = films WHERE " + _ADULT_ON + ".\n"
         " - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres. Common tags: " + json.dumps(tags) + "\n"
         " - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(synonyms(c)) + "\n"
+        " - 'Classic Porn' is NOT a tag: use the films condition above. Wrap OR conditions in parentheses: (a OR b) AND c.\n"
+        " - Performers who appear WITH someone: self-join film_cast (fc2.film_id=fc1.film_id AND fc1.person LIKE '<them>') and"
+        " leave them out (fc2.person NOT LIKE '<them>'), GROUP BY fc2.person.\n"
+        " - Missing values: a column is empty when it IS NULL or = '' (e.g. no director: COALESCE(f.director,'')='').\n"
+        " - Name columns after what they hold: year AS year (a single year is never a decade); only (year/10)*10 AS decade.\n"
         " - Decade: (year/10)*10. Compare names case-insensitively (LIKE or COLLATE NOCASE).\n"
         " - When each row is ONE film, include films.id AS id. When rows are groups (GROUP BY a person, country, decade...),"
         " do NOT select films.id; instead include group_concat(DISTINCT films.id) AS film_ids so the user can click through.\n"
@@ -394,6 +400,10 @@ def sql_schema(c):
         " - A question about ONE thing (one person, one tag...) needs ONE aggregate row: no GROUP BY.\n"
         " - 'How many films/titles ...' wants ONE number: SELECT COUNT(DISTINCT f.id) AS films ... with NO GROUP BY (never one row"
         " per film with a count of 1). Only GROUP BY when the question asks 'per X', 'by X' or 'each X'.\n"
+        " - Share of a person's/genre's films that have a tag: never JOIN film_tags into the query (it drops untagged films from"
+        " the total and counts films once per tag). Use EXISTS: SUM(CASE WHEN EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON"
+        " t.id=ft.tag_id WHERE ft.film_id=f.id AND ft.status='approved' AND lower(t.name) IN (...)) THEN 1 ELSE 0 END) AS matching,"
+        " COUNT(DISTINCT f.id) AS total.\n"
         " - Tags joined by 'or' ('tagged oral or fellatio') match films with ANY of them: lower(t.name) IN (...) including"
         " their synonym group members; tags joined by 'and' must all be present (one EXISTS per tag).\n"
         " Q: How many films did Jane Doe act in that are tagged comedy or satire? -> SELECT COUNT(DISTINCT f.id) AS films FROM films f"
@@ -583,7 +593,7 @@ def mentioned_tags(c, question):
     names = sorted({n for (n,) in c.execute("SELECT name FROM tags WHERE COALESCE(category,'')<>'People'")}, key=lambda n: (-len(n), n))
     for n in names:
         k = _db.fold(n)
-        if len(k) < 3 or any(k in h for h in seen): continue
+        if len(k) < 3 or any(k in h for h in seen) or re.fullmatch(r"\d+s?|\d+(st|nd|rd|th)?", k): continue  # '1979', '1970s' are years, not tags
         m = re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql)
         if m:
             st = [n] + [x for g in groups if any(_db.fold(y) == k for y in g) for x in g if _db.fold(x) != k]
@@ -597,12 +607,12 @@ def _count_ids_sql(sql):
     return f"SELECT DISTINCT {m.group(1)} {m.group(2)}" if m else None
 
 
-def direct_ids(c, r, question, hint):
+def direct_ids(c, r, question, hint, use_tags=True):
     """Independent check for 'how many films did <person> ... tagged <tags>': the matching title ids straight from the
     tables (same age rule: r's film_cast only holds safe credits), or None when the question isn't that shape."""
     import db as _db
     persons = [x[-1] for x in hint if len(x) == 2 and x[0] != "tags"]
-    tags = [n for x in hint if len(x) == 2 and x[0] == "tags" for _, st in x[1] for n in st]
+    tags = [n for x in hint if len(x) == 2 and x[0] == "tags" for _, st in x[1] for n in st] if use_tags else []
     if not (persons or tags) or len(persons) > 1: return None
     q, a = "SELECT DISTINCT f.id FROM films f", []
     if persons:
@@ -732,11 +742,23 @@ def _summary(question, cols, rows, chat, reading="", names=()):
         ok = bool(ans) and "top result" not in ans.lower() and all(near(f, nums) or f in qn for f in found) \
             and (all(any(near(f, [v]) for f in found) for v in pct) if pct else any(near(f, nums) for f in found))
         if not ok: SUMMARY["rejected"] = ans; ans = fallback
+    elif ans:  # several rows: every number in the sentence must be one of the shown values (or from the question)
+        vals = [float(v) for d in sample for v in d.values() if _isnum(v)]
+        vals += [float(x) for d in sample for v in d.values() if isinstance(v, str) for x in re.findall(r"\d+(?:\.\d+)?", v)]
+        qn = {float(x) for x in re.findall(r"\d+(?:\.\d+)?", question.replace(",", ""))}
+        found = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", ans.replace(",", ""))]
+        if any(not any(abs(f - v) < 0.051 for v in vals) and f not in qn for f in found) or re.search(r"(?i)\b\d{4} decade\b", ans):
+            SUMMARY["rejected"] = ans; d0 = sample[0]
+            lab = next((v for v in d0.values() if isinstance(v, str)), None) or next((_fmt(v) for k, v in d0.items() if re.search(r"(?i)year|decade|month", k)), None)
+            num = [(k, v) for k, v in d0.items() if _isnum(v) and not re.search(r"(?i)^(year|decade|month)$", k)]
+            ans = (f"{lab}: {', '.join(f'{_fmt(v)} {k}' for k, v in num[:2])} (first of {len(rows)} rows shown below)." if lab and num
+                   else f"{len(rows)} rows (shown below).")
     return ans or fallback or f"{len(rows)} row(s)."
 
 
 def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     """chat(prompt)->text. Returns a result dict; mode 'sql' or (fallback) the old spec report."""
+    SUMMARY.pop("direct", None); SUMMARY.pop("fallback", None)
     tries, err, reading, sql = [], None, "", ""
     try:
         r, everyone, safe = _ro_conn(c)
@@ -793,24 +815,49 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
             if count_ids is not None and len(count_ids) != n: count_ids = None
             try: d = direct_ids(c, r, question, hint)
             except Exception: d = None
+            tags = [a for x in hint if len(x) == 2 and x[0] == "tags" for a, _ in x[1]]
+            if d is not None and not tags and re.search(r"(?i)\btag", question): d = None  # a tag we couldn't recognise: no person-only check
+            if d is not None and tags and not re.search(r"(?i)\btag", question): d = None  # words that happen to be tag names: no check
+            who = next((x[-1] for x in hint if len(x) == 2 and x[0] != "tags"), None)
+            syn = list(dict.fromkeys(n_ for x in hint if len(x) == 2 and x[0] == "tags" for _, st in x[1] for n_ in st if n_ not in tags))
+            sent = lambda k: ((f"{who} is credited in {k} title{'' if k == 1 else 's'}" if who else f"{k} title{'' if k == 1 else 's'} are")
+                              + (f" tagged {' or '.join(tags)}" if tags else "") + (f" (counting the synonyms {', '.join(syn)})" if syn else "") + ".")
             if d is not None:
                 if len(d) == n:
                     notes.append(f"Checked against a direct count of the library: {n}.")
                     if count_ids is None: count_ids = d
+                    SUMMARY["fallback"] = sent(n)
                 elif not _other_filters(c, question, hint):
-                    tags = [a for x in hint if len(x) == 2 and x[0] == "tags" for a, _ in x[1]]
                     notes.append(f"The AI's query counted {_fmt(n)}; a direct count of the library found {len(d)}, which is the answer shown.")
                     cols, rows, count_ids = [cols[vk[0]]], [[len(d)]], d
-                    who = next((x[-1] for x in hint if len(x) == 2 and x[0] != "tags"), None)
-                    SUMMARY["direct"] = (f"{who} is credited in {len(d)} title{'' if len(d) == 1 else 's'}" if who else f"{len(d)} title{'' if len(d) == 1 else 's'} are")
-                    SUMMARY["direct"] += (f" tagged {' or '.join(tags)}" if tags else "") + "."
-                else: notes.append(f"A direct count of the library (ignoring the question's other conditions) gives {len(d)}.")
+                    SUMMARY["direct"] = sent(len(d))
+    if len(rows) == 1 and any(PCT_COLS.search(cn) for cn in cols) and not _other_filters(c, question, hint):
+        pk = next(k for k, cn in enumerate(cols) if PCT_COLS.search(cn))
+        nk = [k for k, cn in enumerate(cols) if k != pk and cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS and _isnum(rows[0][k])]
+        has_tags = any(len(x) == 2 and x[0] == "tags" for x in hint)
+        try:
+            tot = direct_ids(c, r, question, hint, use_tags=False) if has_tags else None
+            part = direct_ids(c, r, question, hint) if tot is not None else None
+        except Exception: tot = part = None
+        if tot is not None and part is not None and tot and any(len(x) == 2 and x[0] != "tags" for x in hint):
+            a, b = sorted((rows[0][k] for k in nk[:2]), key=lambda v: v or 0) if len(nk) >= 2 else (None, None)
+            pct = round(100.0 * len(part) / len(tot), 1)
+            if (a, b) == (len(part), len(tot)) and abs((rows[0][pk] or 0) - pct) < 0.11:
+                notes.append(f"Checked against a direct count of the library: {len(part)} of {len(tot)}.")
+            else:
+                notes.append(f"The AI's query gave {_fmt(a)} of {_fmt(b)} ({_fmt(rows[0][pk])}%); a direct count of the library found"
+                             f" {len(part)} of {len(tot)}, which is the answer shown.")
+                cols, rows = ["matching", "total", "percent", "film_ids"], [[len(part), len(tot), pct, ",".join(map(str, part))]]
+                who = next(x[-1] for x in hint if len(x) == 2 and x[0] != "tags")
+                tg = [a_ for x in hint if len(x) == 2 and x[0] == "tags" for a_, _ in x[1]]
+                SUMMARY["direct"] = f"{_fmt(pct)}% of {who}'s {len(tot)} titles ({len(part)}) are tagged {' or '.join(tg)}."
     if dropped: notes.append(f"{dropped} row(s) were hidden because they involve performers without a known adult birth date.")
     if more: notes.append(f"Showing the first {SQL_MAX_ROWS} rows.")
     if tries and _null_problem(cols, rows): notes.append("Some values came back empty even after a retry, so treat this answer with care.")
     SUMMARY["rejected"] = ""
-    direct = SUMMARY.pop("direct", None)
+    direct, fb = SUMMARY.pop("direct", None), SUMMARY.pop("fallback", None)
     answer = direct or _summary(question, cols, rows, chat, reading, [x[1] if len(x) == 3 else x[-1] for x in hint if x[0] != "tags"])
+    if fb and not direct and SUMMARY["rejected"]: answer = fb  # the AI's sentence had wrong numbers: say the checked count plainly
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
                 notes=notes, retried=bool(tries), answer_rejected=SUMMARY["rejected"], chart_hint=PARSED["chart"],

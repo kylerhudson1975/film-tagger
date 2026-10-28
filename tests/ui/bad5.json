@@ -1,0 +1,124 @@
+{
+"answer": "Maren Holt is credited in 9 titles tagged Heist or Caper.",
+"answer_rejected": "",
+"chart": {
+"candidates": [
+"stat"
+],
+"filter": null,
+"hinted": false,
+"ids": "1,2,3",
+"tiles": [
+{
+"label": "matching titles",
+"pct": false,
+"value": 24
+}
+],
+"type": "stat"
+},
+"chart_hint": "bar",
+"columns": [
+"films"
+],
+"context": {
+"filter": null,
+"inside": 24,
+"items": [
+{
+"filter": null,
+"ids": "1,2",
+"label": 1977,
+"values": [
+7
+]
+},
+{
+"filter": null,
+"ids": "1,2",
+"label": 1978,
+"values": [
+5
+]
+},
+{
+"filter": null,
+"ids": "1,2",
+"label": 1979,
+"values": [
+6
+]
+},
+{
+"filter": null,
+"ids": "1,2",
+"label": 1980,
+"values": [
+3
+]
+},
+{
+"filter": null,
+"ids": "1,2",
+"label": 1981,
+"values": [
+1
+]
+},
+{
+"filter": null,
+"ids": null,
+"label": 1982,
+"values": [
+0
+]
+},
+{
+"filter": null,
+"ids": "1,2",
+"label": 1983,
+"values": [
+2
+]
+}
+],
+"range": null,
+"title": "Those titles by year",
+"total": 24
+},
+"count_ids": [
+1,
+2,
+3,
+4,
+5,
+6,
+7,
+8,
+9
+],
+"directors": [],
+"mentions_cast": true,
+"mode": "sql",
+"notes": [
+"demo note"
+],
+"question": "How many films did Maren Holt act in that are tagged with heist or caper?",
+"reading": "demo",
+"retried": false,
+"rows": [
+[
+24
+]
+],
+"sql": "SELECT COUNT(DISTINCT f.id) AS films FROM films f",
+"titles": [
+null,
+{
+"id": 2,
+"title": null,
+"year": null
+}
+],
+"titles_total": 9
+}

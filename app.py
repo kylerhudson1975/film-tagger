@@ -36,6 +36,19 @@ def _alias_map():
 tpdb.ALIAS_SOURCE = _alias_map  # ThePornDB matching counts a performer alias as a performer match
 def ok(**k): return jsonify(dict(ok=True, **k))
 
+def _ui_build():
+    import hashlib
+    try:
+        with open(os.path.join(app.static_folder, "index.html"), "rb") as fh: return hashlib.sha1(fh.read()).hexdigest()[:12]
+    except OSError: return "dev"
+UI_BUILD = _ui_build()
+
+@app.after_request
+def _build_header(resp):
+    """Every response names the page build the server ships, so a tab opened before an update can ask for a reload."""
+    resp.headers["X-FT-Build"] = UI_BUILD
+    return resp
+
 @app.route("/")
 def index():
     resp = send_from_directory(app.static_folder, "index.html")
