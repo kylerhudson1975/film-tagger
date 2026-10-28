@@ -96,6 +96,15 @@ assert r["rows"] == [[2]] and r["answer"] == "Brigitte Test made 2 films in 1977
 YQ = "SELECT f.year AS decade, COUNT(DISTINCT f.id) AS films FROM film_cast fc JOIN films f ON f.id=fc.film_id WHERE fc.person LIKE 'Brigitte Test' GROUP BY f.year ORDER BY films DESC"
 app.ai_chat = ai(YQ, YQ, "She made the most films in the 1977 decade with 57 films."); r = ask("Which year did Brigitte Test make the most films?")
 assert "57" not in r["answer"] and r["answer"].startswith("1977: 2 films"), r["answer"]
+# 11) Kyle's 'Of all the film that X was in, how many are tagged ...?' answered as a share: the count is shown (24-style)
+SH = OK.replace("SELECT SUM(", "SELECT COUNT(DISTINCT f.id) AS films, SUM(", 1)
+app.ai_chat = ai(SH, SH, "66.7% of her films."); r = ask("Of all the film that Brigitte Test was in, how many are tagged with oral or oral sex or fellatio?")
+assert r["rows"] == [[4]] and r["chart"]["type"] == "stat" and len(r["titles"]) == 4 and r["context"], r
+assert any("asks how many" in n for n in r["notes"]) and any("direct count of the library: 4" in n for n in r["notes"]) and "4" in r["answer"], r
+# 12) 'kind IS NULL OR kind!='scene' AND ...' without parentheses is repaired before it runs
+BADOR = "SELECT COUNT(DISTINCT f.id) AS films FROM films f WHERE f.kind IS NULL OR f.kind!='scene' AND f.year=1977"
+app.ai_chat = ai(BADOR, BADOR, "2 films."); r = ask("How many Classic Porn films are from 1977?")
+assert r["sql"].count("(f.kind IS NULL OR f.kind!='scene') AND") == 1 and r["rows"] == [[2]], r   # B and C (unparenthesised it would count every film)
 # every response names the page build (a tab opened before an update offers a reload)
 assert cl.get("/api/reports/ask").headers.get("X-FT-Build") or cl.get("/").headers.get("X-FT-Build")
 print("OK test_ask_count")

@@ -467,8 +467,17 @@ def check_sql(sql):
     return s
 
 
+_KIND_OR = re.compile(r"(?i)(?<!\()\s*\b((?:\w+\.)?kind\s+IS\s+NULL\s+OR\s+(?:\w+\.)?kind\s*(?:!=|<>)\s*'scene')(?!\s*\))")
+
+
+def fix_sql(sql):
+    """Deterministic repairs of common AI slips: 'kind IS NULL OR kind!='scene' AND ...' without parentheses (OR binds
+    looser than AND, so every other condition is lost) -> '(kind IS NULL OR kind!='scene') AND ...'."""
+    return _KIND_OR.sub(lambda m: " (" + m.group(1) + ")", sql)
+
+
 def run_sql(r, sql, everyone, safe):
-    s = check_sql(sql)
+    s = check_sql(fix_sql(sql))
     t0 = time.monotonic()
     r.set_progress_handler(lambda: 1 if time.monotonic() - t0 > SQL_TIMEOUT else 0, 2000)
     try:
@@ -768,7 +777,7 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     for attempt in range(2):
         if not r: break
         try:
-            reading, sql = _parse_sql_reply(chat(prompt))
+            reading, sql = _parse_sql_reply(chat(prompt)); sql = fix_sql(sql)
             cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
             if attempt == 0 and not rows: raise ValueError("the query ran but returned no rows; check names, joins and filters")
             if attempt == 0:
@@ -796,6 +805,13 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
             raise ValueError(f"Could not answer: {err or e2}")
     notes, count_ids = [], None
     cq = count_question(question)
+    if cq and len(rows) == 1 and not re.search(r"(?i)percent|%|share|proportion|fraction|ratio", question) \
+            and any(PCT_COLS.search(cn) for cn in cols):  # 'Of all X, how many are Y?' answered as a percentage: the count is the part
+        nk = [k for k, cn in enumerate(cols) if not PCT_COLS.search(cn) and cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS and _isnum(rows[0][k])]
+        if len(nk) >= 2 and all(rows[0][k] is not None for k in nk):
+            part = min(rows[0][k] for k in nk); li = cols.index("film_ids") if "film_ids" in cols else None
+            notes.append(f"The query worked out a share; the question asks how many, so the count ({_fmt(part)}) is shown.")
+            cols, rows = (["films", "film_ids"], [[part, rows[0][li]]]) if li is not None else (["films"], [[part]])
     if cq and _degenerate(cols, rows):  # still one row per film after the retry: collapse to the total
         li = cols.index("id") if "id" in cols else None
         try: n = r.execute("SELECT COUNT(*) FROM (" + re.sub(r"(?is)\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$", "", check_sql(sql)) + ")").fetchone()[0]
