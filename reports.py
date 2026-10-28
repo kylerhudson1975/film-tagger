@@ -913,6 +913,38 @@ def _mark_in_library(c, plist, pc):
         p["in_library"] = hit
 
 
+def studio_rank(c, ids_sql, args=(), n=10):
+    """Studios of the titles selected by `ids_sql` (a SELECT of film ids), counted the way app.build_query's studio=
+    filter matches: each comma-separated entry of films.studio (a title with several studios counts once for each),
+    hidden aliases folded into their main name, plus the <Studio> folder of scene files. So a bar's count always equals
+    the library list for that studio. Titles with no studio are left out (returned as `no_studio`).
+    Returns (rows [{name, n}], n_studios, no_studio)."""
+    import db
+    amap = db.studio_alias_map(c)
+    canon = {db.studio_key(v): v for v in amap.values()}  # main name per key (the filter expands it to every alias)
+    titles, names, ids = {}, {}, set()
+
+    def add(fid, raw, w):
+        k = db.studio_key(raw)
+        if not k: return
+        mk = db.studio_key(amap[k]) if k in amap else k
+        titles.setdefault(mk, set()).add(fid)
+        sp = names.setdefault(mk, {}); x = " ".join(raw.split()); sp[x] = sp.get(x, 0) + w
+
+    for fid, st in c.execute(f"SELECT id, studio FROM films WHERE id IN ({ids_sql})", args):
+        ids.add(fid)
+        for x in (st or "").split(","): add(fid, x, 2)
+    roots = db.scene_roots(c)
+    if roots:
+        for fid, p in c.execute(f"SELECT film_id, path FROM files WHERE film_id IN ({ids_sql})", args):
+            fs = db.folder_studio(p or "", roots)
+            if fs: add(fid, fs, 1)
+    rows = [dict(name=canon.get(k) or max(names[k].items(), key=lambda kv: (kv[1], kv[0] != kv[0].lower(), len(kv[0]), kv[0]))[0], n=len(v)) for k, v in titles.items()]
+    rows.sort(key=lambda r: (-r["n"], r["name"].lower()))
+    have = set().union(*titles.values()) if titles else set()
+    return rows[:n], len(rows), len(ids - have)
+
+
 def dashboard(c, today=None, S="1"):
     """Library summary for the Dashboard. Text and numbers only (never poster paths). 'Recently added' and 'On this day'
     leave out scenes and Hardcore/Softcore films; 'Classic Porn' = films (not scenes) whose primary genre is Hardcore.
@@ -953,10 +985,9 @@ def dashboard(c, today=None, S="1"):
         for x in _split(co): cc[x] = cc.get(x, 0) + 1
         for x in _split(d): dc[x] = dc.get(x, 0) + 1
     top = lambda m, n: [dict(name=k, n=v) for k, v in sorted(m.items(), key=lambda kv: (-kv[1], kv[0].lower()))[:n]]
-    studios = []
-    if S != "1":  # scene studios in scope (shown instead of directors when the scope is mostly scenes)
-        studios = [dict(name=n, n=k) for n, k in c.execute(
-            f"SELECT studio, COUNT(*) FROM films WHERE kind='scene' AND {S} AND COALESCE(studio,'')<>'' GROUP BY studio COLLATE NOCASE ORDER BY 2 DESC, 1 LIMIT 10")]
+    studios, n_studios, no_studio = [], 0, 0
+    if S != "1":  # studios in scope, counted like the studio= library filter (shown instead of directors when there are none)
+        studios, n_studios, no_studio = studio_rank(c, f"SELECT id FROM films WHERE {S}")
     recent = [dict(id=i, title=t, year=y, added_at=a) for i, t, y, a in c.execute(
         f"SELECT id, title, year, added_at FROM films WHERE {NON_ADULT_SQL} AND {S} AND added_at IS NOT NULL ORDER BY added_at DESC, id DESC LIMIT 10")]
     md = today.strftime("-%m-%d")
@@ -977,7 +1008,7 @@ def dashboard(c, today=None, S="1"):
         untagged=one(f"SELECT COUNT(*) FROM films WHERE id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')"),
         pending=one(f"SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'"))
     return dict(stats=s, decades=dec, undated=undated, genres=genres, no_genre=no_genre, countries=top(cc, 8),
-                n_countries=len(cc), directors=top(dc, 10), studios=studios, recent=recent, on_this_day=otd, on_this_day_all=otd_all,
+                n_countries=len(cc), directors=top(dc, 10), studios=studios, n_studios=n_studios, no_studio=no_studio, recent=recent, on_this_day=otd, on_this_day_all=otd_all,
                 on_this_day_hidden=max(0, otd_all - len(otd)), today=today.isoformat(), health=health,
                 no_birthday_people=no_bday, reports=REPORTS)
 
@@ -1001,7 +1032,7 @@ def explore(c, where, args, lim=12):
     rows = c.execute(f"SELECT {','.join(cols)} FROM films f {where}", args).fetchall()
     nrm = lambda x: " ".join(x.split()).casefold()
     dec, yrs, mon = {}, {}, {}
-    gen, gname, cty, dirs, stu, cast = {}, {}, {}, {}, {}, {}
+    gen, gname, cty, dirs, cast = {}, {}, {}, {}, {}
     rolen = {k: set() for k, _ in roles}
     films = scenes = undated = no_genre = 0
     pc = {r[1] for r in c.execute("PRAGMA table_info(people)")}
@@ -1029,7 +1060,6 @@ def explore(c, where, args, lim=12):
             else: no_genre += 1
             for x in _split(co): cty.setdefault(nrm(x), [x, 0])[1] += 1
             for x in _split(credits.get("director")): dirs.setdefault(nrm(x), [x, 0])[1] += 1
-        if st and st.strip(): stu.setdefault(db.studio_key(st), [st.strip(), 0])[1] += 1
         adult = sc or (pg or "").strip().lower() in ADULT_GENRES
         if adult: adult_titles += 1
         for x in _split(credits.get("cast")):
@@ -1045,6 +1075,7 @@ def explore(c, where, args, lim=12):
     rank = lambda m, n: [dict(name=v[0], n=v[1]) for v in sorted(m.values(), key=lambda v: (-v[1], v[0].lower()))[:n]]
     genres = sorted(([max(gname[k].items(), key=lambda kv: kv[1])[0], n] for k, n in gen.items()), key=lambda v: (-v[1], v[0].lower()))
     ids_sql = f"SELECT f.id FROM films f {where}"
+    studios, n_studios, no_studio = studio_rank(c, ids_sql, args, 15)
     tags = [dict(name=n, n=k) for n, k in c.execute(
         f"SELECT MIN(t.name), COUNT(DISTINCT ft.film_id) FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' "
         f"AND ft.film_id IN ({ids_sql}) GROUP BY tag_norm(t.name) ORDER BY 2 DESC, 1 LIMIT 20", args)]
@@ -1059,6 +1090,6 @@ def explore(c, where, args, lim=12):
                 decades=ser(dec), years=ser(yrs), months=ser(mon),
                 genres=[dict(name=g, n=n) for g, n in genres[:lim]], n_genres=len(genres),
                 countries=rank(cty, lim), n_countries=len(cty), directors=rank(dirs, lim), n_directors=len(dirs),
-                studios=rank(stu, 15), n_studios=len(stu), tags=tags, cast=rank(cast, lim), adult_titles=adult_titles,
+                studios=studios, n_studios=n_studios, no_studio=no_studio, tags=tags, cast=rank(cast, lim), adult_titles=adult_titles,
                 known_birthdays=len(bdays), roles={k: len(v) for k, v in rolen.items()},
                 base_decades=base, base_years=base_y)
