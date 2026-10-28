@@ -1,11 +1,12 @@
-"""Birth dates from Wikidata (P569) / Wikipedia when ThePornDB and TMDB don't have one.
+"""Birth dates from Wikidata (P569) / Wikipedia when ThePornDB and TMDB don't have one, then free fallback sites
+(Boobpedia, FreeOnes, Babepedia: bdsources.py) when Wikidata / Wikipedia have none or only a year.
 
 Only confident, unique matches are saved (people.birthday + people.birth_date_source, e.g. 'wikidata Q465186');
 hand-edited or existing birth dates are never overwritten. Ambiguous matches go to a review list.
 Background job over everyone credited in the library without a birth date (adult performers first), rate-limited
 and resumable (table birthdate_lookup), plus single lookups when a person page loads."""
 import re, json, time, datetime, threading, urllib.request, urllib.parse, urllib.error
-import db
+import db, bdsources
 
 UA = "FilmTagger/1.3 (https://github.com/kylerhudson1975/film-tagger; birth-date lookup)"
 WD_API, WD_SPARQL, WP_API = "https://www.wikidata.org/w/api.php", "https://query.wikidata.org/sparql", "https://en.wikipedia.org/w/api.php"
@@ -16,7 +17,9 @@ PORN_OCC = "Q488111"
 SCHEMA = """CREATE TABLE IF NOT EXISTS birthdate_lookup(name_norm TEXT PRIMARY KEY, name TEXT, status TEXT, birthday TEXT,
   source TEXT, detail TEXT, at REAL);"""
 JOB = dict(running=False, stop=False, done=0, total=0, filled=0, ambiguous=0, not_found=0, no_birthday=0, errors=0,
-           current=None, started_at=None, finished_at=None, last_error=None)
+           current=None, started_at=None, finished_at=None, last_error=None, by_source={}, rechecked=0)
+FB_FORCE = [False]  # tests: run the fallback step (with bdsources.lookup stubbed) on a temp DB
+FB_RETRY = ("not_found", "no_birthday", "ambiguous")  # statuses the fallback sites are tried for (once: birthdate_lookup.fb_at)
 LOCK = threading.Lock()
 _last = [0.0]
 TMDB = {"fn": None}
@@ -24,6 +27,8 @@ TMDB = {"fn": None}
 def ensure(c):
     import people
     c.executescript(SCHEMA); c.executescript(people.PEOPLE_SCHEMA); people.migrate(c)  # people.migrate adds birth_date_source
+    if "fb_at" not in {r[1] for r in c.execute("PRAGMA table_info(birthdate_lookup)")}:
+        c.execute("ALTER TABLE birthdate_lookup ADD COLUMN fb_at REAL")  # when the fallback sites were tried
     c.commit()
 
 def _get(url, params=None, accept="application/json", tries=4):
@@ -106,7 +111,7 @@ def lookup(name, tmdb_person=None, film_tmdb_ids=(), years=(), adult=False):
             if bd: return dict(status="filled", birthday=bd, source=f"wikidata {q[0]}", detail="TMDB person id on Wikidata")
             wb = _wiki_fallback(ent, plaus)
             if wb: return wb
-            return dict(status="no_birthday", detail=f"{q[0]} has no exact birth date")
+            return dict(status="no_birthday", detail=f"{q[0]} has no exact birth date", year=by)
     # 2) name search: humans with a film/TV occupation whose label or alias is this exact name
     hits, crowded = [], False
     for lang in ("en", "fr"):
@@ -151,7 +156,7 @@ def lookup(name, tmdb_person=None, film_tmdb_ids=(), years=(), adult=False):
     if pick["bd"]: return dict(status="filled", birthday=pick["bd"], source=f"wikidata {pick['qid']}", detail=why)
     wb = _wiki_fallback(pick["ent"], plaus)
     if wb: return wb
-    return dict(status="no_birthday", detail=f"{pick['qid']} ({why}) has no exact birth date")
+    return dict(status="no_birthday", detail=f"{pick['qid']} ({why}) has no exact birth date", year=pick["by"])
 
 def _wiki_fallback(ent, plaus):
     t = ((ent.get("sitelinks") or {}).get("enwiki") or {}).get("title")
@@ -174,8 +179,9 @@ def apply(c, name, res):
     return True
 
 def _record(c, name, res):
-    c.execute("INSERT OR REPLACE INTO birthdate_lookup(name_norm, name, status, birthday, source, detail, at) VALUES(?,?,?,?,?,?,?)",
-              (db.fold(" ".join(name.split())), name, res["status"], res.get("birthday"), res.get("source"), res.get("detail"), time.time()))
+    c.execute("INSERT OR REPLACE INTO birthdate_lookup(name_norm, name, status, birthday, source, detail, at, fb_at) VALUES(?,?,?,?,?,?,?,?)",
+              (db.fold(" ".join(name.split())), name, res["status"], res.get("birthday"), res.get("source"), res.get("detail"), time.time(),
+               res.get("fb_at")))
 
 def _hints(c, name, row):
     """TMDB person id, library film TMDB ids, credit years and adult flag for one name (all its aliases)."""
@@ -200,27 +206,100 @@ def tmdb_birthday(c, row):
     try: datetime.date.fromisoformat(bd); return dict(status="filled", birthday=bd, source=f"tmdb person {row['tmdb_person_id']}", detail="TMDB profile")
     except ValueError: return None
 
-def lookup_one(c, name):
+def _evidence(c, name, row):
+    """What the fallback sites are checked against: every name, credit years (library, TMDB credits, ThePornDB scenes,
+    profile career), titles, profile links to the sites, and whether the person acts at all (crew-only people are skipped)."""
+    names = db.expand_person(c, name)
+    if row is not None:
+        try: names += [a for a in json.loads(row["aliases"] or "[]") if isinstance(a, str) and len(a.split()) >= 2 and a not in names]
+        except Exception: pass
+    years, titles, acting = set(), set(), False
+    sel = " OR ".join(f"person_in_any(f.{col}, ?)" for col in db.PEOPLE_ROLES.values())
+    for r in c.execute(f"SELECT f.title, f.year, person_in_any(f.cast_, ?) AS ac FROM films f WHERE {sel}",
+                       [db.ALIAS_SEP.join(names)] * (len(db.PEOPLE_ROLES) + 1)):
+        if r["year"]: years.add(int(r["year"]))
+        if r["ac"]: acting = True; titles.add(r["title"] or "")
+    urls = {}
+    if row is not None:
+        try: cr = json.loads(row["credits_json"] or "{}")
+        except Exception: cr = {}
+        for x in cr.get("cast") or []:
+            acting = True; titles.add(x.get("title") or ""); titles.add(x.get("original_title") or "")
+            if re.match(r"^\d{4}", x.get("release_date") or ""): years.add(int(x["release_date"][:4]))
+        try: sc = json.loads(row["tpdb_scenes_json"] or "[]")
+        except Exception: sc = []
+        for x in sc if isinstance(sc, list) else []:
+            acting = True
+            if re.match(r"^\d{4}", str(x.get("date") or "")): years.add(int(str(x["date"])[:4]))
+        for y in re.findall(r"\b(19\d\d|20\d\d)\b", row["career"] or ""): years.add(int(y))
+        if row["source"] == "tpdb" or row["tpdb_performer_id"]: acting = True
+        try: links = json.loads(row["links_json"] or "{}")
+        except Exception: links = {}
+        for k2, v in (links or {}).items():
+            k2 = str(k2).lower().replace(" ", "")
+            if k2 in bdsources.LABEL and isinstance(v, str) and v.startswith("https://"): urls[k2] = v
+        if row["merged_into"] is None: acting = True  # has a person page (e.g. Dashboard 'People without a birth date')
+    return dict(names=names, years=sorted(years), titles=sorted(t for t in titles if t), acting=acting, urls=urls)
+
+def fallback(c, name, row, res0):
+    """Try the fallback sites after TMDB / Wikidata / Wikipedia gave no exact date. Returns the new result."""
+    ev = _evidence(c, name, row)
+    if not ev["acting"]: return dict(res0, fb_at=time.time())
+    wd_year = res0.get("year") if res0["status"] == "no_birthday" else None
+    fb = bdsources.lookup(ev["names"], ev["years"], ev["titles"], wd_year, ev["urls"])
+    note = (f"checked {', '.join(fb['tried'])}" if fb["tried"] else "") + \
+           ("; skipped " + ", ".join(f"{k} ({v})" for k, v in fb["skipped"].items()) if fb["skipped"] else "")
+    if not fb["tried"]: return dict(res0)  # every site is paused right now: no fb_at, so it is tried again later
+    hit = fb["hit"]
+    wd_cands = []
+    if res0["status"] == "ambiguous":
+        try: wd_cands = [x for x in json.loads(res0.get("detail") or "[]") if isinstance(x, dict)]
+        except Exception: wd_cands = []
+    if hit and any(x.get("birthday") and x["birthday"] != hit["birthday"] for x in wd_cands if x.get("qid")):
+        fb["cands"].append(hit); hit = None  # a Wikidata candidate has a different exact date: let Kyle decide
+    if hit:
+        return dict(status="filled", birthday=hit["birthday"], source=f"{hit['site']} {hit['url']}",
+                    detail=f"{hit['label']}: {hit['why']}", fb_at=time.time(), site=hit["site"])
+    if fb["cands"]:
+        return dict(status="ambiguous", fb_at=time.time(), year=res0.get("year"),
+                    detail=json.dumps(wd_cands + [dict(site=x["site"], label=x["label"], url=x["url"], birthday=x["birthday"],
+                                                       desc=f"{x['name']} on {x['label']}" + (f", career {x['career']}" if x.get("career") else ""),
+                                                       why=x["why"]) for x in fb["cands"]][:8]))
+    if res0["status"] == "ambiguous": return dict(res0, fb_at=time.time())
+    return dict(res0, fb_at=time.time(), detail=((res0.get("detail") or "") + (f"; {note}: no usable page" if note else "")).strip("; "))
+
+def lookup_one(c, name, recheck=False):
     k = db.fold(" ".join(name.split()))
     row = c.execute("SELECT * FROM people WHERE name_norm=?", (k,)).fetchone()
     if row is not None and ((row["birthday"] or "") or "birthday" in json.loads(row["edited_fields"] or "[]")): return dict(status="skipped")
     for n in db.expand_person(c, name)[1:]:  # an alias already has a birth date
         r2 = c.execute("SELECT birthday FROM people WHERE name_norm=?", (db.fold(n),)).fetchone()
         if r2 and r2["birthday"]: return dict(status="skipped", detail="alias has a birth date")
-    res = tmdb_birthday(c, row)
-    if not res:
-        tp, ids, years, adult = _hints(c, name, row)
-        res = lookup(name, tp, ids, years, adult)
+    prev = c.execute("SELECT * FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone() if recheck else None
+    if prev is not None and prev["status"] in FB_RETRY:  # tried before the fallback sites existed: only try those
+        res = dict(status=prev["status"], detail=prev["detail"])
+    else:
+        res = tmdb_birthday(c, row)
+        if not res:
+            tp, ids, years, adult = _hints(c, name, row)
+            res = lookup(name, tp, ids, years, adult)
+    if res["status"] in FB_RETRY and (FB_FORCE[0] or enabled()): res = fallback(c, name, row, res)  # never online for test DBs
     if res["status"] == "filled" and not apply(c, name, res): res = dict(res, status="skipped")
     _record(c, name, res); c.commit()
     return res
 
-def queue(c):
-    """Everyone credited in the library without a birth date and not tried yet; adult performers first, then most credits."""
+def queue(c, with_recheck=False):
+    """Everyone credited in the library without a birth date and not tried yet, plus (with_recheck) people tried before the
+    fallback sites existed. People with a person page first (Dashboard 'People without a birth date'), then adult
+    performers, then most credits."""
     from collections import Counter
     have = {r[0] for r in c.execute("SELECT name_norm FROM people WHERE COALESCE(birthday,'')<>'' OR edited_fields LIKE '%birthday%'")}
     merged = {r[0] for r in c.execute("SELECT name_norm FROM people WHERE merged_into IS NOT NULL")}
-    tried = {r[0] for r in c.execute("SELECT name_norm FROM birthdate_lookup WHERE status<>'error' OR at>?", (time.time() - 86400,))}
+    recheck = {r[0] for r in c.execute(f"SELECT name_norm FROM birthdate_lookup WHERE fb_at IS NULL AND status IN ({','.join('?' * len(FB_RETRY))})",
+                                       FB_RETRY)} if with_recheck else set()
+    tried = {r[0] for r in c.execute("SELECT name_norm FROM birthdate_lookup WHERE status<>'error' OR at>?", (time.time() - 86400,))} - recheck
+    page = {r[0]: r[1] for r in c.execute("SELECT name_norm, name FROM people WHERE merged_into IS NULL AND COALESCE(birthday,'')='' "
+                                          "AND COALESCE(edited_fields,'') NOT LIKE '%birthday%'")}
     groups = db.alias_groups(c)
     cnt, adult, disp = Counter(), Counter(), {}
     cols = list(db.PEOPLE_ROLES.values())
@@ -233,30 +312,34 @@ def queue(c):
                 if not n or k in seen: continue
                 seen.add(k); cnt[k] += 1; disp.setdefault(k, n)
                 if a and col == "cast_": adult[k] += 1
+    for k, n in page.items(): disp.setdefault(k, n)
     out = []
-    for k, n in cnt.items():
+    for k in set(cnt) | set(page):
         if k in have or k in merged or k in tried: continue
         if any(db.fold(x) in have for x in groups.get(k, [])): continue
-        out.append((-adult[k], -n, k))
+        out.append((k not in page, -adult[k], -cnt[k], k))
     out.sort()
-    return [disp[k] for _, _, k in out]
+    return [(disp[k], k in recheck) for *_, k in out] if with_recheck else [disp[k] for *_, k in out]
 
 def run_job(connect, limit=None):
     if JOB["running"]: return False
     JOB.update(running=True, stop=False, done=0, filled=0, ambiguous=0, not_found=0, no_birthday=0, errors=0, current=None,
-               started_at=time.time(), finished_at=None, last_error=None)
+               started_at=time.time(), finished_at=None, last_error=None, by_source={}, rechecked=0)
     def work():
         c = connect(); ensure(c)
         try:
-            q = queue(c)
+            q = queue(c, with_recheck=True)
             if limit: q = q[:limit]
             JOB["total"] = len(q)
-            for name in q:
+            for name, again in q:
                 if JOB["stop"]: break
                 JOB["current"] = name
                 try:
-                    res = lookup_one(c, name); st = res["status"]
+                    res = lookup_one(c, name, recheck=again); st = res["status"]
                     if st in JOB: JOB[st] += 1
+                    if again: JOB["rechecked"] += 1
+                    if st == "filled":
+                        src = (res.get("source") or "?").split(" ")[0]; JOB["by_source"][src] = JOB["by_source"].get(src, 0) + 1
                 except Exception as ex:
                     JOB["errors"] += 1; JOB["last_error"] = f"{name}: {type(ex).__name__}"
                     try: _record(c, name, dict(status="error", detail=type(ex).__name__ + ": " + str(ex)[:120])); c.commit()
@@ -286,8 +369,9 @@ def lookup_async(connect, name):
     def work():
         c = connect(); ensure(c)
         try:
-            if c.execute("SELECT 1 FROM birthdate_lookup WHERE name_norm=? AND status<>'error'", (k,)).fetchone(): return
-            lookup_one(c, name)
+            r0 = c.execute("SELECT status, fb_at FROM birthdate_lookup WHERE name_norm=? AND status<>'error'", (k,)).fetchone()
+            if r0 and not (r0["status"] in FB_RETRY and r0["fb_at"] is None): return
+            lookup_one(c, name, recheck=True)
         except Exception: pass
         finally: c.close()
     threading.Thread(target=work, daemon=True).start()
@@ -299,12 +383,18 @@ def init(app, connect, tmdb):
 
     def stats(c):
         st = {r[0]: r[1] for r in c.execute("SELECT status, COUNT(*) FROM birthdate_lookup GROUP BY status")}
-        return dict(st, saved=c.execute("SELECT COUNT(*) FROM people WHERE birth_date_source IS NOT NULL").fetchone()[0])
+        bysrc = {}
+        for (s0,) in c.execute("SELECT source FROM birthdate_lookup WHERE status='filled'"):
+            k0 = (s0 or "?").split(" ")[0]; bysrc[k0] = bysrc.get(k0, 0) + 1
+        recheck = c.execute(f"SELECT COUNT(*) FROM birthdate_lookup WHERE fb_at IS NULL AND status IN ({','.join('?' * len(FB_RETRY))})", FB_RETRY).fetchone()[0]
+        return dict(st, saved=c.execute("SELECT COUNT(*) FROM people WHERE birth_date_source IS NOT NULL").fetchone()[0],
+                    by_source=bysrc, recheck_left=recheck)
 
     @app.get("/api/birthdates/status")
     def bd_status():
         c = connect(); ensure(c)
-        return jsonify(job={k: v for k, v in JOB.items() if k != "stop"}, totals=stats(c), auto=bool(db.get_setting(c, "birthdate_auto", True)))
+        return jsonify(job={k: v for k, v in JOB.items() if k != "stop"}, totals=stats(c), auto=bool(db.get_setting(c, "birthdate_auto", True)),
+                       sites=bdsources.status(), skipped_sites=bdsources.SKIPPED)
 
     @app.post("/api/birthdates/start")
     def bd_start():
@@ -325,7 +415,8 @@ def init(app, connect, tmdb):
             try: cands = json.loads(r["detail"] or "[]")
             except Exception: cands = []
             p = c.execute("SELECT id FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
-            out.append(dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands))
+            out.append(dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
+                            iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or "")))
         return jsonify(review=out)
 
     @app.post("/api/birthdates/review")
@@ -334,8 +425,16 @@ def init(app, connect, tmdb):
         d = request.get_json(silent=True) or {}; c = connect(); ensure(c)
         r = c.execute("SELECT * FROM birthdate_lookup WHERE name_norm=?", (d.get("key") or "",)).fetchone()
         if not r: return jsonify(error="Unknown entry"), 404
+        if d.get("url"):  # a fallback-site candidate: the date read from that page when it was checked
+            try: cands = json.loads(r["detail"] or "[]")
+            except Exception: cands = []
+            x = next((x for x in cands if isinstance(x, dict) and x.get("url") == d["url"] and x.get("site") in bdsources.LABEL), None)
+            if not x or not x.get("birthday"): return jsonify(error="Unknown candidate"), 400
+            res = dict(status="filled", birthday=x["birthday"], source=f"{x['site']} {x['url']}", detail=f"picked in review ({x['label']})", fb_at=time.time())
+            ok = apply(c, r["name"], res); _record(c, r["name"], res if ok else dict(res, status="skipped")); c.commit()
+            return jsonify(ok=ok, birthday=x["birthday"])
         if not d.get("qid"):
-            _record(c, r["name"], dict(status="reviewed_none", detail="picked none in review")); c.commit(); return jsonify(ok=True)
+            _record(c, r["name"], dict(status="reviewed_none", detail="picked none in review", fb_at=time.time())); c.commit(); return jsonify(ok=True)
         q = str(d["qid"])
         if not re.match(r"^Q\d+$", q): return jsonify(error="bad id"), 400
         ent = _entities([q]).get(q) or {}; bd, _ = _dob(ent)

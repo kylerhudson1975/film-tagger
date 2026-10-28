@@ -1,5 +1,6 @@
 """Birth dates from Wikidata/Wikipedia: confident results saved with a source, hand edits / existing dates never
-overwritten, ThePornDB/TMDB refreshes without a date keep the found one, queue order, review 'none'. No network.
+overwritten, ThePornDB/TMDB refreshes without a date keep the found one, queue order, review 'none'; fallback sites
+(stubbed): confident hit saved with site + URL, uncorroborated page -> review with link, earlier misses re-queued once. No network.
 Run: python tests/test_birthdates.py"""
 import os, sys, json, tempfile
 os.environ["FILMTAGGER_DB"] = os.path.join(tempfile.mkdtemp(), "films.db")
@@ -30,3 +31,44 @@ assert cl.get("/api/birthdates/review").json["review"] == []
 cl.post(f"/api/person/{r['id']}/edit", json={"birthday": "1954-06-26"})
 assert c.execute("SELECT birth_date_source FROM people WHERE id=?", (r["id"],)).fetchone()[0] == "hand edit"
 print("ok")
+
+# ---------- fallback sites (Boobpedia / FreeOnes / Babepedia): stubbed, no network ----------
+import bdsources as bs
+assert bs.parse_date("Thursday 4th of August 1955") == bs.parse_date("August 4, 1955") == "1955-08-04"
+pg = dict(name="Lina Two", aliases=["Lina Deux"], birthday="1955-08-04", start=1976, end=1980, text="")
+assert bs.check(pg, ["Lina Two"], [1977, 1979], [])[0]
+assert bs.check(pg, ["Lina Deux"], [1961, 1977], [])[0]                       # alias match; an outlier credit year is fine
+assert not bs.check(pg, ["Lina Two"], [], [])[0]                              # nothing in the DB to corroborate -> review
+assert not bs.check(pg, ["Lina Two"], [1999], [])[0]                          # career years don't fit
+assert not bs.check(pg, ["Lina Two"], [1977], [], wd_year=1956)[0]            # Wikidata's year disagrees
+assert not bs.check(dict(pg, name="Lina"), ["Lina"], [1977], [])[0]           # one-word names never auto-save
+assert not bs.check(pg, ["Other Name"], [1977], [])[0]
+bd.FB_FORCE[0] = True
+c.execute("INSERT INTO films(title,year,cast_,primary_genre) VALUES('D',1977,'Lina Two, Nora Three','Hardcore')"); c.commit()
+q = bd.queue(c, with_recheck=True); assert ("Lina Two", False) in q, q
+bd.lookup = lambda name, *a, **k: dict(status="not_found", detail="0 Wikidata results")
+bs.lookup = lambda names, years, titles, wd_year=None, urls=None: dict(
+    hit=dict(site="boobpedia", label="Boobpedia", url="https://www.boobpedia.com/boobs/Lina_Two", birthday="1955-08-04", name="Lina Two", why="career fits") if "Lina Two" in names else None,
+    cands=[] if "Lina Two" in names else [dict(site="freeones", label="FreeOnes", url="https://www.freeones.com/nora-three/bio", birthday="1960-01-02", name="Nora Three", why="no credit years here to compare")],
+    tried=["Boobpedia", "FreeOnes", "Babepedia"], skipped={})
+assert bd.lookup_one(c, "Lina Two")["status"] == "filled"
+r2 = c.execute("SELECT * FROM people WHERE name_norm='lina two'").fetchone()
+assert r2["birthday"] == "1955-08-04" and r2["birth_date_source"] == "boobpedia https://www.boobpedia.com/boobs/Lina_Two", dict(r2)
+assert bd.lookup_one(c, "Nora Three")["status"] == "ambiguous"
+rv = cl.get("/api/birthdates/review").json["review"]; nr = [x for x in rv if x["name"] == "Nora Three"][0]
+assert nr["candidates"][0]["url"].startswith("https://www.freeones.com/") and "iafd.com" in nr["iafd_search"]
+assert cl.post("/api/birthdates/review", json={"key": "nora three", "url": "https://evil.example/x"}).status_code == 400
+assert cl.post("/api/birthdates/review", json={"key": "nora three", "url": "https://www.freeones.com/nora-three/bio"}).json["ok"]
+assert c.execute("SELECT birthday, birth_date_source FROM people WHERE name_norm='nora three'").fetchone()[0] == "1960-01-02"
+# earlier misses are re-queued once for the fallback sites (only those, not Wikidata again)
+c.execute("INSERT INTO films(title,year,cast_,primary_genre) VALUES('E',1978,'Old Miss','Hardcore')")
+bd._record(c, "Old Miss", dict(status="not_found", detail="0 Wikidata results")); c.commit()
+assert ("Old Miss", True) in bd.queue(c, with_recheck=True) and "Old Miss" not in bd.queue(c)
+bd.lookup = lambda *a, **k: (_ for _ in ()).throw(AssertionError("Wikidata asked again"))
+res = bd.lookup_one(c, "Old Miss", recheck=True); assert res["status"] == "ambiguous" or res["status"] == "not_found", res
+assert c.execute("SELECT fb_at FROM birthdate_lookup WHERE name_norm='old miss'").fetchone()[0]
+assert ("Old Miss", True) not in bd.queue(c, with_recheck=True)
+st = cl.get("/api/birthdates/status").json; assert st["totals"]["by_source"].get("boobpedia") == 1 and len(st["sites"]) == 3, st
+# hand edits are never overwritten by a fallback hit
+assert bd.lookup_one(c, "Hand Edited")["status"] == "skipped"
+print("fallback ok")
