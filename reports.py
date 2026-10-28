@@ -386,11 +386,30 @@ def sql_schema(c):
         " WHERE fc.person LIKE 'Jane Doe' GROUP BY d.director ORDER BY films DESC LIMIT 10\n"
         " Q: How many horror films per decade? -> SELECT (year/10)*10 AS decade, COUNT(*) AS films, group_concat(id) AS film_ids"
         " FROM films WHERE primary_genre LIKE 'Horror' AND year IS NOT NULL GROUP BY decade ORDER BY decade\n"
-        " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n")
+        " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n"
+        " - Percentages: put the part's condition inside SUM(CASE WHEN ... THEN 1 ELSE 0 END), NOT in WHERE (WHERE limits the total"
+        " too). Always multiply by 100.0 first (integer division gives 0) and round: ROUND(100.0*part/total, 1) AS percent. Return"
+        " the part, the total and the percent as three columns (e.g. matching, total, percent). Use NULLIF(total,0) to avoid /0.\n"
+        " - Ratios: ROUND(1.0*a/NULLIF(b,0), 2) AS ratio, and also return a and b.\n"
+        " - A question about ONE thing (one person, one tag...) needs ONE aggregate row: no GROUP BY.\n"
+        " - 'between 1970 and 1990' = year BETWEEN 1970 AND 1990 (inclusive). Names in the question may be typed without accents;"
+        " use the stored spelling given below when there is one.\n"
+        " Q: What percent of Jane Doe's directed films are from the 1970s? -> SELECT SUM(CASE WHEN f.year BETWEEN 1970 AND 1979 THEN 1"
+        " ELSE 0 END) AS matching, COUNT(DISTINCT f.id) AS total, ROUND(100.0*SUM(CASE WHEN f.year BETWEEN 1970 AND 1979 THEN 1 ELSE 0"
+        " END)/NULLIF(COUNT(DISTINCT f.id),0), 1) AS percent, group_concat(DISTINCT CASE WHEN f.year BETWEEN 1970 AND 1979 THEN f.id END)"
+        " AS film_ids FROM film_directors fd JOIN films f ON f.id=fd.film_id WHERE fd.director IN ('Jane Doe')\n")
 
 
 def sql_prompt(c, question, hint=()):
-    h = "".join(f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n" for a, b in hint)
+    h = ""
+    for x in hint:
+        if len(x) == 3 and x[0] == "director":  # ("director", name as asked, [stored spellings incl. aliases])
+            lst = ", ".join("'" + n.replace("'", "''") + "'" for n in x[2])
+            h += (f" - The director '{x[1]}' is stored in film_directors.director as {lst} (all the same person)."
+                  f" Match with fd.director IN ({lst}).\n")
+        else:
+            a, b = x[-2], x[-1]
+            h += f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n"
     return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) + h +
             'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>"}\n'
             "Limit results to at most 50 rows unless asked otherwise.\nQuestion: " + question.strip()[:500])
@@ -446,23 +465,41 @@ def run_sql(r, sql, everyone, safe):
 
 
 def mentioned_people(c, question):
-    """Performer and director names (as stored) that appear in the question, longest first, no overlaps."""
-    ql = " " + re.sub(r"\s+", " ", question.lower()) + " "
-    names = {}
+    """Performer and director names (as stored) that appear in the question, longest first, no overlaps. Matching is
+    accent- and case-insensitive ('Jesus Franco' finds 'Jesús Franco'). Someone credited both ways counts as a director
+    when the question is about directing, else as cast."""
+    import db as _db
+    ql = " " + re.sub(r"\s+", " ", _db.fold(question)) + " "
+    names, roles = {}, {}
     for ca, d in c.execute("SELECT cast_, director FROM films"):
-        for n in _split(ca): names.setdefault(n.lower(), ("cast", n))
-        for n in _split(d): names.setdefault(n.lower(), ("director", n))
+        for n in _split(ca): k = _db.fold(n); names.setdefault(k, n); roles.setdefault(k, set()).add("cast")
+        for n in _split(d): k = _db.fold(n); names.setdefault(k, n); roles.setdefault(k, set()).add("director")
     try:  # linked aliases (people.aliases / merges) that no film credits directly
-        import db as _db
         for grp in _db.alias_groups(c).values():
-            for n in grp: names.setdefault(n.lower(), ("cast", n))
+            r0 = set().union(*[roles.get(_db.fold(x), set()) for x in grp]) or {"cast"}
+            for n in grp: k = _db.fold(n); names.setdefault(k, n); roles.setdefault(k, set()).update(r0)
     except Exception: pass
-    hits = []
-    for k, v in sorted(names.items(), key=lambda kv: -len(kv[0])):
+    directing = re.search(r"\bdirect", ql) is not None
+    hits, seen = [], []
+    for k, n in sorted(names.items(), key=lambda kv: -len(kv[0])):
         if len(k) < 4 or " " not in k: continue
-        if re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql) and not any(k in h[1].lower() for h in hits):
-            hits.append(v)
+        if re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql) and not any(k in h for h in seen):
+            rs = roles.get(k, {"cast"})
+            kind = "director" if "director" in rs and (directing or "cast" not in rs) else "cast"
+            hits.append((kind, n)); seen.append(k)
     return hits
+
+
+def director_film_count(c, name):
+    """Library titles (films and scenes) crediting `name` (or any linked alias) as director."""
+    import db as _db
+    return c.execute("SELECT COUNT(*) FROM films WHERE person_in_any(director, ?)", (_db.ALIAS_SEP.join(_db.expand_person(c, name)),)).fetchone()[0]
+
+
+def stated_count(question):
+    """The number the user states for a set of titles ('Of the 209 films ...'), else None."""
+    m = re.search(r"\b(\d{1,6})\s+(?:\w+\s+){0,2}?(?:films?|movies?|titles?|scenes?|pictures?)\b", question, re.I)
+    return int(m.group(1)) if m and not (1880 <= int(m.group(1)) <= 2100) else None
 
 
 def person_birthday(c, name):
@@ -507,8 +544,16 @@ def _msg(question, text, **kw):
 
 
 def ask(c, question, chat):
-    people = mentioned_people(c, question); hint = []
+    import db as _db
+    people = mentioned_people(c, question); hint, pre = [], []
     for kind, name in people:
+        if kind == "director":
+            hint.append(("director", name, [x for x in _db.expand_person(c, name)]))
+            n, lib = stated_count(question), director_film_count(c, name)
+            if n is not None and n != lib and len([p for p in people if p[0] == "director"]) == 1:
+                pre.append(f"You said {n} films; your library has {lib} title{'' if lib == 1 else 's'} directed by {name}"
+                           f"{' (counting their aliases)' if len(hint[-1][2]) > 1 else ''}, so the answer is based on those {lib}.")
+            continue
         if kind != "cast": continue
         canon, bd = person_birthday(c, name)
         if bd: hint.append((name, canon)); continue
@@ -521,10 +566,83 @@ def ask(c, question, chat):
         return _msg(question, f"{name} has no known birth date, so per the library's age rule I can't list their titles.",
                     notes=note, birthday_status="unknown")
     res = _ask_sql(c, question, chat, allow_fallback=not people, hint=hint)
+    if pre: res.setdefault("notes", [])[:0] = pre
     if people and res.get("mode") == "sql" and not res["rows"] and not res.get("answer_from_error"):
         cast = [n for k, n in people if k == "cast"]
         if cast: res["notes"].insert(0, f"Only titles released when {', '.join(cast)} was 18 or older are counted.")
     return res
+
+
+ROWNUM_COLS = {"#", "rank", "rn", "row", "row_number", "rownum", "no", "n#", "pos", "position"}
+PCT_COLS = re.compile(r"(?i)percent|pct|share|%")
+
+
+def _null_problem(cols, rows):
+    """Why a result looks broken (a value column entirely NULL, or one aggregate row of only zeros/NULLs), else ''."""
+    vals = [k for k, cn in enumerate(cols) if cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS]
+    dead = [cols[k] for k in vals if all(r[k] is None for r in rows)]
+    if dead:
+        return (f"the query ran but column(s) {', '.join(dead)} came back empty (NULL) in every row - check the names"
+                " (use the stored spelling), compute percentages as ROUND(100.0*part/NULLIF(total,0),1) with the part's"
+                " condition inside SUM(CASE ...) rather than WHERE, and return part, total and percent columns")
+    if len(rows) == 1 and vals and all(rows[0][k] in (None, 0, 0.0) for k in vals if not isinstance(rows[0][k], str)) \
+            and any(not isinstance(rows[0][k], str) for k in vals):
+        return "the query returned a single row of zeros - the filters matched nothing; check names (stored spelling) and filters"
+    return ""
+
+
+def _fmt(v):
+    if isinstance(v, float): return (f"{v:.1f}".rstrip("0").rstrip(".")) if abs(v) < 1e15 else str(v)
+    return str(v)
+
+
+SUMMARY = {"rejected": ""}  # last AI sentence replaced by the plain values (returned as answer_rejected for 'Show query')
+
+
+def _summary(question, cols, rows, chat, reading="", names=()):
+    """One plain-English sentence from the real returned values. Row numbers/rank columns are never treated as values;
+    a single aggregate row is stated as such (never 'the top result')."""
+    if not rows: return "Nothing matched."
+    keep = [k for k, cn in enumerate(cols) if cn not in ("film_ids",) and cn.lower() not in ROWNUM_COLS]
+    if not keep: return f"{len(rows)} row(s)."
+    sample = [{cols[k]: x[k] for k in keep} for x in rows[:25]]
+    fallback = ""
+    if len(rows) == 1:
+        d = sample[0]
+        others = [(k, v) for k, v in d.items() if not PCT_COLS.search(k) and isinstance(v, (int, float)) and not isinstance(v, bool)]
+        pk = next((k for k in d if PCT_COLS.search(k) and isinstance(d[k], (int, float))), None)
+        fallback = (f"{_fmt(d[pk])}% ({_fmt(min(others, key=lambda kv: kv[1])[1])} of {_fmt(max(others, key=lambda kv: kv[1])[1])})."
+                    if pk and len(others) == 2 else "")
+        if fallback and reading: fallback = fallback[:-1] + " \u2014 " + reading.rstrip(".") + "."
+        fallback = fallback or "; ".join(f"{k}: {_fmt(v)}{'%' if PCT_COLS.search(k) and isinstance(v, (int, float)) else ''}" for k, v in d.items()) + "."
+        prompt = ("State the answer to the question in ONE short plain-English sentence using ONLY these values from a single"
+                  " aggregate result row (no SQL talk, no 'top result', no row numbers). Use the exact numbers; percentages"
+                  " with a % sign. Example style: '21% of Jesús Franco's 209 directed films (44) were released 1970–1990.'"
+                  " Numbers in the question (such as a stated total) may be wrong: never repeat them unless they equal one of"
+                  " these values; the values are the truth for this library." +
+                  (" Spell names as: " + ", ".join(names) + "." if names else "") + "\n"
+                  "Question: " + question + "\nValues: " + " | ".join(f"{k}={_fmt(v)}" for k, v in d.items()))
+    else:
+        prompt = ("Answer the question in ONE short plain-English sentence using only these query results (no SQL talk)."
+                  " These rows ARE the answer to the question (already filtered for it). They are ranked as shown: name the top"
+                  " result with its number; if several rows tie for the top value, name all of them. For a breakdown (per decade"
+                  " etc.) summarise the pattern with the biggest values. There is no row-number column; never cite a position"
+                  " as a value.\nQuestion: " + question + "\nResults (one per line):\n" +
+                  "\n".join(" | ".join(f"{k}={_fmt(v)}" for k, v in d.items()) for d in sample)[:6000])
+    try: ans = re.sub(r"<think>.*?</think>", "", chat(prompt) or "", flags=re.S).strip().strip('"')
+    except Exception: ans = ""
+    if len(rows) == 1:
+        d = sample[0]
+        nums = [float(v) for v in d.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        pct = [float(v) for k, v in d.items() if PCT_COLS.search(k) and isinstance(v, (int, float))]
+        st = stated_count(question)
+        qn = {float(x) for x in re.findall(r"\d+(?:\.\d+)?", question.replace(",", ""))} - ({float(st)} if st is not None else set())
+        near = lambda f, vs: any(abs(v - f) < 0.051 or abs(round(v) - f) < 0.001 for v in vs)
+        found = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", ans.replace(",", ""))]
+        ok = bool(ans) and "top result" not in ans.lower() and all(near(f, nums) or f in qn for f in found) \
+            and (all(any(near(f, [v]) for f in found) for v in pct) if pct else any(near(f, nums) for f in found))
+        if not ok: SUMMARY["rejected"] = ans; ans = fallback
+    return ans or fallback or f"{len(rows)} row(s)."
 
 
 def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
@@ -541,6 +659,9 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
             reading, sql = _parse_sql_reply(chat(prompt))
             cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
             if attempt == 0 and not rows: raise ValueError("the query ran but returned no rows; check names, joins and filters")
+            if attempt == 0:
+                bad = _null_problem(cols, rows)
+                if bad: raise ValueError(bad)
             break
         except Exception as e:
             err = e; tries.append(dict(sql=sql, error=str(e)))
@@ -561,20 +682,12 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     notes = []
     if dropped: notes.append(f"{dropped} row(s) were hidden because they involve performers without a known adult birth date.")
     if more: notes.append(f"Showing the first {SQL_MAX_ROWS} rows.")
-    answer = ""
-    try:
-        sample = [dict(zip(cols, [v for v in x])) for x in rows[:25]]
-        for d in sample: d.pop("film_ids", None)
-        answer = "Nothing matched." if not rows else re.sub(r"<think>.*?</think>", "", chat(
-            "Answer the question in ONE short plain-English sentence using only these query results (no SQL talk). "
-            "These rows ARE the answer to the question (already filtered for it). They are ranked as shown: name the top result with"
-            " its number; if several rows tie for the top value, name all of them. For a breakdown (per decade etc.) summarise the"
-            " pattern with the biggest values.\nQuestion: " + question + "\nResults (one per line):\n" +
-            "\n".join(" | ".join(f"{k}={v}" for k, v in d.items()) for d in sample)[:6000]) or "", flags=re.S).strip().strip('"')
-    except Exception: answer = ""
+    if tries and _null_problem(cols, rows): notes.append("Some values came back empty even after a retry, so treat this answer with care.")
+    SUMMARY["rejected"] = ""
+    answer = _summary(question, cols, rows, chat, reading, [x[1] if len(x) == 3 else x[-1] for x in hint])
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
-                notes=notes, retried=bool(tries))
+                notes=notes, retried=bool(tries), answer_rejected=SUMMARY["rejected"])
 
 
 # ---------- Dashboard (home page summary; read-only) ----------
