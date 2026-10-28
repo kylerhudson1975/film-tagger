@@ -30,6 +30,27 @@ assert cl.post("/api/birthdates/review", json={"key": "main stream", "qid": ""})
 assert cl.get("/api/birthdates/review").json["review"] == []
 cl.post(f"/api/person/{r['id']}/edit", json={"birthday": "1954-06-26"})
 assert c.execute("SELECT birth_date_source FROM people WHERE id=?", (r["id"],)).fetchone()[0] == "hand edit"
+# a date already found (e.g. TMDB) typed again by hand with a note: protected, noted, and off the review list
+c.execute("INSERT INTO films(title,year,cast_,primary_genre) VALUES('D',2023,'Moon Test','Hardcore')")
+c.execute("INSERT INTO people(name,name_norm,birthday,birth_date_source) VALUES('Moon Test','moon test','1999-04-08','tmdb person 9')"); c.commit()
+bd._record(c, "Moon Test", dict(status="ambiguous", detail=json.dumps([{"site": "freeones", "label": "FreeOnes", "url": "https://www.freeones.com/x", "birthday": "1999-04-08"}]))); c.commit()
+assert cl.get("/api/birthdates/review").json["review"] == []  # has a birth date now: not listed
+c.execute("UPDATE people SET birthday=NULL WHERE name_norm='moon test'"); c.commit()
+assert [x["name"] for x in cl.get("/api/birthdates/review").json["review"]] == ["Moon Test"]
+c.execute("UPDATE people SET birthday='1999-04-08' WHERE name_norm='moon test'"); c.commit()
+mp = c.execute("SELECT id FROM people WHERE name_norm='moon test'").fetchone()[0]
+assert cl.post(f"/api/person/{mp}/edit", json={"birthday": "1999-04-08", "birth_date_note": "entered by Kyle"}).json["edited"] == ["birthday"]
+m = c.execute("SELECT * FROM people WHERE id=?", (mp,)).fetchone()
+assert m["birthday"] == "1999-04-08" and m["birth_date_source"] == "hand edit (entered by Kyle)"
+assert c.execute("SELECT status FROM birthdate_lookup WHERE name_norm='moon test'").fetchone()[0] == "skipped"
+assert cl.post(f"/api/person/{mp}/edit", json={"birthday": "1999-04-08"}).json["ok"]  # same date again, no note: note kept
+assert c.execute("SELECT birth_date_source FROM people WHERE id=?", (mp,)).fetchone()[0] == "hand edit (entered by Kyle)"
+# Dashboard 'People without a birth date': a person whose only title left the library is flagged, not shown as in it
+import reports
+c.execute("INSERT INTO people(name,name_norm) VALUES('Gone Test','gone test')"); c.execute("INSERT INTO people(name,name_norm) VALUES('Still Here','still here')")
+c.execute("INSERT INTO films(title,year,cast_,primary_genre) VALUES('E',2024,'Still Here','Drama')"); c.commit()
+nb = {x["name"]: x["in_library"] for x in reports.dashboard(c)["no_birthday_people"]}
+assert nb.get("Gone Test") is False and nb.get("Still Here") is True, nb
 print("ok")
 
 # ---------- fallback sites (Boobpedia / FreeOnes / Babepedia): stubbed, no network ----------

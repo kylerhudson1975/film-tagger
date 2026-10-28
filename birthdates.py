@@ -414,7 +414,9 @@ def init(app, connect, tmdb):
         for r in c.execute("SELECT name_norm, name, detail, at FROM birthdate_lookup WHERE status='ambiguous' ORDER BY name COLLATE NOCASE LIMIT 500"):
             try: cands = json.loads(r["detail"] or "[]")
             except Exception: cands = []
-            p = c.execute("SELECT id FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
+            p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
+            if p and p["merged_into"]: p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE id=?", (p["merged_into"],)).fetchone() or p
+            if p and ((p["birthday"] or "") or "birthday" in json.loads(p["edited_fields"] or "[]")): continue  # settled since (TMDB, hand edit, merge)
             out.append(dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
                             iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or "")))
         return jsonify(review=out)

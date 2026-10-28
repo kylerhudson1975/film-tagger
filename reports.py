@@ -887,6 +887,32 @@ NO_POSTER_SQL = ("COALESCE(custom_poster,'')='' AND COALESCE(poster,'')='' "
                  "AND NOT (kind='scene' AND COALESCE(poster_wide,'')<>'')")
 
 
+def _mark_in_library(c, plist, pc):
+    """Set in_library on each person dict: credited (name, multi-word alias or merged person) on a library title, or a
+    library title in their cached TMDB credits. A person row stays after their only title is removed from the library, so
+    the 'People without a birth date' list says so instead of implying they are still in it."""
+    import db
+    names, tm = set(), set()
+    for r in c.execute("SELECT tmdb_id, " + ", ".join(db.PEOPLE_ROLES.values()) + " FROM films"):
+        if r[0]: tm.add(r[0])
+        for v in r[1:]:
+            for n in (v or "").split(","):
+                n = " ".join(n.split())
+                if n: names.add(db.fold(n))
+    cols = ", ".join(x for x in ("aliases", "credits_json") if x in pc) or "NULL"
+    for p in plist:
+        row = c.execute(f"SELECT {cols} FROM people WHERE id=?", (p["id"],)).fetchone()
+        keys = {db.fold(n) for n in db.expand_person(c, p["name"])}
+        try: keys |= {db.fold(" ".join(a.split())) for a in json.loads((row[0] if "aliases" in pc else None) or "[]") if db._alias_ok(a)}
+        except Exception: pass
+        hit = bool(keys & names)
+        if not hit and "credits_json" in pc:
+            try: cr = json.loads(row[-1] or "{}")
+            except Exception: cr = {}
+            hit = any(x.get("id") in tm for x in (cr.get("cast") or []) + (cr.get("crew") or []) if isinstance(x, dict))
+        p["in_library"] = hit
+
+
 def dashboard(c, today=None, S="1"):
     """Library summary for the Dashboard. Text and numbers only (never poster paths). 'Recently added' and 'On this day'
     leave out scenes and Hardcore/Softcore films; 'Classic Porn' = films (not scenes) whose primary genre is Hardcore.
@@ -941,6 +967,7 @@ def dashboard(c, today=None, S="1"):
     NB = f"FROM people WHERE {PW} AND COALESCE(birthday,'')=''"
     no_bday = [dict(id=i, name=n, source=src) for i, n, src in c.execute(
         f"SELECT id, name, {'source' if 'source' in pc else 'NULL'} {NB} ORDER BY name COLLATE NOCASE LIMIT 500")] if pc else []
+    if no_bday: _mark_in_library(c, no_bday, pc)
     health = dict(  # always the whole library (the fix-it lists use their own filters)
         no_poster=one(f"SELECT COUNT(*) FROM films WHERE {NO_POSTER_SQL}"),
         no_poster_scenes=one(f"SELECT COUNT(*) FROM films WHERE kind='scene' AND {NO_POSTER_SQL}"),
