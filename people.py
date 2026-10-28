@@ -1048,6 +1048,8 @@ def init(app, tmdb, posters_dir):
             ch = fids[i:i + 500]
             for r in c.execute(f"SELECT id, title, year, release_date, kind, studio, director, cast_, writers, producers, primary_genre, country, rating FROM films WHERE id IN ({','.join('?' * len(ch))})", ch):
                 F[r["id"]] = r
+        # any adult title in the library (adult folder, scene or adult genre) makes their titles outside it count as adult too
+        anyadult = anyadult or any(f["kind"] == "scene" or (f["primary_genre"] or "").strip().lower() in CO_ADULT_GENRES for f in F.values())
         rows, excluded, xrows = [], 0, []
         for k, it in its.items():
             if k[0] == "L":
@@ -1059,7 +1061,7 @@ def init(app, tmdb, posters_dir):
             else:
                 adult = k[0] == "P" or anyadult
                 r = dict(film_id=None, year=it.get("year"), date=it.get("date") or "", kind="scene" if k[0] == "P" else "film", studio=it.get("studio") or "",
-                         genre="", country="", rating=None, in_library=False, adult=adult)
+                         genre="", country="", rating=None, in_library=False, adult=adult, tmdb_id=it.get("tmdb_id") if k[0] == "T" else None)
             if r["year"] is None and (r["date"] or "")[:4].isdigit(): r["year"] = int(r["date"][:4])
             labs = [RLBL_CO.get(ro, ro) for ro in it["roles"]] or it["xroles"] or ["Credited"]
             if adult and r["kind"] == "scene": labs = ["Performer" if x == "Actor" else x for x in labs]
@@ -1069,6 +1071,171 @@ def init(app, tmdb, posters_dir):
             rows.append(r)
         return rows, excluded, e, F, xrows
     COCREDIT["person"] = lambda c, pid: {r["film_id"] for r in person_rows(c, co_canon(c, pid))[0] if r["film_id"]} if co_canon(c, pid) else set()
+
+    def stable_want(roles, mode):
+        if mode == "directed": return "Director" in roles
+        return any(x == "Director" or "Writer" in x or "Screenplay" in x or "Story" in x or "Producer" in x for x in roles)
+
+    def stable_tiers(c, row, e, films, missing_bd=None):
+        """Stable (4) / Muses (5-7) / Harem (8+): performers in the films this person directed ('directed') or
+        directed/wrote/produced ('all'). films: dicts with roles, cast (names), adult, date, year, in_library.
+        Adult titles only count performers with a known birth date who were 18+ at release. `missing_bd`
+        (dict) collects performers left out only for lacking a birth date: canonical key -> (name, count)."""
+        from collections import Counter
+        ag = db.alias_groups(c); mine = co_keys(c, row, e)
+        prow = {r["name_norm"]: r for r in c.execute("SELECT id, name, name_norm, birthday, merged_into FROM people")}
+        byid = {r["id"]: r for r in prow.values()}
+        def canon_row(k, g):
+            pr = next((prow[kk] for kk in [k] + [fold(x) for x in (g or [])] if kk in prow), None); hops = 0
+            while pr and pr["merged_into"] and hops < 5:
+                nx = byid.get(pr["merged_into"]); hops += 1
+                if not nx: break
+                pr = nx
+            return pr
+        out_all = {}
+        for mode in ("directed", "all"):
+            cnt, inl, nm, prs, nob = Counter(), Counter(), {}, {}, Counter()
+            for r in films:
+                if not stable_want(r["roles"], mode): continue
+                seen = set()
+                for n in r["cast"]:
+                    n = " ".join((n or "").split()); k = fold(n)
+                    if not n or k in mine: continue
+                    g = ag.get(k); ckk = fold(g[0]) if g else k
+                    if ckk in mine or ckk in seen: continue
+                    if ckk not in prs: prs[ckk] = canon_row(k, g)
+                    pr = prs[ckk]
+                    if r["adult"]:
+                        bd = _bd(pr["birthday"]) if pr else None
+                        if not bd:
+                            seen.add(ckk); nob[ckk] += 1; nm.setdefault(ckk, Counter())[n] += 1; continue
+                        if not _adult_ok(bd, r["date"] or None, r["year"]): continue
+                    seen.add(ckk); cnt[ckk] += 1; inl[ckk] += bool(r["in_library"]); nm.setdefault(ckk, Counter())[n] += 1
+            out = []
+            for ckk, n in sorted(cnt.items(), key=lambda kv: (-kv[1], -inl[kv[0]], kv[0])):
+                if n < 4: break
+                pr = prs.get(ckk)
+                out.append(dict(name=pr["name"] if pr else nm[ckk].most_common(1)[0][0], pid=pr["id"] if pr else None, n=n, lib=inl[ckk],
+                                tier="harem" if n >= 8 else "muses" if n >= 5 else "stable"))
+                if len(out) >= 80: break
+            out_all[mode] = out
+            if missing_bd is not None:
+                for ckk, k2 in nob.items():
+                    if cnt[ckk] + k2 >= 4: missing_bd[ckk] = (nm[ckk].most_common(1)[0][0], cnt[ckk] + k2)
+        out_all["films"] = dict(directed=sum(1 for r in films if stable_want(r["roles"], "directed")),
+                                all=sum(1 for r in films if stable_want(r["roles"], "all")))
+        out_all["films_lib"] = dict(directed=sum(1 for r in films if r["in_library"] and stable_want(r["roles"], "directed")),
+                                    all=sum(1 for r in films if r["in_library"] and stable_want(r["roles"], "all")))
+        return out_all
+
+    # ---------- Stable / Muses / Harem over the whole filmography: TMDB casts of films not in the library (cached) ----------
+    CAST_SCHEMA = "CREATE TABLE IF NOT EXISTS tmdb_movie_cast(tmdb_id INTEGER PRIMARY KEY, cast_json TEXT, at REAL)"
+    SJOB = {}   # canonical person id -> progress of the on-demand job
+    SALL = {}   # (person id, data key, cached casts) -> result
+
+    def stable_all_films(c, row):
+        """(films for stable_tiers incl. not-in-library TMDB titles with a cached cast, TMDB ids still missing a cast, e)."""
+        rows, _, e, F, xrows = person_rows(c, row)
+        need = sorted({r["tmdb_id"] for r in rows + xrows if not r["in_library"] and r.get("tmdb_id") and stable_want(r["roles"], "all")})
+        cache = {}
+        for i in range(0, len(need), 500):
+            ch = need[i:i + 500]
+            for t, cj in c.execute(f"SELECT tmdb_id, cast_json FROM tmdb_movie_cast WHERE tmdb_id IN ({','.join('?' * len(ch))})", ch):
+                try: cache[t] = json.loads(cj or "[]")
+                except Exception: cache[t] = []
+        films = []
+        for r in rows + [x for x in xrows]:
+            if r["in_library"]: films.append(dict(r, cast=(F[r["film_id"]]["cast_"] or "").split(",")))
+            elif r.get("tmdb_id") in cache: films.append(dict(r, cast=[x[0] for x in cache[r["tmdb_id"]]], tmdb_cast=cache[r["tmdb_id"]]))
+        return films, [t for t in need if t not in cache], e
+
+    def stable_all_job(pid):
+        st = SJOB[pid] = dict(running=True, phase="filmography", done=0, total=0, errors=0, error=None, started=time.time())
+        def work():
+            c = C()
+            try:
+                c.execute(CAST_SCHEMA)
+                row = co_canon(c, pid); key = key_of(c)
+                if not key: st["error"] = "No TMDB key is set, so only library titles can be counted."; return
+                if not row["credits_json"] and (row["tmdb_person_id"] or 0) > 0:
+                    fetch(c, key, row, keep_profile=(row["source"] or "") in ("tpdb", "manual")); CO_ITEMS.clear(); row = co_canon(c, pid)
+                films, missing, e = stable_all_films(c, row)
+                st.update(phase="casts", total=len(missing), done=0)
+                for t in missing:
+                    time.sleep(0.25)  # ~4 TMDB requests a second
+                    try: m = tmdb(f"movie/{t}/credits", key)
+                    except urllib.error.HTTPError as ex:
+                        if ex.code == 401: st["error"] = "TMDB rejected the API key (401)."; return
+                        if ex.code != 404:
+                            st["errors"] += 1
+                            if st["errors"] > 20: st["error"] = f"TMDB kept failing (HTTP {ex.code})."; return
+                            continue
+                        m = {"cast": []}
+                    except Exception:
+                        st["errors"] += 1
+                        if st["errors"] > 20: st["error"] = "Could not reach TMDB."; return
+                        continue
+                    cast = [[x.get("name"), x.get("id")] for x in (m.get("cast") or [])[:10] if x.get("name")]  # top-billed 10, like library titles
+                    c.execute("INSERT OR REPLACE INTO tmdb_movie_cast(tmdb_id, cast_json, at) VALUES(?,?,?)", (t, json.dumps(cast), time.time())); c.commit()
+                    st["done"] += 1
+                # performers left out only for lacking a birth date (adult titles): TMDB person birthday, else Wikidata/Wikipedia
+                films, missing, e = stable_all_films(c, row); mb = {}
+                stable_tiers(c, row, e, films, mb)
+                if mb:
+                    import birthdates as bdm
+                    tid = {}
+                    for f in films:
+                        for nmx, i in f.get("tmdb_cast") or []:
+                            if nmx and i: tid.setdefault(fold(" ".join(nmx.split())), i)
+                    todo = sorted(mb.items(), key=lambda kv: -kv[1][1])[:40]
+                    st.update(phase="birthdays", total=len(todo), done=0)
+                    for ckk, (nmx, _) in todo:
+                        try:
+                            if c.execute("SELECT 1 FROM birthdate_lookup WHERE name_norm=? AND status<>'error'", (fold(nmx),)).fetchone():
+                                st["done"] += 1; continue
+                        except Exception: bdm.ensure(c)
+                        res = None
+                        if tid.get(fold(nmx)):
+                            time.sleep(0.25)
+                            try:
+                                bd = ((tmdb(f"person/{tid[fold(nmx)]}", key) or {}).get("birthday") or "")[:10]
+                                if re.match(r"^\d{4}-\d{2}-\d{2}$", bd): res = dict(status="filled", birthday=bd, source=f"tmdb person {tid[fold(nmx)]}", detail="TMDB profile (cast of a film they made with this director)")
+                            except Exception: res = None
+                        if res:
+                            if not bdm.apply(c, nmx, res): res = dict(res, status="skipped")
+                            bdm._record(c, nmx, res); c.commit()
+                        elif bdm.enabled():
+                            try: bdm.lookup_one(c, nmx)
+                            except Exception: pass
+                        st["done"] += 1
+            except Exception as ex:
+                st["error"] = f"{type(ex).__name__}: {str(ex)[:200]}"
+            finally:
+                st.update(running=False, finished=time.time()); c.close()
+        threading.Thread(target=work, daemon=True).start()
+        return st
+
+    @app.get("/api/people/<int:pid>/stable_all")
+    def person_stable_all(pid):
+        """Stable / Muses / Harem over the person's whole filmography (library + TMDB). Loads missing casts on demand."""
+        c = C(); c.execute(CAST_SCHEMA); row = co_canon(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        st = SJOB.get(row["id"])
+        if st and st.get("running"):
+            return jsonify(status="loading", phase=st["phase"], done=st["done"], total=st["total"])
+        films, missing, e = stable_all_films(c, row)
+        fresh = st and time.time() - st.get("finished", 0) < 600
+        if not fresh and (missing or (not row["credits_json"] and (row["tmdb_person_id"] or 0) > 0) or request.args.get("refresh")):
+            st = stable_all_job(row["id"])
+            return jsonify(status="loading", phase=st["phase"], done=0, total=0)
+        dk = co_dkey(c); n_cast = c.execute("SELECT COUNT(*) FROM tmdb_movie_cast").fetchone()[0]
+        ck = (row["id"], dk, n_cast); hit = SALL.get(ck)
+        if hit is None:
+            mb = {}
+            hit = SALL[ck] = dict(stable_tiers(c, row, e, films, mb), no_birthday=len(mb))
+            if len(SALL) > 64: SALL.pop(next(iter(SALL)))
+        return jsonify(status="ok", stable=hit, missing_casts=len(missing), error=(st or {}).get("error"),
+                       has_filmography=bool(row["credits_json"] and (row["tmdb_person_id"] or 0) > 0))
 
     @app.get("/api/people/<int:pid>/insights")
     def person_insights(pid):
@@ -1102,43 +1269,9 @@ def init(app, tmdb, posters_dir):
         # Stable / Muses / Harem: performers in films they directed (or directed/wrote/produced), library titles only
         stable = None
         if e["roles"].get("director"):
-            ag = db.alias_groups(c); mine = co_keys(c, row, e)
-            prow = {r["name_norm"]: r for r in c.execute("SELECT id, name, name_norm, birthday, merged_into FROM people")}
-            byid = {r["id"]: r for r in prow.values()}
-            def canon_row(k, g):
-                pr = next((prow[kk] for kk in [k] + [fold(x) for x in (g or [])] if kk in prow), None); hops = 0
-                while pr and pr["merged_into"] and hops < 5:
-                    nx = byid.get(pr["merged_into"]); hops += 1
-                    if not nx: break
-                    pr = nx
-                return pr
-            stable = {}
             dlib = lib + [r for r in xrows if r["in_library"]]  # a director who also appears in their own film still directed it
-            for mode, want in (("directed", {"Director"}), ("all", {"Director", "Writer", "Producer"})):
-                cnt, nm, prs = Counter(), {}, {}
-                for r in dlib:
-                    if not (set(r["roles"]) & want): continue
-                    f = F[r["film_id"]]; seen = set()
-                    for n in (f["cast_"] or "").split(","):
-                        n = " ".join(n.split()); k = fold(n)
-                        if not n or k in mine: continue
-                        g = ag.get(k); ckk = fold(g[0]) if g else k
-                        if ckk in mine or ckk in seen: continue
-                        if ckk not in prs: prs[ckk] = canon_row(k, g)
-                        pr = prs[ckk]
-                        if r["adult"]:
-                            bd = _bd(pr["birthday"]) if pr else None
-                            if not bd or not _adult_ok(bd, r["date"] or None, r["year"]): continue
-                        seen.add(ckk); cnt[ckk] += 1; nm.setdefault(ckk, Counter())[n] += 1
-                out = []
-                for ckk, n in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0])):
-                    if n < 4: break
-                    pr = prs.get(ckk)
-                    out.append(dict(name=pr["name"] if pr else nm[ckk].most_common(1)[0][0], pid=pr["id"] if pr else None, n=n,
-                                    tier="harem" if n >= 8 else "muses" if n >= 5 else "stable"))
-                    if len(out) >= 80: break
-                stable[mode] = out
-            stable["films"] = dict(directed=sum(1 for r in dlib if "Director" in r["roles"]), all=sum(1 for r in dlib if set(r["roles"]) & {"Director", "Writer", "Producer"}))
+            films = [dict(r, cast=(F[r["film_id"]]["cast_"] or "").split(",")) for r in dlib]
+            stable = stable_tiers(c, row, e, films)
         res = dict(id=row["id"], name=row["name"], total=len(rows), in_library=len(lib), not_in_library=len(rows) - len(lib), excluded=excluded,
                    adult=any(r["adult"] for r in rows) or bool(excluded), birthday=row["birthday"],
                    career=[min(yrs), max(yrs)] if yrs else None, busiest=dict(year=busy[0], n=busy[1], lib=yl[busy[0]]) if busy else None,
