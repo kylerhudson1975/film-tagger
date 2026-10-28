@@ -3186,6 +3186,22 @@ def ask_charts(c, res):
                                       inside=sum(n for y, n in cnt.items() if a <= y <= b), total=sum(cnt.values()),
                                       items=[dict(label=y, values=[cnt.get(y, 0)], filter=dict(cs["filter"], year_min=y, year_max=y)) for y in range(lo, hi + 1)])
 
+    ids = res.get("count_ids")
+    if ids is not None and len(res.get("rows") or []) == 1:  # 'how many ...': big number + those titles by year + the list
+        res["chart"] = dict(type="stat", candidates=["stat"], hinted=False, filter=None, ids=",".join(map(str, ids)) or None,
+                            tiles=[dict(label="matching titles", value=len(ids), pct=False)])
+        rows = [dict(id=i, title=t, year=y) for i, t, y in c.execute(
+            "SELECT id, title, year FROM films WHERE id IN (SELECT value FROM json_each(?)) ORDER BY year IS NULL, year, title", (json.dumps(ids),))]
+        res["titles"] = rows[:300]; res["titles_total"] = len(rows)
+        by = {}
+        for x in rows:
+            if x["year"]: by.setdefault(x["year"], []).append(x["id"])
+        res.pop("context", None)
+        if by and max(by) - min(by) <= 150:
+            res["context"] = dict(title="Those titles by year", range=None, filter=None, inside=sum(map(len, by.values())), total=len(rows),
+                                  items=[dict(label=y, values=[len(by.get(y, []))], ids=",".join(map(str, by.get(y, []))) or None, filter=None)
+                                         for y in range(min(by), max(by) + 1)])
+
 DASH = {}  # scope -> {"at", "day", "data"}; ~60 s per scope
 EXPL = {}  # explore query -> (at, day, data)
 

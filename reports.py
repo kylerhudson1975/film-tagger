@@ -392,6 +392,13 @@ def sql_schema(c):
         " the part, the total and the percent as three columns (e.g. matching, total, percent). Use NULLIF(total,0) to avoid /0.\n"
         " - Ratios: ROUND(1.0*a/NULLIF(b,0), 2) AS ratio, and also return a and b.\n"
         " - A question about ONE thing (one person, one tag...) needs ONE aggregate row: no GROUP BY.\n"
+        " - 'How many films/titles ...' wants ONE number: SELECT COUNT(DISTINCT f.id) AS films ... with NO GROUP BY (never one row"
+        " per film with a count of 1). Only GROUP BY when the question asks 'per X', 'by X' or 'each X'.\n"
+        " - Tags joined by 'or' ('tagged oral or fellatio') match films with ANY of them: lower(t.name) IN (...) including"
+        " their synonym group members; tags joined by 'and' must all be present (one EXISTS per tag).\n"
+        " Q: How many films did Jane Doe act in that are tagged comedy or satire? -> SELECT COUNT(DISTINCT f.id) AS films FROM films f"
+        " JOIN film_cast fc ON fc.film_id=f.id JOIN film_tags ft ON ft.film_id=f.id AND ft.status='approved' JOIN tags t ON"
+        " t.id=ft.tag_id WHERE fc.person LIKE 'Jane Doe' AND lower(t.name) IN ('comedy','satire')\n"
         " - 'between 1970 and 1990' = year BETWEEN 1970 AND 1990 (inclusive). Names in the question may be typed without accents;"
         " use the stored spelling given below when there is one.\n"
         " Q: What percent of Jane Doe's directed films are from the 1970s? -> SELECT SUM(CASE WHEN f.year BETWEEN 1970 AND 1979 THEN 1"
@@ -403,6 +410,10 @@ def sql_schema(c):
 def sql_prompt(c, question, hint=()):
     h = ""
     for x in hint:
+        if len(x) == 2 and x[0] == "tags":  # ("tags", [(as asked, [stored names incl. synonyms])])
+            for asked, stored in x[1]:
+                h += f" - The tag '{asked}' means tags.name IN ({', '.join(chr(39) + n.replace(chr(39), chr(39) * 2) + chr(39) for n in stored)}).\n"
+            continue
         if len(x) == 3 and x[0] == "director":  # ("director", name as asked, [stored spellings incl. aliases])
             lst = ", ".join("'" + n.replace("'", "''") + "'" for n in x[2])
             h += (f" - The director '{x[1]}' is stored in film_directors.director as {lst} (all the same person)."
@@ -545,6 +556,76 @@ def lookup_birthday(c, name):
     c.commit(); return bd, "found on ThePornDB"
 
 
+COUNT_Q = re.compile(r"(?i)\b(how many|number of|count (?:of|the|all)?)\b")
+PER_Q = re.compile(r"(?i)\b(per|each|every|by (?:year|decade|month|director|studio|country|tag|genre|person|performer|actor|actress))\b|\bbreak ?down\b")
+
+
+def count_question(q):
+    """'How many films ...' wanting ONE number (not 'per year' / 'by director' / 'each')."""
+    return bool(COUNT_Q.search(q or "")) and not PER_Q.search(q or "")
+
+
+def _isnum(v): return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _degenerate(cols, rows):
+    """Several rows whose only numbers are all 1 (one row per film/entity with COUNT(*)=1): a count gone wrong."""
+    vk = [k for k, cn in enumerate(cols) if cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS]
+    num = [k for k in vk if all(_isnum(r[k]) for r in rows)]
+    return len(rows) > 1 and bool(num) and all(r[k] == 1 for r in rows for k in num)
+
+
+def mentioned_tags(c, question):
+    """Tags named in the question (as asked, stored names incl. synonym group members), longest first, no overlaps."""
+    import db as _db
+    ql = " " + re.sub(r"\s+", " ", _db.fold(question)) + " "
+    groups = synonyms(c); out, seen = [], []
+    names = sorted({n for (n,) in c.execute("SELECT name FROM tags WHERE COALESCE(category,'')<>'People'")}, key=lambda n: (-len(n), n))
+    for n in names:
+        k = _db.fold(n)
+        if len(k) < 3 or any(k in h for h in seen): continue
+        m = re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql)
+        if m:
+            st = [n] + [x for g in groups if any(_db.fold(y) == k for y in g) for x in g if _db.fold(x) != k]
+            out.append((m.start(), n, list(dict.fromkeys(st)))); seen.append(k)
+    return [(n, st) for _, n, st in sorted(out)]  # in the order the question names them
+
+
+def _count_ids_sql(sql):
+    """SELECT COUNT(DISTINCT x.id) AS n FROM ...  ->  SELECT DISTINCT x.id FROM ... (the titles behind the number)."""
+    m = re.match(r"(?is)^\s*SELECT\s+COUNT\s*\(\s*DISTINCT\s+([\w.]+)\s*\)\s*(?:AS\s+[\"'`]?\w+[\"'`]?)?\s+(FROM\b.*)$", sql)
+    return f"SELECT DISTINCT {m.group(1)} {m.group(2)}" if m else None
+
+
+def direct_ids(c, r, question, hint):
+    """Independent check for 'how many films did <person> ... tagged <tags>': the matching title ids straight from the
+    tables (same age rule: r's film_cast only holds safe credits), or None when the question isn't that shape."""
+    import db as _db
+    persons = [x[-1] for x in hint if len(x) == 2 and x[0] != "tags"]
+    tags = [n for x in hint if len(x) == 2 and x[0] == "tags" for _, st in x[1] for n in st]
+    if not (persons or tags) or len(persons) > 1: return None
+    q, a = "SELECT DISTINCT f.id FROM films f", []
+    if persons:
+        nm = [x.lower() for x in _db.expand_person(c, persons[0])]
+        q += f" JOIN film_cast fc ON fc.film_id=f.id AND lower(fc.person) IN ({','.join('?' * len(nm))})"; a += nm
+    if tags:
+        q += (" WHERE f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved'"
+              f" AND lower(t.name) IN ({','.join('?' * len(tags))}))"); a += [t.lower() for t in tags]
+    return sorted(x for (x,) in r.execute(q, a))
+
+
+def _other_filters(c, question, hint):
+    """True when the question narrows further than person + tags (years, decades, genres, countries, studios, directors...)."""
+    import db as _db
+    if re.search(r"\b(1[89]|20)\d\d|\b\d0s\b|\b(before|after|since|between|rated|watched|unwatched|longer|shorter|minutes?)\b", question, re.I): return True
+    ql = " " + _db.fold(question) + " "
+    for col in ("primary_genre", "country", "studio"):
+        for (v,) in c.execute(f"SELECT DISTINCT {col} FROM films WHERE COALESCE({col},'')<>''"):
+            k = _db.fold(v)
+            if len(k) >= 4 and re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", ql): return True
+    return any(len(x) == 3 for x in hint)
+
+
 def _msg(question, text, **kw):
     return dict(mode="sql", question=question, reading=kw.pop("reading", ""), sql="", columns=[], rows=[], answer=text,
                 notes=kw.pop("notes", []), retried=False, **kw)
@@ -572,6 +653,8 @@ def ask(c, question, chat):
             note = [f"Tried looking up {name}'s birth date: {why}."]
         return _msg(question, f"{name} has no known birth date, so per the library's age rule I can't list their titles.",
                     notes=note, birthday_status="unknown")
+    tg = mentioned_tags(c, question)
+    if tg: hint.append(("tags", tg))
     res = _ask_sql(c, question, chat, allow_fallback=not people, hint=hint)
     if pre: res.setdefault("notes", [])[:0] = pre
     if people and res.get("mode") == "sql" and not res["rows"] and not res.get("answer_from_error"):
@@ -669,6 +752,9 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
             if attempt == 0:
                 bad = _null_problem(cols, rows)
                 if bad: raise ValueError(bad)
+                if count_question(question) and _degenerate(cols, rows):
+                    raise ValueError(f"the question asks for ONE number but the query returned {len(rows)} rows that each count 1"
+                                     " (one row per film). Return a single row: SELECT COUNT(DISTINCT f.id) AS films ... with no GROUP BY")
             break
         except Exception as e:
             err = e; tries.append(dict(sql=sql, error=str(e)))
@@ -686,16 +772,50 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
             return res
         except Exception as e2:
             raise ValueError(f"Could not answer: {err or e2}")
-    notes = []
+    notes, count_ids = [], None
+    cq = count_question(question)
+    if cq and _degenerate(cols, rows):  # still one row per film after the retry: collapse to the total
+        li = cols.index("id") if "id" in cols else None
+        try: n = r.execute("SELECT COUNT(*) FROM (" + re.sub(r"(?is)\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$", "", check_sql(sql)) + ")").fetchone()[0]
+        except Exception: n = len(rows)
+        if li is not None: count_ids = sorted({x[li] for x in rows if isinstance(x[li], int)})
+        cols, rows = ["films"], [[n]]; more = False
+        notes.append(f"The query listed one row per title, so they were added up: {n}.")
+    if cq and len(rows) == 1:
+        vk = [k for k, cn in enumerate(cols) if cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS and _isnum(rows[0][k])]
+        if len(vk) == 1:
+            n = rows[0][vk[0]]
+            if count_ids is None and "film_ids" in cols and rows[0][cols.index("film_ids")]:
+                count_ids = sorted({int(x) for x in str(rows[0][cols.index("film_ids")]).split(",") if x.strip().isdigit()})
+            if count_ids is None and _count_ids_sql(sql):
+                try: count_ids = sorted({x for (x,) in r.execute(_count_ids_sql(sql)) if isinstance(x, int)})
+                except Exception: count_ids = None
+            if count_ids is not None and len(count_ids) != n: count_ids = None
+            try: d = direct_ids(c, r, question, hint)
+            except Exception: d = None
+            if d is not None:
+                if len(d) == n:
+                    notes.append(f"Checked against a direct count of the library: {n}.")
+                    if count_ids is None: count_ids = d
+                elif not _other_filters(c, question, hint):
+                    tags = [a for x in hint if len(x) == 2 and x[0] == "tags" for a, _ in x[1]]
+                    notes.append(f"The AI's query counted {_fmt(n)}; a direct count of the library found {len(d)}, which is the answer shown.")
+                    cols, rows, count_ids = [cols[vk[0]]], [[len(d)]], d
+                    who = next((x[-1] for x in hint if len(x) == 2 and x[0] != "tags"), None)
+                    SUMMARY["direct"] = (f"{who} is credited in {len(d)} title{'' if len(d) == 1 else 's'}" if who else f"{len(d)} title{'' if len(d) == 1 else 's'} are")
+                    SUMMARY["direct"] += (f" tagged {' or '.join(tags)}" if tags else "") + "."
+                else: notes.append(f"A direct count of the library (ignoring the question's other conditions) gives {len(d)}.")
     if dropped: notes.append(f"{dropped} row(s) were hidden because they involve performers without a known adult birth date.")
     if more: notes.append(f"Showing the first {SQL_MAX_ROWS} rows.")
     if tries and _null_problem(cols, rows): notes.append("Some values came back empty even after a retry, so treat this answer with care.")
     SUMMARY["rejected"] = ""
-    answer = _summary(question, cols, rows, chat, reading, [x[1] if len(x) == 3 else x[-1] for x in hint])
+    direct = SUMMARY.pop("direct", None)
+    answer = direct or _summary(question, cols, rows, chat, reading, [x[1] if len(x) == 3 else x[-1] for x in hint if x[0] != "tags"])
     r.close()
     return dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows, answer=answer,
                 notes=notes, retried=bool(tries), answer_rejected=SUMMARY["rejected"], chart_hint=PARSED["chart"],
-                directors=[n for x in hint if len(x) == 3 for n in x[2]], mentions_cast=any(len(x) != 3 for x in hint))
+                directors=[n for x in hint if len(x) == 3 for n in x[2]], mentions_cast=any(len(x) != 3 and x[0] != "tags" for x in hint),
+                count_ids=count_ids)
 
 
 # ---------- Dashboard (home page summary; read-only) ----------
