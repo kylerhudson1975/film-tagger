@@ -294,13 +294,18 @@ def init(app, tmdb, posters_dir):
         if not q: return jsonify(people=[], total=0)
         lim = min(int(request.args.get("limit", 24)), 200)
         c = C(); data = index(c)
+        lib = (request.args.get("lib") or "").strip().rstrip("\\/")
+        scoped = bool(lib); left_out = 0
+        if scoped:  # only credits on titles in the chosen library folder (same folder match as /api/films?lib=)
+            ctx = {}; data = lib_scope(c, data, lib, ctx)
+            left_out = sum(1 for k in data.pop(None, ()) if all(w in k for w in q))
         hits = [(k, e) for k, e in data.items() if all(w in k for w in q)]
         def score(ke):
             k, e = ke; toks = k.split()
             return (0 if k == " ".join(q) else 1 if all(any(t.startswith(w) for t in toks) for w in q) else 2, -len(e["films"]), k)
         hits.sort(key=score)
         have = {k for k, _ in hits}
-        for r in c.execute("SELECT name, name_norm FROM people WHERE source='manual'"):
+        for r in ([] if scoped else c.execute("SELECT name, name_norm FROM people WHERE source='manual'")):  # no credits, so never in a folder
             if r["name_norm"] not in have and all(w in r["name_norm"] for w in q):
                 hits.append((r["name_norm"], {"names": {r["name"]: 1}, "roles": {}, "films": set()}))
         for k2, names in db.alias_groups(c).items():  # a search for any alias finds the person
@@ -314,13 +319,65 @@ def init(app, tmdb, posters_dir):
             r = rows.get(k); role = top_role(e) if e["roles"] else "cast"
             if r and r["merged_into"]:
                 t = c.execute("SELECT * FROM people WHERE id=?", (r["merged_into"],)).fetchone()
-                if t: r = t; k = t["name_norm"]; e = dict(person_entry(c, t), names={t["name"]: 1})
+                if t:
+                    r = t; k = t["name_norm"]; e = dict(person_entry(c, t), names={t["name"]: 1})
+                    if scoped:
+                        e = lib_scope(c, {k: e}, lib, ctx).get(k)
+                        if not e: continue
             if r and r["id"] in seen_pid: continue
             if r: seen_pid.add(r["id"])
             out.append(dict(name=best_name(e), key=k, pid=r["id"] if r else None, n=len(e["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT[role]),
                             roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r)))
-        return jsonify(people=out, total=len(hits))
+        return jsonify(people=out, total=len(hits), lib=lib or None, age_left_out=left_out if scoped else None)
+
+    def lib_scope(c, data, lib, ctx=None):
+        """People index entries cut down to credits on titles under library folder `lib` (db.lib_prefixes: all scene
+        roots count as one library). People with no credit there are dropped. Age rule: on adult titles a performer
+        (cast credit) counts only with a known birth date and 18+ at release; key None = the keys of people dropped
+        only because of that rule."""
+        ctx = {} if ctx is None else ctx  # folder ids / birth dates, reused within one request
+        if "ids" not in ctx: ctx.update(lib_scope_ctx(c, lib))
+        ids, adult, fd, prow, byid, ag = (ctx[x] for x in ("ids", "adult", "fd", "prow", "byid", "ag"))
+        def bday(k):
+            pr = prow.get(k) or next((prow[fold(x)] for x in ag.get(k) or [] if fold(x) in prow), None); hops = 0
+            while pr and pr["merged_into"] and hops < 5:
+                nx = byid.get(pr["merged_into"]); hops += 1
+                if not nx: break
+                pr = nx
+            return _bd(pr["birthday"]) if pr else None
+        out, dropped = {}, set()
+        for k, e in data.items():
+            if k is None or not (e["films"] & ids): continue
+            roles = {ro: s & ids for ro, s in e["roles"].items()}
+            hidden = set()
+            ac = roles.get("cast", set()) & adult
+            if ac:
+                bd = bday(k)
+                hidden = {i for i in ac if not (bd and _adult_ok(bd, *fd.get(i, (None, None))))}
+                if hidden: roles["cast"] = roles["cast"] - hidden
+            roles = {ro: s for ro, s in roles.items() if s}
+            films = set().union(*roles.values()) if roles else set()
+            if not films:
+                if hidden: dropped.add(k)
+                continue
+            out[k] = {"names": e["names"], "roles": roles, "films": films}
+        out[None] = dropped
+        return out
+
+    def lib_scope_ctx(c, lib):
+        likes, args = [], []
+        for pre in db.lib_prefixes(c, lib):
+            e_ = pre.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            likes += ["LOWER(path) LIKE ? ESCAPE '\\'"] * 2; args += [e_ + "\\\\%", e_ + "/%"]
+        ids = {r[0] for r in c.execute("SELECT DISTINCT film_id FROM files WHERE " + " OR ".join(likes), args)} if likes else set()
+        adult = adult_film_ids(c) & ids
+        fd = {}
+        if adult:
+            for r in c.execute(f"SELECT id, release_date, year FROM films WHERE id IN ({','.join(map(str, adult))})"): fd[r[0]] = (r[1], r[2])
+        prow = {r["name_norm"]: r for r in c.execute("SELECT id, name_norm, birthday, merged_into FROM people")} if adult else {}
+        byid = {r["id"]: r for r in prow.values()}
+        return dict(ids=ids, adult=adult, fd=fd, prow=prow, byid=byid, ag=db.alias_groups(c) if adult else {})
 
     @app.get("/api/person/lookup")
     def person_lookup():
@@ -793,11 +850,17 @@ def init(app, tmdb, posters_dir):
             v = d[k]
             col = "links_json" if k == "links" else k
             v = clean_value(k, v)
-            if v != row[col]:
+            note = " ".join(str(d.get("birth_date_note") or "").split())[:80] if col == "birthday" else ""
+            # the same birth date typed again with a note (or not yet protected) is a confirmation: protect it and keep the note
+            confirm = col == "birthday" and v and v == row[col] and (note or col not in edited)
+            if v != row[col] or confirm:
                 c.execute(f"UPDATE people SET {col}=? WHERE id=?", (v, pid)); edited.add(col)
                 if col == "birthday":  # optional note on where the date came from, e.g. "entered by Kyle"
-                    note = " ".join(str(d.get("birth_date_note") or "").split())[:80]
                     c.execute("UPDATE people SET birth_date_source=? WHERE id=?", ((f"hand edit ({note})" if note else "hand edit") if v else None, pid))
+                    if v:  # settled by hand: off the birth-date review list
+                        try: c.execute("UPDATE birthdate_lookup SET status='skipped', birthday=?, source=?, detail='hand edit' WHERE name_norm=? AND status='ambiguous'",
+                                       (v, f"hand edit ({note})" if note else "hand edit", row["name_norm"]))
+                        except Exception: pass  # table not created yet
         c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), pid)); c.commit()
         return jsonify(ok=True, edited=sorted(edited))
 
