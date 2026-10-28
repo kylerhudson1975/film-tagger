@@ -913,12 +913,11 @@ def _mark_in_library(c, plist, pc):
         p["in_library"] = hit
 
 
-def studio_rank(c, ids_sql, args=(), n=10):
-    """Studios of the titles selected by `ids_sql` (a SELECT of film ids), counted the way app.build_query's studio=
-    filter matches: each comma-separated entry of films.studio (a title with several studios counts once for each),
-    hidden aliases folded into their main name, plus the <Studio> folder of scene files. So a bar's count always equals
-    the library list for that studio. Titles with no studio are left out (returned as `no_studio`).
-    Returns (rows [{name, n}], n_studios, no_studio)."""
+def studio_titles(c, ids_sql, args=()):
+    """Per-studio title sets for the titles selected by `ids_sql` (a SELECT of film ids), matched the way
+    app.build_query's studio= filter matches: each comma-separated entry of films.studio (a title with several studios
+    counts once for each), hidden aliases folded into their main name, plus the <Studio> folder of scene files.
+    Returns (titles {main studio_key: set(film ids)}, display {main studio_key: name}, all selected ids)."""
     import db
     amap = db.studio_alias_map(c)
     canon = {db.studio_key(v): v for v in amap.values()}  # main name per key (the filter expands it to every alias)
@@ -939,7 +938,16 @@ def studio_rank(c, ids_sql, args=(), n=10):
         for fid, p in c.execute(f"SELECT film_id, path FROM files WHERE film_id IN ({ids_sql})", args):
             fs = db.folder_studio(p or "", roots)
             if fs: add(fid, fs, 1)
-    rows = [dict(name=canon.get(k) or max(names[k].items(), key=lambda kv: (kv[1], kv[0] != kv[0].lower(), len(kv[0]), kv[0]))[0], n=len(v)) for k, v in titles.items()]
+    display = {k: canon.get(k) or max(names[k].items(), key=lambda kv: (kv[1], kv[0] != kv[0].lower(), len(kv[0]), kv[0]))[0] for k in titles}
+    return titles, display, ids
+
+
+def studio_rank(c, ids_sql, args=(), n=10):
+    """Studios of the titles selected by `ids_sql`, counted like app.build_query's studio= filter (see studio_titles),
+    so a bar's count always equals the library list for that studio. Titles with no studio are left out (`no_studio`).
+    Returns (rows [{name, n}], n_studios, no_studio)."""
+    titles, display, ids = studio_titles(c, ids_sql, args)
+    rows = [dict(name=display[k], n=len(v)) for k, v in titles.items()]
     rows.sort(key=lambda r: (-r["n"], r["name"].lower()))
     have = set().union(*titles.values()) if titles else set()
     return rows[:n], len(rows), len(ids - have)
@@ -1042,7 +1050,7 @@ def explore(c, where, args, lim=12):
                               "birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
             try: bdays[nrm(n)] = datetime.date.fromisoformat(b)
             except ValueError: pass
-    adult_titles = 0
+    adult_titles = 0; cast_out = set()
     for r in rows:
         fid, y, rd, sc, pg, pgk, co, st, m = r[:9]
         credits = dict(zip([k for k, _ in roles], r[9:]))
@@ -1066,7 +1074,7 @@ def explore(c, where, args, lim=12):
             k = nrm(x)
             if adult:  # adult titles: only performers with a known birth date who were adults at release
                 bd = bdays.get(k)
-                if not bd or not _adult_ok(bd, rd, y): continue
+                if not bd or not _adult_ok(bd, rd, y): cast_out.add(k); continue
             cast.setdefault(k, [x, 0])[1] += 1
         for rk, _ in roles:
             for x in _split(credits.get(rk)):
@@ -1091,5 +1099,6 @@ def explore(c, where, args, lim=12):
                 genres=[dict(name=g, n=n) for g, n in genres[:lim]], n_genres=len(genres),
                 countries=rank(cty, lim), n_countries=len(cty), directors=rank(dirs, lim), n_directors=len(dirs),
                 studios=studios, n_studios=n_studios, no_studio=no_studio, tags=tags, cast=rank(cast, lim), adult_titles=adult_titles,
+                cast_left_out=len(cast_out - set(cast)),
                 known_birthdays=len(bdays), roles={k: len(v) for k, v in rolen.items()},
                 base_decades=base, base_years=base_y)

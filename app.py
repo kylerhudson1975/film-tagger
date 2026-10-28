@@ -2226,6 +2226,8 @@ import people as peoplemod
 peoplemod.init(app, tmdb, POSTERS_DIR)
 import birthdates as bdmod
 bdmod.init(app, db.connect, tmdb)  # Wikidata / Wikipedia birth dates (background job + person page lookups)
+import studios as studiomod
+studiomod.init(app, tmdb, build_query)  # studio pages, Studios list, TMDB company / ThePornDB site backfill (background)
 
 # ---------- subtitles (local files; external sidecars + embedded streams, cached by size/mtime) ----------
 SUBS = {"running": False, "kind": "subtitles"}

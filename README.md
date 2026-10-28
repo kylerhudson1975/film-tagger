@@ -14,6 +14,15 @@ A big one: a new **Dashboard** you can click into, **Reports** with plain-Englis
 
 ![Dashboard overview](docs/screenshots/19-dashboard.png)
 
+### 🏢 Studio pages and the Studios list
+- **Every studio has its own page:** logo, country (with flag), headquarters, parent company and description from TMDB (scene studios: the ThePornDB site), aliases, years active (first to last title in your library), and how many of its titles you have against its whole catalog (*You have 42 · TMDB lists 85*).
+- **Insights like a person page:** career timeline (Bar or Line, *In library* or *All films* with the titles you don't have in grey), top genres, top directors (with a link to their page), regular performers (adult titles count only performers with a known birth date who were 18+ at release), countries, decades, tags and other studios on the same titles. Every bar and tile opens exactly those titles with **Show these titles**.
+- **Titles list:** *In library* or *All films*; titles you don't have open on TMDB or ThePornDB.
+- **✎ Country** and **+ Alias** on the page; hand-edited countries and TMDB company ids are never overwritten. The country is TMDB's origin country, your hand edit, or, when TMDB has none, the most common production country of its titles (marked *inferred*).
+- **Studios list:** *Search in: Studios*, or **All studios →** on the Dashboard's Top studios card. Studio, country, years active, in library / total; sort by any column, filter by country, and it follows the library folder you pick (like People search).
+- **Studio names everywhere open the studio page:** film details, the list view, and a small studio icon next to names in Top studios cards, drill-downs and Reports.
+- Countries, logos and catalog sizes are looked up in the background (rate-limited, resumes after a restart, never blocks the app); the catalog itself loads when you open a studio and is cached. Offline, the pages simply show your library.
+
 ### 📊 Dashboard
 - **Opens with an overview of your library:** totals, titles by decade, top genres, countries and directors, recently added, *On this day*, library health (missing posters, missing files, untagged titles and more, each one click away from a fix) and quick links to Reports.
 - **Scope tiles:** click **Films**, **Movies**, **Classic Porn** or **Scenes** at the top and the whole dashboard (charts, lists, tags, runtime, storage) recalculates for just that part of your library. The selected tile is highlighted; click it again, or **All**, to go back to everything.
