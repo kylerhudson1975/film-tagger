@@ -219,6 +219,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .ppins-n{margin-left:auto;color:var(--m);font-size:11.5px;white-space:nowrap}.ppins-n b{color:var(--ok)}.co-al:hover b{color:var(--a)}
 .ppst{margin-bottom:12px}.ppst-h{display:flex;gap:10px;align-items:baseline;font-size:13px;margin-bottom:6px}.ppst-h b{font-size:14px}.ppst-k{margin-left:auto;color:var(--m);font-size:12px}
 .ppst-l{display:flex;flex-wrap:wrap;gap:6px}.ppst-l a{background:var(--p2);border:1px solid var(--b);border-radius:14px;padding:2px 10px;font-size:12.5px;color:var(--t);cursor:pointer}.ppst-l a:hover{border-color:var(--a)}.ppst-l a b{color:var(--m);font-weight:600;margin-left:3px}
+.bd-box{background:var(--p2);border:1px solid var(--b);border-radius:8px;padding:10px 12px;font-size:13px}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger<button id="hdrQuit" onclick="quitApp()" title="Quit Film Tagger (stops the app completely)" aria-label="Quit Film Tagger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>Quit</button></div>
@@ -994,7 +995,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <div class=muted style="font-size:.85em">Source: <b>${p.source?esc(p.source):'library only'}</b>${p.edited&&p.edited.length?` · hand-edited: ${p.edited.map(esc).join(', ')}`:''}</div>
  ${p.aliases&&p.aliases.length?`<div class=muted>Aliases: ${p.aliases.map(esc).join(', ')}</div>`:''}
  ${[p.nationality&&'Nationality: '+esc(p.nationality),p.height&&'Height: '+esc(p.height_display||p.height),p.measurements&&'Measurements: '+esc(p.measurements),p.career&&'Career: '+esc(p.career)].filter(Boolean).map(x=>`<span>${x}</span>`).join(' · ')}
- ${p.birthday?`<div>Born ${fmtDate(p.birthday)}${p.deathday?'':ageAt(p.birthday)}${p.place?' in '+esc(p.place):''}</div>`:p.place?`<div>Born in ${esc(p.place)}</div>`:''}
+ ${p.birthday?`<div>Born ${fmtDate(p.birthday)}${p.deathday?'':ageAt(p.birthday)}${p.place?' in '+esc(p.place):''}${bdSrc(p)}</div>`:p.place?`<div>Born in ${esc(p.place)}</div>`:''}
  ${p.deathday?`<div>Died ${fmtDate(p.deathday)}${ageAt(p.birthday,p.deathday)}</div>`:''}
  ${bio?`<p id=ppbio class=ppbio>${esc(short)}${short!==bio?` <a href="#" onclick="$('ppbio').textContent=S.ppData.person.bio;return false">more</a>`:''}</p>`:''}
  ${d.message?`<p class=muted>⚠ ${esc(d.message)}</p>`:''}
@@ -1207,7 +1208,7 @@ function dshGo(set,filmsOnly){S.keepFilm=true;closeM();S.keepFilm=false;FK.forEa
 function dshMovies(){const v=DSH.d&&DSH.d.stats&&DSH.d.stats.movies_lib;if(v)dshGo({lib:v})}
 function dshReport(k){RP.cur=k;openReports()}
 function dshNoBday(){const l=(DSH.d&&DSH.d.no_birthday_people)||[];
- openM(`<h3 style="margin-top:0">People without a birth date <span class=muted style="font-weight:400">(${l.length})</span></h3><p class=muted style="margin-top:0">Birth dates are used for age checks in Reports. Click a name to open their page.</p><div class=dsh-pl>${l.map(p=>`<div onclick="closeM();showPerson(${p.id})">${esc(p.name)}<span>${esc(p.source=='tpdb'?'ThePornDB':p.source=='tmdb'?'TMDB':'added by hand')}</span></div>`).join('')||'<p class=muted>Everyone has a birth date.</p>'}</div>`)}
+ openM(`<h3 style="margin-top:0">People without a birth date <span class=muted style="font-weight:400">(${l.length})</span></h3><p class=muted style="margin-top:0">Birth dates are used for age checks in Reports, the Dashboard and person pages. Click a name to open their page.</p><div id=bdPanel><p class=muted>Loading lookup status…</p></div><h4 style="margin:14px 0 6px">Still missing</h4><div class=dsh-pl style="max-height:30vh">${l.map(p=>`<div onclick="closeM();showPerson(${p.id})">${esc(p.name)}<span>${esc(p.source=='tpdb'?'ThePornDB':p.source=='tmdb'?'TMDB':'added by hand')}</span></div>`).join('')||'<p class=muted>Everyone has a birth date.</p>'}</div>`);bdPanel()}
 function dashHtml(d){const s=d.stats,h=d.health,hrs=Math.round(s.runtime_min/60),tb=s.bytes/1e12;
  const hr=new Date().getHours(),greet=hr<5?'Good evening':hr<12?'Good morning':hr<18?'Good afternoon':'Good evening';
  const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
@@ -1520,4 +1521,19 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
  h+='</div>';
  if(d.adult||d.excluded)h+=`<div class=co-note style="margin:4px 0 0">${dIc('info',15)}<div><b>Age rule:</b> adult titles only count for performers with a known birth date who were 18 or older at release${d.excluded?` — ${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} left out${d.birthday?'':' (no known birth date)'}`:''}. The same rule applies to everyone in Worked with most and the Stable.</div></div>`;
  return h}
+/* ---------- Birth dates: Wikidata / Wikipedia background job, progress and review (from the Dashboard health chip) ---------- */
+function bdSrc(p){const s=p.birth_date_source||'';if(!s)return '';const m=s.match(/^wikidata (Q\d+)/),w=s.match(/^wikipedia (.+)/),t=s.match(/^tmdb person (\d+)/),tp=s.match(/^theporndb (.+)/);
+ const a=(u,l)=>`<a href="${esc(u)}" target=_blank rel=noopener title="Where this birth date came from">${esc(l)} ↗</a>`;
+ return ` <span class=muted style="font-size:.85em">· source: ${m?a('https://www.wikidata.org/wiki/'+m[1],'Wikidata '+m[1]):w?a('https://en.wikipedia.org/wiki/'+encodeURIComponent(w[1].replace(/ /g,'_')),'Wikipedia'):t?a('https://www.themoviedb.org/person/'+t[1],'TMDB'):tp?'ThePornDB':esc(s)}</span>`}
+async function bdPanel(){const el=$('bdPanel');if(!el)return;let s,r;try{[s,r]=await Promise.all([api('/api/birthdates/status'),api('/api/birthdates/review')])}catch(e){el.innerHTML='<p class=muted>Birth-date lookup unavailable.</p>';return}
+ const j=s.job,t=s.totals,pct=j.total?Math.round(100*j.done/j.total):0;
+ el.innerHTML=`<div class=bd-box><div style="display:flex;gap:10px;align-items:center"><b>Automatic lookup</b><span class=muted>Wikidata (date of birth) → Wikipedia infobox, only when TMDB / ThePornDB have none. Saved only on a confident, unique match; hand edits are never touched.</span></div>
+ <div style="display:flex;gap:10px;align-items:center;margin-top:8px">${j.running?`<span>Running: <b>${dN(j.done)}</b> / ${dN(j.total)} (${pct}%)${j.current?` · now: ${esc(j.current)}`:''}</span><button onclick="api('/api/birthdates/stop',{method:'POST'}).then(()=>setTimeout(bdPanel,800))">Pause</button>`:`<span class=muted>${j.finished_at?`Last run: ${dN(j.done)} checked`:'Not running'}</span><button class=pri onclick="api('/api/birthdates/start',{method:'POST',body:{}}).then(()=>setTimeout(bdPanel,800))">Look up missing birth dates</button>`}
+ <label class=muted style="margin-left:auto"><input type=checkbox ${s.auto?'checked':''} onchange="api('/api/birthdates/start',{method:'POST',body:{auto:this.checked}}).then(()=>setTimeout(bdPanel,800))"> run automatically</label></div>
+ ${j.running?`<div class=co-meter style="margin-top:8px"><span style="width:${pct}%;background:var(--ok)"></span></div>`:''}
+ <div class=muted style="margin-top:8px;font-size:12.5px">So far: <b style="color:var(--ok)">${dN(t.filled||0)}</b> filled · <b>${dN(t.ambiguous||0)}</b> to review · ${dN(t.not_found||0)} not found · ${dN(t.no_birthday||0)} found without an exact date${t.error?` · ${dN(t.error)} errors (retried later)`:''}${j.last_error?` · last error: ${esc(j.last_error)}`:''}</div></div>
+ ${r.review.length?`<h4 style="margin:14px 0 6px">Review (${r.review.length}) <span class=muted style="font-weight:400">more than one possible person: pick the right one, or none</span></h4><div class=dsh-pl style="max-height:40vh">${r.review.map(x=>`<div style="display:block;cursor:default"><b>${x.pid?`<a href="#" onclick="closeM();showPerson(${x.pid});return false">${esc(x.name)}</a>`:esc(x.name)}</b> <span class=muted style="float:right"><a href="#" onclick="bdPick('${jsq(x.key)}','');return false">none of these</a></span>
+  ${x.candidates.filter(c=>c.qid).map(c=>`<div style="border:0;padding:3px 0 3px 12px;display:flex;gap:8px"><a href="https://www.wikidata.org/wiki/${c.qid}" target=_blank rel=noopener>${c.qid} ↗</a><span>${esc(c.desc||'(no description)')}</span><span>${c.birthday?'born '+esc(c.birthday):c.year?'born '+c.year+' (year only)':'no birth date'}</span>${c.birthday?`<button class=co-mini onclick="bdPick('${jsq(x.key)}','${c.qid}')">Use this</button>`:''}</div>`).join('')}</div>`).join('')}</div>`:''}`;
+ if(j.running)setTimeout(()=>{if($('bdPanel'))bdPanel()},4000)}
+async function bdPick(key,qid){try{await api('/api/birthdates/review',{method:'POST',body:{key,qid}})}catch(e){alert('Could not save: '+e.message)}bdPanel()}
 </script></body></html>

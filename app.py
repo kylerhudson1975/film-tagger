@@ -2208,6 +2208,8 @@ def import_backup():
 # ---------- person pages (people.py) ----------
 import people as peoplemod
 peoplemod.init(app, tmdb, POSTERS_DIR)
+import birthdates as bdmod
+bdmod.init(app, db.connect, tmdb)  # Wikidata / Wikipedia birth dates (background job + person page lookups)
 
 # ---------- subtitles (local files; external sidecars + embedded streams, cached by size/mtime) ----------
 SUBS = {"running": False, "kind": "subtitles"}

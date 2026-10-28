@@ -61,7 +61,7 @@ TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing 
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
-             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT")]
+             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
@@ -148,6 +148,8 @@ def apply_tpdb(c, row, p, allow_image=True):
     f = tpdb_fields(p); edited = set(json.loads(row["edited_fields"] or "[]"))
     if not allow_image: f["image_url"] = None
     sets = {k: v for k, v in f.items() if k not in edited}
+    if not sets.get("birthday"): sets.pop("birthday", None)  # ThePornDB has none: keep one found elsewhere (Wikidata, TMDB)
+    elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"theporndb {p.get('id')}"
     sets.update(source="tpdb", tpdb_performer_id=str(p.get("id")), tpdb_fetched_at=time.time(), fetched_at=time.time())
     c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]]); c.commit()
 
@@ -332,9 +334,12 @@ def init(app, tmdb, posters_dir):
         sets = dict(profile_path=p.get("profile_path"), bio=p.get("biography"), birthday=p.get("birthday"), deathday=p.get("deathday"),
                     place=p.get("place_of_birth"), known_for=p.get("known_for_department"), credits_json=json.dumps(credits),
                     fetched_at=time.time(), source="tmdb")
-        if keep_profile:  # bio/photo/etc. come from ThePornDB or hand edits: only take the filmography
-            sets = dict(credits_json=sets["credits_json"], known_for=sets["known_for"], fetched_at=sets["fetched_at"])
-        sets = {k: v for k, v in sets.items() if k not in edited}
+        if keep_profile:  # bio/photo/etc. come from ThePornDB or hand edits: only take the filmography (and a birth date ThePornDB lacks)
+            sets = dict(credits_json=sets["credits_json"], known_for=sets["known_for"], fetched_at=sets["fetched_at"],
+                        **({"birthday": sets["birthday"]} if sets["birthday"] and not row["birthday"] else {}))
+        if not sets.get("birthday"): sets.pop("birthday", None)  # TMDB has none: keep one found elsewhere
+        elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"tmdb person {row['tmdb_person_id']}"
+        sets = {k: v for k, v in sets.items() if k not in edited and not (k == "birth_date_source" and "birthday" in edited)}
         c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]])
         c.commit()
 
@@ -405,6 +410,10 @@ def init(app, tmdb, posters_dir):
                 tm_err = ("TMDB rejected the API key (401)." if ex.code == 401 else f"TMDB error {ex.code}.")
             except Exception as ex:
                 tm_err = f"Could not reach TMDB ({type(ex).__name__}); showing cached/library data."
+        if not row["birthday"] and "birthday" not in json.loads(row["edited_fields"] or "[]"):
+            try:
+                import birthdates; birthdates.lookup_async(C, row["name"])  # Wikidata / Wikipedia, saved only on a confident match
+            except Exception: pass
         on_tmdb = (row["tmdb_person_id"] or 0) > 0
         if on_tpdb: status, msg = "ok", tp_note
         elif manual: status, msg = "ok", None
@@ -481,7 +490,7 @@ def init(app, tmdb, posters_dir):
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
-            tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"],
+            tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"], birth_date_source=row["birth_date_source"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
             roles={ro: len(s) for ro, s in e["roles"].items()}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes,
@@ -689,7 +698,9 @@ def init(app, tmdb, posters_dir):
             v = d[k]
             col = "links_json" if k == "links" else k
             v = clean_value(k, v)
-            if v != row[col]: c.execute(f"UPDATE people SET {col}=? WHERE id=?", (v, pid)); edited.add(col)
+            if v != row[col]:
+                c.execute(f"UPDATE people SET {col}=? WHERE id=?", (v, pid)); edited.add(col)
+                if col == "birthday": c.execute("UPDATE people SET birth_date_source=? WHERE id=?", ("hand edit" if v else None, pid))
         c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), pid)); c.commit()
         return jsonify(ok=True, edited=sorted(edited))
 
@@ -1037,7 +1048,7 @@ def init(app, tmdb, posters_dir):
             ch = fids[i:i + 500]
             for r in c.execute(f"SELECT id, title, year, release_date, kind, studio, director, cast_, writers, producers, primary_genre, country, rating FROM films WHERE id IN ({','.join('?' * len(ch))})", ch):
                 F[r["id"]] = r
-        rows, excluded = [], 0
+        rows, excluded, xrows = [], 0, []
         for k, it in its.items():
             if k[0] == "L":
                 f = F.get(int(k[1:]))
@@ -1054,9 +1065,9 @@ def init(app, tmdb, posters_dir):
             if adult and r["kind"] == "scene": labs = ["Performer" if x == "Actor" else x for x in labs]
             r["roles"] = labs
             if adult and any(x in ("Actor", "Performer") for x in labs) and not (bd and _adult_ok(bd, r["date"] or None, r["year"])):
-                excluded += 1; continue
+                excluded += 1; r["excluded"] = True; xrows.append(r); continue
             rows.append(r)
-        return rows, excluded, e, F
+        return rows, excluded, e, F, xrows
     COCREDIT["person"] = lambda c, pid: {r["film_id"] for r in person_rows(c, co_canon(c, pid))[0] if r["film_id"]} if co_canon(c, pid) else set()
 
     @app.get("/api/people/<int:pid>/insights")
@@ -1068,7 +1079,7 @@ def init(app, tmdb, posters_dir):
         dk = co_dkey(c); ck = (row["id"], dk)
         hit = INS.get(ck)
         if hit and time.time() - hit[0] < 600 and not request.args.get("force"): return jsonify(dict(hit[1], cached=True))
-        rows, excluded, e, F = person_rows(c, row, dk)
+        rows, excluded, e, F, xrows = person_rows(c, row, dk)
         from collections import Counter
         lib = [r for r in rows if r["in_library"]]
         yrs = Counter(); yl = Counter()
@@ -1102,9 +1113,10 @@ def init(app, tmdb, posters_dir):
                     pr = nx
                 return pr
             stable = {}
+            dlib = lib + [r for r in xrows if r["in_library"]]  # a director who also appears in their own film still directed it
             for mode, want in (("directed", {"Director"}), ("all", {"Director", "Writer", "Producer"})):
                 cnt, nm, prs = Counter(), {}, {}
-                for r in lib:
+                for r in dlib:
                     if not (set(r["roles"]) & want): continue
                     f = F[r["film_id"]]; seen = set()
                     for n in (f["cast_"] or "").split(","):
@@ -1126,7 +1138,7 @@ def init(app, tmdb, posters_dir):
                                     tier="harem" if n >= 8 else "muses" if n >= 5 else "stable"))
                     if len(out) >= 80: break
                 stable[mode] = out
-            stable["films"] = dict(directed=sum(1 for r in lib if "Director" in r["roles"]), all=sum(1 for r in lib if set(r["roles"]) & {"Director", "Writer", "Producer"}))
+            stable["films"] = dict(directed=sum(1 for r in dlib if "Director" in r["roles"]), all=sum(1 for r in dlib if set(r["roles"]) & {"Director", "Writer", "Producer"}))
         res = dict(id=row["id"], name=row["name"], total=len(rows), in_library=len(lib), not_in_library=len(rows) - len(lib), excluded=excluded,
                    adult=any(r["adult"] for r in rows) or bool(excluded), birthday=row["birthday"],
                    career=[min(yrs), max(yrs)] if yrs else None, busiest=dict(year=busy[0], n=busy[1], lib=yl[busy[0]]) if busy else None,
