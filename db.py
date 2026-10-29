@@ -77,14 +77,26 @@ def _alias_ok(a):
     """Aliases used to link credits: at least two words (single first names like 'Anna' would match strangers)."""
     return isinstance(a, str) and len(a.split()) >= 2
 
+_BATCH = [0]  # > 0 inside batch_cache(): cached alias groups / known performers are reused without re-checking the tables
+
+class batch_cache:
+    """with db.batch_cache(): ... - read-only loops over many films (birth-date queue, export-queue) check the alias /
+    known-performer caches once instead of once per name (each check scans the people table)."""
+    def __enter__(self):
+        if not _BATCH[0]: _AG["batch_ok"] = False; _KP["batch_ok"] = False  # checked once more at the start of every batch
+        _BATCH[0] += 1; return self
+    def __exit__(self, *a): _BATCH[0] -= 1
+
 def alias_groups(c):
     """fold(name) -> sorted list of every name of that person (name, multi-word aliases, merged people). Cached."""
+    if _BATCH[0] and _AG.get("key") is not None and _AG.get("batch_ok"): return _AG["groups"]
     try:
         cols = {r[1] for r in c.execute("PRAGMA table_info(people)")}
         if "aliases" not in cols: return {}
         mi = "merged_into" if "merged_into" in cols else "NULL"
         key = tuple(c.execute(f"SELECT COUNT(*), MAX(id), SUM(LENGTH(COALESCE(aliases,''))), SUM(COALESCE({mi},0)) FROM people").fetchone())
-        if _AG["key"] == key: return _AG["groups"]
+        if _AG["key"] == key:
+            _AG["batch_ok"] = bool(_BATCH[0]); return _AG["groups"]
         rows = c.execute(f"SELECT id, name, aliases, {mi} FROM people WHERE aliases IS NOT NULL OR {mi} IS NOT NULL").fetchall()
         extra = {}
         if any(r[3] for r in rows):
@@ -113,7 +125,7 @@ def alias_groups(c):
         if len(ks) < 2: continue
         names = sorted({disp[k] for k in ks}, key=fold)
         for k in ks: groups[k] = names
-    _AG.update(key=key, groups=groups)
+    _AG.update(key=key, groups=groups, batch_ok=bool(_BATCH[0]))
     return groups
 
 def expand_person(c, name):
@@ -516,10 +528,12 @@ def known_performers(c):
     scene casts and adult films, people with a ThePornDB profile, their multi-word aliases and merged names (-> the
     main name). Title words come from matched scene titles and film titles. Cached until people or matched scenes change."""
     import tpdb
+    if _BATCH[0] and _KP.get("batch_ok") and _KP["kp"] is not None: return _KP["kp"]
     try:
         key = tuple(c.execute("SELECT COUNT(*), MAX(id), SUM(LENGTH(COALESCE(aliases,''))), SUM(COALESCE(merged_into,0)) FROM people").fetchone()) + \
               tuple(c.execute("SELECT COUNT(*), MAX(updated_at) FROM films WHERE kind='scene' AND COALESCE(tpdb_id,'')<>''").fetchone())
     except sqlite3.Error: return tpdb.KnownPerformers()
+    _KP["batch_ok"] = bool(_BATCH[0])
     if _KP["key"] == key: return _KP["kp"]
     names, vocab = {}, set()
     for r in c.execute("SELECT cast_, title, kind, tpdb_id, edited_fields, primary_genre FROM films WHERE (kind='scene' AND (COALESCE(tpdb_id,'')<>'' "
@@ -1009,6 +1023,9 @@ def age_check(c, r):
     return dict(status=st, date=d or None, cast=cast)
 
 def export_queue(c, film_ids=None):
+    with batch_cache(): return _export_queue(c, film_ids)
+
+def _export_queue(c, film_ids=None):
     out = []
     if film_ids is None: rows = c.execute("SELECT f.* FROM smart_queue q JOIN films f ON f.id=q.film_id ORDER BY q.added_at").fetchall()
     else: rows = [r for i in film_ids for r in c.execute("SELECT * FROM films WHERE id=?", (i,))]

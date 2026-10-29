@@ -143,6 +143,13 @@ class Library(unittest.TestCase):
         self.assertEqual(st[m]["status"], "missing_birthdate")
         self.assertIsNone(db.export_queue(c, [c.execute("INSERT INTO films(title,cast_) VALUES('Drama','Old Enough')").lastrowid])[0]["age_check"])
 
+    def test_batch_cache_sees_changes(self):
+        c = self.c
+        f = c.execute("INSERT INTO films(title,kind,cast_) VALUES('B','scene','Batch Alias')").lastrowid; c.commit()
+        self.assertEqual(db.export_queue(c, [f])[0]["cast_missing_birthdate"][0]["status"], "not_looked_up")
+        c.execute("INSERT INTO people(name,name_norm,birthday,aliases) VALUES('Batch Main','batch main','1990-01-01','[\"Batch Alias\"]')"); c.commit()
+        self.assertEqual(db.export_queue(c, [f])[0]["cast_missing_birthdate"], [])  # a new batch re-checks the alias cache
+
     def test_summary(self):
         q = [dict(cast_missing_birthdate=[dict(name="X Y Cum Inside Me", status="title_as_name")]), dict(cast_missing_birthdate=[])]
         s = smarttag.missing_summary(q)

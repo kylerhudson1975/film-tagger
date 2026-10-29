@@ -39,7 +39,7 @@ def lookup_birthdates(wait, retry=False):
     base = f"http://127.0.0.1:{port}/api/birthdates/"
     def call(path, body=None):
         rq = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(rq, timeout=15) as r: return json.loads(r.read().decode("utf-8"))
+        with urllib.request.urlopen(rq, timeout=120) as r: return json.loads(r.read().decode("utf-8"))  # a big queue takes a while to check
     try:
         r = call("queue-lookup", {"retry": retry}); st = lambda: call("status")["queued"]
         same = os.path.normcase(os.path.abspath(r.get("db_path") or db.DB_PATH)) == os.path.normcase(os.path.abspath(db.DB_PATH))

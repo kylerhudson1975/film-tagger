@@ -370,6 +370,9 @@ def queue_todo(c, film_ids, retry=False):
     not found / no exact date ('full' again). Scene cast entries that are really a title ('Kelsey Kane Cum Inside Me')
     are skipped: no site knows them (fix the cast; export-queue lists them as 'title_as_name')."""
     ensure(c)
+    with db.batch_cache(): return _queue_todo(c, film_ids, retry)
+
+def _queue_todo(c, film_ids, retry):
     out, seen = [], set()
     old = time.time() - RETRY_DAYS * 86400
     for fid in film_ids:
