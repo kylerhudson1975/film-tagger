@@ -128,6 +128,21 @@ class Library(unittest.TestCase):
         self.assertEqual(bd.queue_todo(c, [f]), [("Old Miss", "full"), ("Fresh Name", "full")])
         self.assertEqual(len(bd.queue_todo(c, [f], retry=True)), 3)
 
+    def test_age_check(self):
+        c = self.c
+        c.execute("INSERT OR IGNORE INTO people(name,name_norm,birthday) VALUES('Old Enough','old enough','1990-05-01')")
+        c.execute("INSERT OR IGNORE INTO people(name,name_norm,birthday) VALUES('Young One','young one','2004-07-06')")
+        mk = lambda cast, date: c.execute("INSERT INTO films(title,kind,cast_,release_date,year) VALUES('A','scene',?,?,?)",
+                                          (cast, date, int(date[:4]) if date else None)).lastrowid
+        a = mk("Old Enough, Young One", "2023-01-01"); b = mk("Old Enough, Young One", "2022-07-05"); u = mk("Young One", None)
+        m = mk("Old Enough, Nobody Known", "2023-01-01"); c.commit()
+        st = {e["id"]: e["age_check"] for e in db.export_queue(c, [a, b, u, m])}
+        self.assertEqual(st[a]["status"], "ok"); self.assertEqual([x["age"] for x in st[a]["cast"]], [32, 18])
+        self.assertEqual(st[b]["status"], "underage")  # one day before the 18th birthday
+        self.assertEqual(st[u]["status"], "no_scene_date")
+        self.assertEqual(st[m]["status"], "missing_birthdate")
+        self.assertIsNone(db.export_queue(c, [c.execute("INSERT INTO films(title,cast_) VALUES('Drama','Old Enough')").lastrowid])[0]["age_check"])
+
     def test_summary(self):
         q = [dict(cast_missing_birthdate=[dict(name="X Y Cum Inside Me", status="title_as_name")]), dict(cast_missing_birthdate=[])]
         s = smarttag.missing_summary(q)

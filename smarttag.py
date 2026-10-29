@@ -8,7 +8,8 @@ save its JSON reply to a file, then import it.
                                                   birth dates for queued films' cast that lack one (through the running app,
                                                   else here; waits up to 600 s) and lists per film who still lacks one
                                                   ("cast_missing_birthdate"); names not found before are tried again after
-                                                  7 days (--retry: now); a scene with no cast lists "(no performers listed)"
+                                                  7 days (--retry: now); a scene with no cast lists "(no performers listed)";
+                                                  adult films get "age_check" (each performer's age on the release date)
   python smarttag.py import-tags file.json        import AI tags -> pending approval in the app
   python smarttag.py status                       show queue / pending counts
   python smarttag.py clear-queue                  empty the queue
@@ -101,6 +102,10 @@ def main(a):
             if f0["cast_missing_birthdate"]:
                 print(f"  {f0['title']} ({f0['year'] or '?'}): no birth date for " + ", ".join(f"{m['name']} [{m['status']}]" for m in f0["cast_missing_birthdate"]))
         print(missing_summary(q))
+        unv = [f for f in q if (f.get("age_check") or {}).get("status") in ("no_scene_date", "underage")]
+        if unv:
+            print(f"Age at filming not verified for {len(unv)} adult film(s) (no release date, or someone under 18 on it): "
+                  "see age_check in the export; don't tag them until it is 'ok'.")
     elif cmd == "import-tags":
         if len(a) < 2: print("usage: smarttag.py import-tags file.json"); return 2
         with open(a[1], encoding="utf-8-sig") as f: data = json.load(f)

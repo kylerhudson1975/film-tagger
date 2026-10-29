@@ -981,6 +981,33 @@ def cast_missing_birthdates(c, cast, scene=False):
         out.append(dict(name=n, status=st))
     return out
 
+def _birthday_of(c, name):
+    """A person's birth date (YYYY-MM-DD) following aliases and merges, or None."""
+    for n in expand_person(c, name):
+        r = c.execute("SELECT birthday, merged_into FROM people WHERE name_norm=?", (fold(" ".join(n.split())),)).fetchone(); hops = 0
+        while r is not None and r["merged_into"] and hops < 5:
+            r = c.execute("SELECT birthday, merged_into FROM people WHERE id=?", (r["merged_into"],)).fetchone(); hops += 1
+        if r is not None and r["birthday"]: return r["birthday"][:10]
+    return None
+
+def age_check(c, r):
+    """For scenes and Hardcore/Softcore films: every performer's age on the release date. -> dict(status, date, cast)
+    status: 'ok' (all 18+ on that date), 'underage' (someone under 18), 'no_scene_date' (birth dates known but no date
+    to compare: age at filming unverified), 'missing_birthdate'. None for other films."""
+    if not (r["kind"] == "scene" or (r["primary_genre"] or "") in ("Hardcore", "Softcore")): return None
+    d = (r["release_date"] or "")[:10] or (f"{r['year']}-01-01" if r["year"] else "")  # year only: its first day (youngest case)
+    cast, st = [], "ok"
+    for n in [" ".join(x.split()) for x in (r["cast_"] or "").split(",") if x.strip()]:
+        b = _birthday_of(c, n); age = None
+        if b and re.match(r"^\d{4}-\d\d-\d\d$", d):
+            age = int(d[:4]) - int(b[:4]) - ((d[5:10]) < (b[5:10]))
+        cast.append(dict(name=n, birthday=b, age=age))
+        if not b: st = "missing_birthdate"
+        elif age is not None and age < 18: st = "underage"
+    if not cast: st = "missing_birthdate"
+    if st == "ok" and not d: st = "no_scene_date"
+    return dict(status=st, date=d or None, cast=cast)
+
 def export_queue(c, film_ids=None):
     out = []
     if film_ids is None: rows = c.execute("SELECT f.* FROM smart_queue q JOIN films f ON f.id=q.film_id ORDER BY q.added_at").fetchall()
@@ -994,7 +1021,7 @@ def export_queue(c, film_ids=None):
             miss.append(dict(name="(no performers listed)", status="no_cast"))  # unknown performers: never treated as all-adult
         out.append(dict(id=r["id"], title=r["title"], year=r["year"], path=paths[0] if paths else None,
                         paths=paths, director=r["director"], plot=r["plot"], existing_tags=tags, cast=r["cast_"],
-                        cast_missing_birthdate=miss))
+                        cast_missing_birthdate=miss, release_date=r["release_date"], age_check=age_check(c, r)))
     return out
 
 def import_ai_tags(c, items, dequeue=True):
