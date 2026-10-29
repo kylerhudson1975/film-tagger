@@ -472,7 +472,10 @@ def exclude_film(c, fid):
 
 def is_excluded(c, p, size):
     """Same path, same file name + size (moved), or same size + OpenSubtitles hash (renamed or moved copy)."""
-    if c.execute("SELECT 1 FROM excluded WHERE path=? COLLATE NOCASE", (p,)).fetchone(): return True
+    # same path only counts when it is still the same file: a different copy (e.g. a 1080p replacement saved
+    # under the old 720p name) has another size and must be added, not skipped
+    for xs, xh in c.execute("SELECT size, oshash FROM excluded WHERE path=? COLLATE NOCASE", (p,)).fetchall():
+        if not size or not xs or xs == size or (xh and file_hash(p) == xh): return True
     if size:
         rows = c.execute("SELECT path, oshash FROM excluded WHERE size=?", (size,)).fetchall()
         name = os.path.basename(p).lower()
