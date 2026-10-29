@@ -332,7 +332,10 @@ def run_job(connect, limit=None):
             if limit: q = q[:limit]
             JOB["total"] = len(q)
             for name, again in q:
+                while PRIO["running"] and not JOB["stop"]:  # queued films' cast first (same per-site rate limits)
+                    JOB["current"] = "(waiting: queued films first)"; time.sleep(1)
                 if JOB["stop"]: break
+                if db.fold(" ".join(name.split())) in PRIO_DONE: JOB["done"] += 1; continue  # already looked up for a queued film
                 JOB["current"] = name
                 try:
                     res = lookup_one(c, name, recheck=again); st = res["status"]
@@ -350,6 +353,76 @@ def run_job(connect, limit=None):
             JOB.update(running=False, current=None, finished_at=time.time()); c.close()
     threading.Thread(target=work, daemon=True).start()
     return True
+
+PRIO = dict(running=False, todo=[], done=0, total=0, filled=0, review=0, current=None, started_at=None, finished_at=None, results=[])
+PRIO_LOCK = threading.Lock()
+PRIO_DONE = set()  # name keys looked up for queued films this session (the background job skips them)
+PRIO_SKIP = ("ambiguous", "reviewed_none", "skipped", "filled")  # already in review / decided: not looked up again
+
+def queued_film_ids(c):
+    return [r[0] for r in c.execute("SELECT film_id FROM smart_queue ORDER BY added_at")]
+
+def queue_todo(c, film_ids, retry=False):
+    """[(name, mode)] to look up for these films' cast: never tried ('full'), tried before the fallback sites existed
+    ('recheck'), errors, and with retry=True also earlier not found / no exact date ('full' again)."""
+    ensure(c)
+    out, seen = [], set()
+    for fid in film_ids:
+        r = c.execute("SELECT cast_ FROM films WHERE id=?", (fid,)).fetchone()
+        for m in db.cast_missing_birthdates(c, r["cast_"] if r else ""):
+            k = db.fold(m["name"])
+            if k in seen or m["status"] in PRIO_SKIP or m["status"] == "hand_edited": continue
+            seen.add(k)
+            lk = c.execute("SELECT status, fb_at FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone()
+            if lk is None or lk["status"] == "error": out.append((m["name"], "full"))
+            elif lk["status"] in FB_RETRY and lk["fb_at"] is None: out.append((m["name"], "recheck"))
+            elif retry: out.append((m["name"], "full"))
+    return out
+
+def queue_lookup(connect, film_ids=None, retry=False, sync=False, auto=False):
+    """Look up birth dates for the cast of smart-tag-queued films (default: the whole queue) ahead of the background job.
+    Uses lookup_one, so the same sources, rate limits, review rules and hand-edit protection apply.
+    auto=True (a film was just queued): only when online lookups are on ('run automatically'). -> number of names added."""
+    c = connect()
+    try:
+        if auto and not (enabled() and db.get_setting(c, "birthdate_auto", True)): return 0
+        todo = queue_todo(c, film_ids if film_ids is not None else queued_film_ids(c), retry)
+    finally: c.close()
+    with PRIO_LOCK:
+        have = {db.fold(n) for n, _ in PRIO["todo"]} | ({db.fold(PRIO["current"])} if PRIO["current"] else set())
+        new = [x for x in todo if db.fold(x[0]) not in have]
+        if not new: return 0
+        if not PRIO["running"]:
+            PRIO.update(running=True, todo=[], done=0, total=0, filled=0, review=0, current=None, started_at=time.time(), finished_at=None)
+            start = True
+        else: start = False
+        PRIO["todo"] += new; PRIO["total"] += len(new)
+    if start:
+        if sync: _prio_work(connect)
+        else: threading.Thread(target=_prio_work, args=(connect,), daemon=True).start()
+    return len(new)
+
+def _prio_work(connect):
+    c = connect(); ensure(c)
+    try:
+        while True:
+            with PRIO_LOCK:
+                if not PRIO["todo"]: PRIO.update(running=False, current=None, finished_at=time.time()); return
+                name, mode = PRIO["todo"].pop(0); PRIO["current"] = name
+            try:
+                res = lookup_one(c, name, recheck=mode == "recheck")
+            except Exception as ex:
+                res = dict(status="error", detail=type(ex).__name__ + ": " + str(ex)[:120])
+                try: _record(c, name, res); c.commit()
+                except Exception: pass
+            PRIO_DONE.add(db.fold(" ".join(name.split())))
+            st = res.get("status")
+            PRIO["done"] += 1; PRIO["filled"] += st == "filled"; PRIO["review"] += st in ("ambiguous", "not_found", "no_birthday", "error")
+            PRIO["results"] = (PRIO["results"] + [dict(name=name, status=st, birthday=res.get("birthday") if st == "filled" else None,
+                                                       source=res.get("source") if st == "filled" else None, at=time.time())])[-200:]
+    finally:
+        with PRIO_LOCK: PRIO.update(running=False, current=None, finished_at=PRIO["finished_at"] or time.time())
+        c.close()
 
 def enabled():
     """Off for throwaway databases in the temp folder (tests) so they never go online."""
@@ -394,6 +467,7 @@ def init(app, connect, tmdb):
     def bd_status():
         c = connect(); ensure(c)
         return jsonify(job={k: v for k, v in JOB.items() if k != "stop"}, totals=stats(c), auto=bool(db.get_setting(c, "birthdate_auto", True)),
+                       queued={k: v for k, v in PRIO.items() if k != "todo"} | dict(left=len(PRIO["todo"])),
                        sites=bdsources.status(), skipped_sites=bdsources.SKIPPED)
 
     @app.post("/api/birthdates/start")
@@ -403,6 +477,15 @@ def init(app, connect, tmdb):
         lim = (request.get_json(silent=True) or {}).get("limit")
         return jsonify(started=run_job(connect, int(lim) if lim else None))
 
+    @app.post("/api/birthdates/queue-lookup")
+    def bd_queue_lookup():
+        """'Look up birth dates now' for smart-tag-queued films. Body: {film_ids?: [..] (default: whole queue), retry?: true
+        (also re-try people not found before; default true here)}. Runs ahead of the background job."""
+        d = request.get_json(silent=True) or {}
+        if not enabled(): return jsonify(added=0, note="offline (test database)")
+        n = queue_lookup(connect, d.get("film_ids"), retry=bool(d.get("retry", True)))
+        return jsonify(added=n, running=PRIO["running"], left=len(PRIO["todo"]))
+
     @app.post("/api/birthdates/stop")
     def bd_stop():
         JOB["stop"] = True; return jsonify(ok=True)
@@ -411,15 +494,32 @@ def init(app, connect, tmdb):
     def bd_review():
         c = connect(); ensure(c)
         out = []
-        for r in c.execute("SELECT name_norm, name, detail, at FROM birthdate_lookup WHERE status='ambiguous' ORDER BY name COLLATE NOCASE LIMIT 500"):
+        qd = {}  # name key -> titles of queued films crediting them as cast without a birth date
+        for fid in queued_film_ids(c):
+            f = c.execute("SELECT title, year, cast_ FROM films WHERE id=?", (fid,)).fetchone()
+            if not f: continue
+            for m in db.cast_missing_birthdates(c, f["cast_"]): qd.setdefault(db.fold(m["name"]), []).append(f"{f['title']} ({f['year'] or '?'})")
+        rows = list(c.execute("SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE status='ambiguous' ORDER BY name COLLATE NOCASE LIMIT 500"))
+        if qd:
+            ks = list(qd)
+            rows = [r for r in c.execute(f"SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE name_norm IN ({','.join('?' * len(ks))}) "
+                                         "AND status IN ('ambiguous','not_found','no_birthday','error') ORDER BY name COLLATE NOCASE", ks)] + \
+                   [r for r in rows if r["name_norm"] not in qd]
+        for r in rows:
             try: cands = json.loads(r["detail"] or "[]")
             except Exception: cands = []
             p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
             if p and p["merged_into"]: p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE id=?", (p["merged_into"],)).fetchone() or p
             if p and ((p["birthday"] or "") or "birthday" in json.loads(p["edited_fields"] or "[]")): continue  # settled since (TMDB, hand edit, merge)
-            out.append(dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
-                            iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or "")))
-        return jsonify(review=out)
+            x = dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
+                     iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or ""))
+            if r["name_norm"] in qd:
+                x.update(queued=qd[r["name_norm"]], status=r["status"])
+                if r["status"] != "ambiguous":  # nothing usable found: links to check by hand
+                    x.update(note=(r["detail"] or "")[:200], links=[dict(label="Wikipedia", url="https://en.wikipedia.org/w/index.php?search=" + urllib.parse.quote(r["name"] or ""))] +
+                             [dict(label=st.label, url=st.url_for(r["name"])) for st, _ in bdsources.SITES])
+            out.append(x)
+        return jsonify(review=out, queued_count=sum(1 for x in out if x.get("queued")))
 
     @app.post("/api/birthdates/review")
     def bd_review_pick():

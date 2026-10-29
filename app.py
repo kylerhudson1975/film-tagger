@@ -1102,10 +1102,13 @@ def set_cats():
 # ---------- smart tag queue ----------
 @app.post("/api/queue")
 def queue_add():
-    c = C()
-    for fid in (request.json or {}).get("film_ids", []):
+    c = C(); fids = (request.json or {}).get("film_ids", [])
+    for fid in fids:
         c.execute("INSERT OR IGNORE INTO smart_queue VALUES(?,?)", (fid, time.time()))
-    c.commit(); return ok(count=c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0])
+    c.commit()
+    try: bd_n = bdmod.queue_lookup(db.connect, fids, auto=True)  # cast birth dates before tagging, ahead of the background job
+    except Exception: bd_n = 0
+    return ok(count=c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0], birthdate_lookups=bd_n)
 
 @app.delete("/api/queue")
 def queue_remove():

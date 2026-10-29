@@ -905,6 +905,38 @@ def import_aznude(c, items, dequeue=True):
     c.commit()
     return res
 
+def _bd_person(c, name):
+    """(has a birth date, birthday hand-edited) for one name, following merges and aliases."""
+    seen = 0
+    for n in expand_person(c, name):
+        r = c.execute("SELECT birthday, edited_fields, merged_into FROM people WHERE name_norm=?", (fold(" ".join(n.split())),)).fetchone()
+        while r is not None and r["merged_into"] and seen < 5:
+            r = c.execute("SELECT birthday, edited_fields, merged_into FROM people WHERE id=?", (r["merged_into"],)).fetchone(); seen += 1
+        if r is None: continue
+        if r["birthday"]: return True, False
+        if n == name and "birthday" in (r["edited_fields"] or ""): return False, True
+    return False, False
+
+def cast_missing_birthdates(c, cast):
+    """[{name, status}] for the cast (comma-separated) with no birth date. status: the birth-date lookup state
+    ('not_looked_up', 'not_found', 'no_birthday', 'ambiguous' = in review, 'reviewed_none', 'error', ...) or 'hand_edited'
+    (birth date cleared by hand: never looked up)."""
+    out, seen = [], set()
+    for n in (cast or "").split(","):
+        n = " ".join(n.split()); k = fold(n)
+        if not n or k in seen: continue
+        seen.add(k)
+        try: has, hand = _bd_person(c, n)
+        except sqlite3.OperationalError: has, hand = False, False  # no people table yet
+        if has: continue
+        st = "hand_edited" if hand else None
+        if not st:
+            try: r = c.execute("SELECT status FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone()
+            except sqlite3.OperationalError: r = None
+            st = r[0] if r else "not_looked_up"
+        out.append(dict(name=n, status=st))
+    return out
+
 def export_queue(c, film_ids=None):
     out = []
     if film_ids is None: rows = c.execute("SELECT f.* FROM smart_queue q JOIN films f ON f.id=q.film_id ORDER BY q.added_at").fetchall()
@@ -914,7 +946,8 @@ def export_queue(c, film_ids=None):
             "SELECT t.name, t.category, ft.status FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=?", (r["id"],))]
         paths = [x["path"] for x in c.execute("SELECT path FROM files WHERE film_id=?", (r["id"],))]
         out.append(dict(id=r["id"], title=r["title"], year=r["year"], path=paths[0] if paths else None,
-                        paths=paths, director=r["director"], plot=r["plot"], existing_tags=tags))
+                        paths=paths, director=r["director"], plot=r["plot"], existing_tags=tags, cast=r["cast_"],
+                        cast_missing_birthdate=cast_missing_birthdates(c, r["cast_"])))  # still without a birth date after the lookup
     return out
 
 def import_ai_tags(c, items, dequeue=True):
