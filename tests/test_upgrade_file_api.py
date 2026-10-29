@@ -31,6 +31,8 @@ for body in ({"path": new}, {"path": new, "dry_run": True, "file_id": file_id}):
     j = r.json; assert j["dry_run"] and j["old"]["resolution"] == "720p" and j["new"]["resolution"] == "1080p" and not j["inside_library"]
     assert j["move_possible"] and j["summary"] == "Upgraded 720p → 1080p" and j["recycle"]["possible"]
 assert os.path.exists(old) and os.path.exists(new) and not binned and c.execute("SELECT path FROM files").fetchone()[0] == old
+assert cl.post(u, json={"path": new, "old_path": old.upper() if os.name == "nt" else old}).json["file_id"] == file_id
+assert cl.post(u, json={"path": new, "old_path": os.path.join(root, "other.mkv")}).status_code == 400
 assert cl.post(u, json={"path": os.path.join(outside, "missing.mkv")}).status_code == 400
 assert cl.post("/api/films/99999/upgrade-file", json={"path": new}).status_code == 404
 # real run, moved into the old file's folder

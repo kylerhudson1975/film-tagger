@@ -958,11 +958,15 @@ import upgrade as upgrademod
 
 @app.post("/api/films/<int:fid>/upgrade-file")
 def upgrade_file(fid):
-    """{file_id, path, move, dry_run}. dry_run (or check) only compares the old and new file and says what would happen.
+    """{file_id (or old_path), path, move, dry_run}. dry_run (or check) only compares the old and new file and says what would happen.
     Otherwise: (move the new file into the old one's folder,) repoint the file record, refresh resolution / size /
     fingerprint / runtime, send the old file to the Recycle Bin. Sidecar subtitles are listed, not renamed."""
     d = (request.json or {}) if request.is_json else {}
     c = C()
+    if d.get("file_id") in (None, "") and d.get("old_path"):  # the page names the file to replace by its path
+        r = c.execute("SELECT id FROM files WHERE film_id=? AND path=? COLLATE NOCASE", (fid, d["old_path"])).fetchone()
+        if not r: return jsonify(error="That file does not belong to this item"), 400
+        d["file_id"] = r[0]
     if d.get("dry_run", True):  # nothing changes unless dry_run is false
         p, err = upgrademod.plan(c, fid, d.get("file_id"), d.get("path"))
         if err: return jsonify(error=err[0]), err[1]

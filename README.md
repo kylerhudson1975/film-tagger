@@ -96,6 +96,7 @@ Covers everything since v1.2.3 (versions 1.2.4 to 1.2.15 were not published sepa
 ### 🗑 Removing and deleting
 - **Remove from library** (the old *Delete*) takes an item out of the catalogue and leaves its files alone.
 - **Delete files & remove from library** lists the exact files first, can include the photo gallery folder, and warns that it **can't be undone**. Files are deleted permanently, not sent to the Recycle Bin.
+- **⬆ Upgrade file** (film page) replaces one of an item's video files with a better copy, e.g. 1080p for 720p. Pick the file to replace (if there are several) and the new file (Browse… or paste the path); a new file outside your library folders can be moved into the old file's folder. A compare step shows resolution, size and duration of both (ffprobe when installed). The item keeps its id, tags, cast, poster, hand edits and watched status; resolution, size, fingerprint and file-derived runtime follow the new file. The old file goes to the **Recycle Bin** (if the drive has none, it is kept and put on Removed items), Removed items entries matching the new file are forgotten, and subtitle files named after the old file are renamed only if you say so.
 - **Restoring a removed item** now brings it back even if its file was moved or renamed in the meantime.
 
 ### 📏 Height units

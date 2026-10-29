@@ -522,6 +522,84 @@ async function dfGo(){const g=S.df;if(!g||g.busy)return;const keys=[...document.
  if(!r.ok&&d.removed){dfClose();closeM();reload();refreshMeta();alert(d.error+'\n\nNot deleted:\n'+(d.failed||[]).map(x=>x.path+': '+x.error).join('\n')+((d.deleted||[]).length?'\n\nDeleted:\n'+d.deleted.join('\n'):''));return}
  if(!r.ok){g.busy=false;$('dfGo').disabled=false;$('dfMsg').innerHTML=`<span style="color:var(--bad)">${esc(d.error||'Failed')}</span>${(d.failed||[]).map(x=>`<div style="font-size:.9em">✗ <code>${esc(x.path)}</code>: ${esc(x.error)}</div>`).join('')}${(d.deleted||[]).length?`<div class=muted style="font-size:.9em">Already deleted: ${d.deleted.map(esc).join(', ')}</div>`:''}`;return}
  dfClose();closeM();reload();refreshMeta();toast(`Deleted ${d.deleted.length} item${d.deleted.length==1?'':'s'} permanently and removed from the library`)}
+// ---------- Upgrade file: replace one video file with a better copy; the item keeps its tags, cast, poster, edits and watch data ----------
+const fmtDur=s=>{if(!s)return'';s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return(h?h+':'+String(m).padStart(2,'0'):m)+':'+String(x).padStart(2,'0')};
+function ufBox(h){let o=$('ufOv');if(!o){o=document.createElement('div');o.id='ufOv';document.body.appendChild(o)}
+ o.innerHTML=`<div style="background:var(--p);border:1px solid var(--b);border-radius:8px;max-width:820px;width:calc(100% - 40px);max-height:85vh;overflow:auto;padding:16px">${h}</div>`;
+ Object.assign(o.style,{position:'fixed',inset:0,zIndex:2200,background:'#000b',display:'flex',alignItems:'center',justifyContent:'center'})}
+function ufClose(){const o=$('ufOv');if(o){o.style.display='none';o.innerHTML=''}S.uf=null}
+function openUpgradeFile(id){const f=S.editOrig;if(!f||f.id!==id)return;const files=(f.files||[]).map(x=>x.path);
+ if(!files.length){toast('This item has no file on record to replace');return}
+ const d=formVals();if(changedFields(d).length||d.paths.join('\n')!==files.join('\n')){alert('Save or cancel your changes on this page first, then use Upgrade file.');return}
+ S.uf={id,title:f.title,files,old:files.length==1?files[0]:null,path:''};ufStep1()}
+function ufStep1(){const g=S.uf;if(!g)return;
+ ufBox(`<h3 style="margin-top:0">⬆ Upgrade file</h3><div><b>${esc(g.title)}</b></div>
+  <p class=muted>Replace a video file with a better copy (for example 1080p for 720p). The item keeps its tags, cast, poster, your edits and watched status. You compare both files before anything changes; the old file then goes to the Recycle Bin.</p>
+  ${g.files.length>1?`<label>Which file to replace</label>${g.files.map((p,i)=>`<label style="display:flex;gap:8px;align-items:flex-start;margin:4px 0;font-weight:normal"><input type=radio name=ufOld data-i="${i}" style="width:auto;margin-top:3px" ${g.old===p?'checked':''}><code style="word-break:break-all">${esc(p)}</code></label>`).join('')}`
+   :`<label>Current file</label><div><code style="word-break:break-all">${esc(g.files[0])}</code></div>`}
+  <label style="margin-top:10px">New video file</label><div class=row style="gap:4px"><input id=ufPath value="${esc(g.path)}" placeholder="Full path, e.g. D:\\Movies\\Film (1999)\\Film (1999) 1080p.mkv" style="flex:1" onkeydown="if(event.key=='Enter')ufCompare()"><button class=sidebtn id=ufBrowse onclick="ufBrowse()">Browse…</button></div>
+  <div id=ufMsg style="margin:8px 0"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="ufClose()">Cancel</button><button class=pri id=ufNext onclick="ufCompare()">Compare →</button></div>`);
+ document.querySelectorAll('#ufOv input[name=ufOld]').forEach(x=>x.addEventListener('change',()=>{g.old=g.files[+x.dataset.i]}));$('ufPath').focus()}
+async function ufBrowse(){const g=S.uf;if(!g)return;const b=$('ufBrowse');b.disabled=true;$('ufMsg').textContent='A file chooser is open (it may be behind this window)…';
+ const ref=g.old||g.files[0];const dir=ref.replace(/[\\/][^\\/]*$/,'');
+ try{const j=await api('/api/pick-file',{method:'POST',body:{title:'Choose the new video file',dir}});if(!S.uf)return;
+  if(j.path){g.path=j.path;$('ufPath').value=j.path;$('ufMsg').textContent=''}else $('ufMsg').textContent=j.error||''}catch(e){}finally{if($('ufBrowse'))$('ufBrowse').disabled=false}}
+async function ufCompare(){const g=S.uf;if(!g||g.busy)return;g.path=$('ufPath').value.trim();
+ if(!g.old){$('ufMsg').innerHTML='<span style="color:var(--bad)">Choose which file to replace</span>';return}
+ if(!g.path){$('ufMsg').innerHTML='<span style="color:var(--bad)">Choose the new video file (Browse…, or paste its full path)</span>';return}
+ g.busy=true;$('ufNext').disabled=true;$('ufMsg').textContent='Reading both files…';let r,d;
+ try{r=await fetch(`/api/films/${g.id}/upgrade-file`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({old_path:g.old,path:g.path,dry_run:true})});d=await r.json().catch(()=>({}))}catch(e){r={ok:false};d={error:'Could not reach Film Tagger'}}
+ g.busy=false;if(!S.uf)return;if(!r.ok){$('ufNext').disabled=false;$('ufMsg').innerHTML=`<span style="color:var(--bad)">${esc(d.error||'Failed')}</span>`;return}
+ g.plan=d;ufStep2()}
+function ufStep2(){const g=S.uf,p=g.plan,o=p.old,n=p.new;
+ const res=x=>x.resolution?`<b>${esc(x.resolution)}</b>${x.width?` <span class=muted>${x.width}×${x.height}</span>`:''}`:'<span class=muted>unknown</span>';
+ const rk=x=>RESL.indexOf(x.resolution||''),warn=[],info=[];
+ if(rk(n)>=0&&rk(o)>=0&&rk(n)<rk(o))warn.push('The new file has a <b>lower</b> resolution than the old one.');
+ if(o.duration&&n.duration&&Math.abs(o.duration-n.duration)>120)warn.push(`The running times differ by ${Math.round(Math.abs(o.duration-n.duration)/60)} min. Is this the same cut?`);
+ if(n.size&&o.size&&n.size<o.size)info.push('The new file is smaller than the old one.');
+ if(!o.exists)info.push('The old file was not found (drive unplugged or already gone); only the record is repointed.');
+ if(!p.ffprobe)info.push('ffprobe was not found, so values come from the file headers or the file name.');
+ if(p.blockers)info.push('A Removed items entry matches the new file. It will be forgotten so scans can never skip the new file.');
+ const mv=p.inside_library?'':p.move_possible?`<label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0;font-weight:normal"><input type=checkbox id=ufMove style="width:auto;margin-top:3px" checked><span>The new file is outside your library folders. <b>Move it into the old file's folder</b>:<br><code style="word-break:break-all">${esc(p.move_target)}</code>${p.move_note?`<br><span class=muted>${esc(p.move_note)}</span>`:''}${p.same_name_as_old?'<br><span class=muted>It has the same name as the old file, so the old file goes to the Recycle Bin first.</span>':''}</span></label>`
+  :`<p style="color:var(--bad)">⚠ The new file is outside your library folders and can't be moved into the old file's folder (${esc(p.move_note||'')}). The item will use it where it is.</p>`;
+ const rc=!o.exists?'':p.recycle.possible?'<p>The old file goes to the <b>Recycle Bin</b> (you can restore it from there).</p>'
+  :`<p style="color:var(--bad)">⚠ The old file can't go to the Recycle Bin (${esc(p.recycle.reason||'')}). It stays where it is and is added to Removed items so scans don't add it back.</p>`;
+ const sc=(p.sidecars||[]).length?`<p class=muted>Subtitle file${p.sidecars.length==1?'':'s'} named after the old file: ${p.sidecars.map(x=>`<code>${esc(x.path.split(/[\\/]/).pop())}</code>`).join(', ')}. You can rename ${p.sidecars.length==1?'it':'them'} to match after the upgrade.</p>`:'';
+ const td='style="padding:4px 8px;border-bottom:1px solid var(--b);vertical-align:top"';
+ ufBox(`<h3 style="margin-top:0">⬆ Upgrade file: compare</h3><div><b>${esc(p.film.title)}</b></div>
+  <table style="width:100%;border-collapse:collapse;margin:10px 0"><tr><th ${td}></th><th ${td} style="text-align:left">Old file</th><th ${td} style="text-align:left">New file</th></tr>
+  <tr><td ${td}>Resolution</td><td ${td}>${res(o)}</td><td ${td}>${res(n)}</td></tr>
+  <tr><td ${td}>Size</td><td ${td}>${fmtSize(o.size)||'<span class=muted>?</span>'}</td><td ${td}>${fmtSize(n.size)||'<span class=muted>?</span>'}</td></tr>
+  <tr><td ${td}>Duration</td><td ${td}>${fmtDur(o.duration)||'<span class=muted>unknown</span>'}</td><td ${td}>${fmtDur(n.duration)||'<span class=muted>unknown</span>'}</td></tr>
+  <tr><td ${td}>File</td><td ${td}><code style="word-break:break-all">${esc(o.path)}</code></td><td ${td}><code style="word-break:break-all">${esc(n.path)}</code></td></tr></table>
+  ${warn.map(w=>`<p style="color:var(--bad)">⚠ ${w}</p>`).join('')}${info.map(w=>`<p class=muted>${w}</p>`).join('')}${mv}${rc}${sc}
+  <div id=ufMsg style="margin:8px 0"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="ufStep1()">← Back</button><button onclick="ufClose()">Cancel</button><button class=pri id=ufGo onclick="ufGo()">Upgrade</button></div>`)}
+async function ufGo(){const g=S.uf;if(!g||g.busy)return;const p=g.plan;const move=!!($('ufMove')&&$('ufMove').checked);
+ g.busy=true;$('ufGo').disabled=true;$('ufMsg').textContent=move&&p.move_note?'Moving the new file (copying to another drive can take a while)…':'Upgrading…';let r,d;
+ try{r=await fetch(`/api/films/${g.id}/upgrade-file`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file_id:p.file_id,path:p.new.path,move,dry_run:false})});d=await r.json().catch(()=>({}))}catch(e){r={ok:false};d={error:'Could not reach Film Tagger'}}
+ g.busy=false;if(!S.uf)return;if(!r.ok){$('ufGo').disabled=false;$('ufMsg').innerHTML=`<span style="color:var(--bad)">${esc(d.error||'Failed')}</span>`;return}
+ g.res=d;reload();refreshMeta();if(S.openId===g.id)openFilm(g.id);
+ const extra=[];if(!d.recycled&&d.old.exists)extra.push(`The old file was kept (${d.recycle_error}) and added to Removed items:\n${d.old.path}`);
+ if(d.resolution_kept_hand_edit)extra.push(`Resolution kept as you set it by hand (the new file is ${d.resolution_kept_hand_edit}).`);
+ if(d.gallery_left)extra.push(`The photo gallery is still named after the old file:\n${d.gallery_left}`);(d.notes||[]).forEach(x=>extra.push(x));
+ const subs=(d.sidecars||[]).filter(x=>x.ok);
+ if(!subs.length){ufClose();toast(d.summary);if(extra.length)alert(d.summary+'\n\n'+extra.join('\n\n'));return}
+ g.extra=extra;
+ ufBox(`<h3 style="margin-top:0;color:var(--ok)">✓ ${esc(d.summary)}</h3>${extra.map(x=>`<p class=muted style="white-space:pre-wrap">${esc(x)}</p>`).join('')}
+  <p>These subtitle files are named after the old file. Rename them to match the new one?</p>
+  ${subs.map((x,i)=>`<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;font-weight:normal"><input type=checkbox data-i="${i}" style="width:auto;margin-top:3px" checked><span><code style="word-break:break-all">${esc(x.path.split(/[\\/]/).pop())}</code> → <code style="word-break:break-all">${esc(x.target.split(/[\\/]/).pop())}</code></span></label>`).join('')}
+  <div id=ufMsg style="margin:8px 0"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end"><button onclick="ufClose();toast(S.lastUf||'')">Leave them</button><button class=pri id=ufSubs onclick="ufSubs()">Rename</button></div>`);
+ g.subs=subs;S.lastUf=d.summary}
+async function ufSubs(){const g=S.uf;if(!g||g.busy)return;const paths=[...document.querySelectorAll('#ufOv input[data-i]:checked')].map(x=>g.subs[+x.dataset.i].path);
+ if(!paths.length){ufClose();toast(g.res.summary);return}
+ g.busy=true;$('ufSubs').disabled=true;
+ try{const j=await api(`/api/films/${g.id}/upgrade-file/subtitles`,{method:'POST',body:{file_id:g.res.file_id,old_path:g.res.old.path,paths}});
+  const id=g.id,sum=g.res.summary;ufClose();if(S.openId===id)openFilm(id);
+  toast(`${sum} · renamed ${j.renamed.length} subtitle file${j.renamed.length==1?'':'s'}`);if(j.errors.length)alert('Not renamed:\n'+j.errors.join('\n'))}
+ catch(e){g.busy=false;if($('ufSubs'))$('ufSubs').disabled=false}}
 function fpClose(){const o=$('fpOv');if(o){o.style.display='none';o.innerHTML=''}S.fp=null}
 // ---------- Poster editor: crop (2:3 lock) / rotate / flip; the server redoes it on the full-size original ----------
 async function openPosterEditor(id){let d;try{d=await api(`/api/films/${id}/posteredit`)}catch(e){return}
@@ -676,6 +754,7 @@ async function openFilm(id){histFilm(id);const f=await api('/api/films/'+id);try
  openM(`<div class=fg><div><div id=posterBox ondragover="event.preventDefault();this.style.outline='2px dashed #aaa'" ondragleave="this.style.outline=''" ondrop="posterDrop(event,${id})">${posterBoxHtml(f)}</div><input type=file id=posterFile accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadPoster(${id},this.files[0]);this.value=''"><label>TMDB poster URL</label><input id=e_poster value="${esc(f.poster)}">
   ${f.kind=='scene'?`<button style="margin-top:8px;width:100%" title="Look this scene up on ThePornDB from its file name" onclick="loadTpdb(${id},true)">Fetch from ThePornDB</button>${/review by hand/i.test(f.notes||'')?'':`<button style="margin-top:6px;width:100%" title="Search ViperGirls for this scene's photo set (performers + studio) and download it as the scene's gallery" onclick="openFindGallery(${id})">🔎 Find Gallery</button>`}`:`<button style="margin-top:8px;width:100%" onclick="tmdbFetch(${id})">Fetch from TMDB</button><button style="margin-top:6px;width:100%" title="Pick any of TMDB's posters for this film (uses its TMDB id)" onclick="openFindPosters(${id})">🖼 Find Posters</button>`}<button style="margin-top:6px;width:100%" onclick="queueFilms([${id}])">✨ Smart tagging (AI)</button><button style="margin-top:6px;width:100%" onclick="startJob('/api/ai/start',{film_ids:[${id}]})">⚡ Tag now with my AI</button>
 <button style="margin-top:6px;width:100%" title="Queue this film for an AZNude Status check (done outside the app; never changes Primary genre or tags)" onclick="queueAZ([${id}])">✨ AZNude Status</button>
+  ${(f.files||[]).length?`<button style="margin-top:6px;width:100%" title="Replace a video file with a better copy (e.g. 1080p for 720p). Tags, cast, poster, your edits and watched status are kept; the old file goes to the Recycle Bin. You compare both files first." onclick="openUpgradeFile(${id})">⬆ Upgrade file</button>`:''}
   <button style="margin-top:6px;width:100%;color:var(--bad)" title="Remove this item from the library; files on disk are not touched" onclick="if(confirm('Remove from library? Files on disk are not touched.'))api('/api/films/${id}',{method:'DELETE'}).then(()=>{closeM();reload();refreshMeta()})">Remove from library</button><button style="margin-top:6px;width:100%;background:var(--bad);color:#fff;border-color:var(--bad)" title="Permanently delete this item's video file(s) and gallery, then remove it from the library (you confirm the exact list first)" onclick="openDeleteFiles(${id})">🗑 Delete files &amp; remove from library</button></div><div>
   <div class=row><div style="flex:3"><label>Title</label><input id=e_title value="${esc(f.title)}"><label>Original title</label><input id=e_original_title value="${esc(f.original_title)}" placeholder="(same as title)"><label>Also known as <span class=muted style="font-size:.85em">(your own titles, one per line; kept across TMDB refreshes)</span></label><textarea id=e_user_akas rows=2 placeholder="e.g. a video-release or foreign title">${esc(f.user_akas)}</textarea>${f.alt_titles?`<div class=muted style="font-size:.8em;max-height:2.6em;overflow:hidden" title="${esc(f.alt_titles)}">From TMDB: ${esc(f.alt_titles)}</div>`:''}</div><div style="flex:2"><div class=row><div><label>Release date${f.year?` <a class=clink href="#" title="Show all films from the ${Math.floor(f.year/10)*10}s" onclick="filterDecade(${Math.floor(f.year/10)*10});return false">${Math.floor(f.year/10)*10}s</a>`:''}</label><input id=e_release_date value="${esc(f.release_date||'')}" placeholder="${f.year?f.year+' (exact date unknown)':'YYYY-MM-DD'}" title="YYYY-MM-DD; YYYY-MM or YYYY if the exact day is unknown. The year (filters, decades, reports) follows it."></div><div><label>Runtime</label><input id=e_runtime type=number value="${f.runtime??''}"></div></div>
   <label>Country</label><input id=e_country value="${esc(f.country)}" placeholder="e.g. France, West Germany"><div class=plinks style="font-size:.9em;margin-top:3px">${countryLinks(f.country)}</div>
