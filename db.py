@@ -2,7 +2,11 @@
 import os, re, sqlite3, json, time, unicodedata
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.environ.get("FILMTAGGER_DB", os.path.join(BASE, "films.db"))
+def _default_db():
+    """data\\films.db (installed layout) when it exists, else films.db next to the code (manual install)."""
+    d = os.path.join(BASE, "data", "films.db")
+    return d if os.path.exists(d) else os.path.join(BASE, "films.db")
+DB_PATH = os.environ.get("FILMTAGGER_DB") or _default_db()  # FILMTAGGER_DB always wins
 VIDEO_EXT = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".mpg", ".mpeg", ".ts", ".m2ts",
              ".webm", ".flv", ".vob", ".divx", ".ogv", ".3gp", ".rmvb", ".rm", ".asf", ".mts", ".iso"}
 DEFAULT_CATEGORIES = ["Genre", "Content", "Themes", "Mood", "Setting", "Era", "Style", "People", "Other", "Kink", "Fetish"]

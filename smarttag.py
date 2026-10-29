@@ -29,7 +29,7 @@ def main(a):
         out = a[1] if len(a) > 1 else "smart_queue.json"
         q = db.export_queue(c)
         with open(out, "w", encoding="utf-8") as f: json.dump(q, f, indent=2, ensure_ascii=False)
-        print(f"Exported {len(q)} queued film(s) to {out}")
+        print(f"Exported {len(q)} queued film(s) to {out} (database: {db.DB_PATH})")
     elif cmd == "import-tags":
         if len(a) < 2: print("usage: smarttag.py import-tags file.json"); return 2
         with open(a[1], encoding="utf-8-sig") as f: data = json.load(f)
@@ -57,6 +57,7 @@ def main(a):
               ("Errors: " + "; ".join(r["errors"])) if r["errors"] else "")
         if r["errors"]: return 1
     elif cmd == "status":
+        print("database:", db.DB_PATH)
         print("queue:", c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
               "| films with pending AI tags:", c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0],
               "| AZNude queue:", c.execute("SELECT COUNT(*) FROM aznude_queue").fetchone()[0])
