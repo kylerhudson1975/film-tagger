@@ -322,9 +322,11 @@ window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.rest
  else if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
  else if(q.page&&String(q.page).startsWith('studio:')){await showStudio(String(q.page).slice(7),{nohist:true,lib:q.slib||''});$('content').scrollTop=q.scroll||0}
  else if(q.in=='studios'){S.page=null;dashNav(false);await stList();$('content').scrollTop=q.scroll||0}
- else{S.page=null;const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;await searchPeople();render();personHeader();$('content').scrollTop=q.scroll||0}
+ else{S.page=null;const seq=S.loadSeq=(S.loadSeq||0)+1,lib=$('f_lib').value||'';const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));if(seq!==S.loadSeq)return;await searchPeople();if(seq!==S.loadSeq)return;S.films=j.films;S.total=j.total;S.gridLib=lib;render();personHeader();$('content').scrollTop=q.scroll||0}
  if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
-async function load(keep){keep=keep===true;if(S.tagGroups)renderTagCloud();if(($('f_lib').value||'')!==(S.tagScopeLib||''))loadTagScope().then(()=>{if(S.tagGroups)renderTagCloud()});if(keep&&S.page)return S.page=="dash"?showDash({keep:true,nohist:true}):String(S.page).startsWith("co:")?showCo(CO.ids,{keep:true,nohist:true}):String(S.page).startsWith("studio:")?showStudio(String(S.page).slice(7),{keep:true,nohist:true,lib:S.stLib||''}):showPerson(S.pageId,{keep:true,nohist:true});S.page=null;dashNav(false);if(!keep)histSave();if($('f_in').value=='studios')return stList(keep);const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
+/* Only the newest load()/more()/history answer may fill the grid (S.loadSeq): a slower, older list (e.g. All libraries, or a scan's reload) answering after a folder pick must not replace the folder's list */
+function tagScopeSoon(){if(($('f_lib').value||'')!==(S.tagScopeLib||''))loadTagScope().then(()=>{if(S.tagGroups)renderTagCloud()})}
+async function load(keep){keep=keep===true;const seq=S.loadSeq=(S.loadSeq||0)+1;if(S.tagGroups)renderTagCloud();if(keep&&S.page){tagScopeSoon();return S.page=="dash"?showDash({keep:true,nohist:true}):String(S.page).startsWith("co:")?showCo(CO.ids,{keep:true,nohist:true}):String(S.page).startsWith("studio:")?showStudio(String(S.page).slice(7),{keep:true,nohist:true,lib:S.stLib||''}):showPerson(S.pageId,{keep:true,nohist:true})}S.page=null;dashNav(false);if(!keep)histSave();if($('f_in').value=='studios'){tagScopeSoon();return stList(keep)}const st=$('content').scrollTop,lib=$('f_lib').value||'';if(lib!==S.gridLib)$('count').textContent='Loading…';const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));if(seq!==S.loadSeq)return;tagScopeSoon();await searchPeople();if(seq!==S.loadSeq)return;S.films=j.films;S.total=j.total;S.gridLib=lib;render();$('content').scrollTop=keep?st:0;personHeader()}
 function reload(){return load(true)}
 const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['writer','Writers'],producer:['producer','Producers'],cinematographer:['cinematographer','Cinematography'],composer:['composer','Music']};
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
@@ -364,8 +366,8 @@ async function pAC(el){const k=el.id.slice(2),box=$('pac_'+k),tok=el.value.split
 function pACpick(k,name){const el=$('e_'+k),parts=el.value.split(',');parts[parts.length-1]=' '+name;el.value=parts.join(',').replace(/^\s+/,'')+', ';$('pac_'+k).style.display='none';el.focus()}
 function pACclose(){document.querySelectorAll('.pac').forEach(b=>b.style.display='none')}
 function togglePF(k){const i=$('e_'+k),v=$('pv_'+k),edit=i.style.display=='none';i.style.display=edit?'':'none';v.style.display=edit?'none':'';if(edit)i.focus()}
-async function more(){if(S.page||S.busy||$('f_in').value=='studios'||S.films.length>=S.total)return;S.busy=true;
- const j=await api('/api/films?'+params({limit:300,offset:S.films.length}));S.films.push(...j.films);S.busy=false;render(true)}
+async function more(){if(S.page||S.busy||$('f_in').value=='studios'||S.films.length>=S.total)return;S.busy=true;const seq=S.loadSeq;
+ let j;try{j=await api('/api/films?'+params({limit:300,offset:S.films.length}))}finally{S.busy=false}if(seq!==S.loadSeq)return;S.films.push(...j.films);render(true)}
 $('content').addEventListener('scroll',e=>{const c=e.target;if(c.scrollTop+c.clientHeight>c.scrollHeight-800)more()});
 function setView(v){S.view=localStorage.view=v;render()}
 function tagsHtml(f,rm){return [...f.tags].sort((x,y)=>x.name.localeCompare(y.name,undefined,{sensitivity:'base'})).map(t=>`<span class="tag"><a class=tlink href="#" title="Show all films tagged ${esc(t.name)}" onclick="event.stopPropagation();filterTag('${jsq(t.name)}');return false">${esc(t.name)}</a>${t.category?`<span class=c style="margin:0 0 0 5px">${esc(t.category)}</span>`:''}${rm?`<x onclick="rmTag(${f.id},'${esc(t.name).replace(/'/g,"\\'")}')">×</x>`:''}</span>`).join('')}
@@ -441,7 +443,9 @@ function toggleCat(c){const s=tcCollapsed();s.has(c)?s.delete(c):s.add(c);tcSave
 function setAllCats(collapse){tcSave(collapse?new Set(Object.keys(S.tagGroups||{})):new Set());renderTagCloud()}
 /* Tag counts follow the library folder: S.tagScope = {tag id: approved titles in $('f_lib')} (null = All libraries) */
 async function loadTagScope(){const lib=$('f_lib').value||'';if(!lib){S.tagScope=null;S.tagScopeLib='';return}
- try{const j=await api('/api/tags?'+new URLSearchParams({lib}));if(($('f_lib').value||'')!==lib)return;S.tagScope=Object.fromEntries(j.map(t=>[t.id,t.n]));S.tagScopeLib=lib}catch(e){}}
+ if(S.tagScopeReq&&S.tagScopeReq.lib===lib)return S.tagScopeReq.p;/* one /api/tags?lib= at a time per folder (repeated loads would pile up this slow query) */
+ const p=(async()=>{try{const j=await api('/api/tags?'+new URLSearchParams({lib}));if(($('f_lib').value||'')!==lib)return;S.tagScope=Object.fromEntries(j.map(t=>[t.id,t.n]));S.tagScopeLib=lib}catch(e){}finally{if(S.tagScopeReq&&S.tagScopeReq.p===p)S.tagScopeReq=null}})();
+ S.tagScopeReq={lib,p};return p}
 function renderTagCloud(){const sc=S.tagScope&&S.tagScopeLib===($('f_lib').value||'')?S.tagScope:null,col=tcCollapsed(),sel=tcSelected(),tn=t=>sc?(sc[t.id]||0):t.n;
  const g=sc?Object.fromEntries(Object.entries(S.tagGroups||{}).map(([c,ts])=>[c,ts.filter(t=>tn(t)>0||sel.has(t.name.toLowerCase()))]).filter(([c,ts])=>ts.length)):(S.tagGroups||{});
  const ctl=`<div class=muted style="font-size:11px;margin:2px 0"><a href="#" onclick="setAllCats(false);return false">Expand all</a> · <a href="#" onclick="setAllCats(true);return false">Collapse all</a></div>`;
