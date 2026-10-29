@@ -953,6 +953,41 @@ def deletefiles_do(fid):
                           else "Some files could not be deleted; the video file was deleted, so the item was removed from the library"),
                    failed=failed, deleted=deleted, removed=not keep), 500
 
+# ---------- Upgrade file: swap one of an item's video files for a better copy (upgrade.py); the item itself is kept ----------
+import upgrade as upgrademod
+
+@app.post("/api/films/<int:fid>/upgrade-file")
+def upgrade_file(fid):
+    """{file_id, path, move, dry_run}. dry_run (or check) only compares the old and new file and says what would happen.
+    Otherwise: (move the new file into the old one's folder,) repoint the file record, refresh resolution / size /
+    fingerprint / runtime, send the old file to the Recycle Bin. Sidecar subtitles are listed, not renamed."""
+    d = (request.json or {}) if request.is_json else {}
+    c = C()
+    if d.get("dry_run", True):  # nothing changes unless dry_run is false
+        p, err = upgrademod.plan(c, fid, d.get("file_id"), d.get("path"))
+        if err: return jsonify(error=err[0]), err[1]
+        return jsonify(dict(p, dry_run=True))
+    try: r, err = upgrademod.apply(c, fid, d.get("file_id"), d.get("path"), move=bool(d.get("move")))
+    except OSError as e: return jsonify(error=f"Upgrade failed: {e}"), 500
+    if err: return jsonify(error=err[0]), err[1]
+    try: detect_subs_one(c, fid)  # hand-edited subtitles stay as they are
+    except Exception: pass
+    return jsonify(r)
+
+@app.post("/api/films/<int:fid>/upgrade-file/subtitles")
+def upgrade_file_subtitles(fid):
+    """{file_id, old_path, paths}: rename the confirmed subtitle files named after the replaced file to match the new one."""
+    d = (request.json or {}) if request.is_json else {}
+    c = C()
+    try: fl = int(d.get("file_id"))
+    except (TypeError, ValueError): return jsonify(error="Bad request"), 400
+    done, errors = upgrademod.rename_sidecars(c, fid, fl, d.get("old_path"), d.get("paths") or [])
+    if done is None: return jsonify(error=errors[0]), 400
+    if done:
+        try: detect_subs_one(c, fid)
+        except Exception: pass
+    return jsonify(renamed=done, errors=errors)
+
 @app.post("/api/films/merge")
 def merge_films():
     c = C(); ids = request.json["ids"]; keep = ids[0]
@@ -1503,6 +1538,55 @@ def pick_folder():
     except Exception as e:
         return jsonify(path=None, error=f"No folder picker available ({e}); type the path instead")
     return jsonify(path=None, error="No folder picker available; type the path instead")
+
+# native file picker (video files) for Upgrade file; same approach as the folder picker
+PS_PICK_FILE = ("Add-Type -AssemblyName System.Windows.Forms;"
+                "$f=New-Object System.Windows.Forms.OpenFileDialog;$f.Title=$env:FT_PICK_TITLE;$f.Filter=$env:FT_PICK_FILTER;"
+                "if($env:FT_PICK_DIR -and (Test-Path -LiteralPath $env:FT_PICK_DIR)){$f.InitialDirectory=$env:FT_PICK_DIR};"
+                "$o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true};"
+                "if($f.ShowDialog($o) -eq 'OK'){[Console]::Out.Write($f.FileName)}")
+TK_PICK_FILE = r"""
+import sys, os
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except Exception:
+    sys.exit(3)
+try:
+    r = tk.Tk(); r.withdraw(); r.attributes('-topmost', True)
+    d = os.environ.get('FT_PICK_DIR') or None
+    p = filedialog.askopenfilename(parent=r, title='Choose the new video file', initialdir=d if d and os.path.isdir(d) else None)
+    r.destroy()
+except Exception:
+    sys.exit(3)
+sys.stdout.write(p or '')
+"""
+
+@app.post("/api/pick-file")
+def pick_file():
+    """Opens a native file chooser for a video file; returns {path: str|null}. {title, dir} optional."""
+    d = (request.json or {}) if request.is_json else {}
+    title = (d.get("title") or "Choose the new video file")
+    env_dir = str(d.get("dir") or "")
+    exts = ";".join("*" + e for e in sorted(db.VIDEO_EXT))
+    if os.name == "nt":
+        try:
+            env = os.environ.copy(); env.update(FT_PICK_TITLE=title[:80], FT_PICK_DIR=env_dir, FT_PICK_FILTER=f"Video files|{exts}|All files|*.*")
+            r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", PS_PICK_FILE], capture_output=True, timeout=600, env=env,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            path = r.stdout.decode("utf-8", "replace").strip()
+            return jsonify(path=os.path.normpath(path) if path else None)
+        except Exception as e:
+            return jsonify(path=None, error=f"No file picker available ({e}); type or paste the path instead")
+    try:
+        env = os.environ.copy(); env["FT_PICK_DIR"] = env_dir
+        r = subprocess.run([sys.executable, "-c", TK_PICK_FILE], capture_output=True, timeout=600, env=env)
+        if r.returncode == 0:
+            path = r.stdout.decode("utf-8", "replace").strip() or None
+            return jsonify(path=os.path.normpath(path) if path else None)
+    except Exception as e:
+        return jsonify(path=None, error=f"No file picker available ({e}); type or paste the path instead")
+    return jsonify(path=None, error="No file picker available; type or paste the path instead")
 
 # ---------- TMDB (optional) ----------
 def tmdb(path, key, **params):
