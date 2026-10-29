@@ -958,11 +958,13 @@ def _bd_person(c, name):
         if n == name and "birthday" in (r["edited_fields"] or ""): return False, True
     return False, False
 
-def cast_missing_birthdates(c, cast):
+def cast_missing_birthdates(c, cast, scene=False):
     """[{name, status}] for the cast (comma-separated) with no birth date. status: the birth-date lookup state
-    ('not_looked_up', 'not_found', 'no_birthday', 'ambiguous' = in review, 'reviewed_none', 'error', ...) or 'hand_edited'
-    (birth date cleared by hand: never looked up)."""
+    ('not_looked_up', 'not_found', 'no_birthday', 'ambiguous' = in review, 'reviewed_none', 'error', ...), 'hand_edited'
+    (birth date cleared by hand: never looked up), or for scenes 'title_as_name' (a title stored as a person: fix the cast)."""
+    import tpdb
     out, seen = [], set()
+    kp = known_performers(c) if scene else None
     for n in (cast or "").split(","):
         n = " ".join(n.split()); k = fold(n)
         if not n or k in seen: continue
@@ -971,6 +973,7 @@ def cast_missing_birthdates(c, cast):
         except sqlite3.OperationalError: has, hand = False, False  # no people table yet
         if has: continue
         st = "hand_edited" if hand else None
+        if not st and scene and tpdb.looks_like_title(n, kp): st = "title_as_name"
         if not st:
             try: r = c.execute("SELECT status FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone()
             except sqlite3.OperationalError: r = None
@@ -986,9 +989,12 @@ def export_queue(c, film_ids=None):
         tags = [dict(name=t["name"], category=t["category"], status=t["status"]) for t in c.execute(
             "SELECT t.name, t.category, ft.status FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=?", (r["id"],))]
         paths = [x["path"] for x in c.execute("SELECT path FROM files WHERE film_id=?", (r["id"],))]
+        miss = cast_missing_birthdates(c, r["cast_"], scene=r["kind"] == "scene")  # still without a birth date after the lookup
+        if r["kind"] == "scene" and not (r["cast_"] or "").strip():
+            miss.append(dict(name="(no performers listed)", status="no_cast"))  # unknown performers: never treated as all-adult
         out.append(dict(id=r["id"], title=r["title"], year=r["year"], path=paths[0] if paths else None,
                         paths=paths, director=r["director"], plot=r["plot"], existing_tags=tags, cast=r["cast_"],
-                        cast_missing_birthdate=cast_missing_birthdates(c, r["cast_"])))  # still without a birth date after the lookup
+                        cast_missing_birthdate=miss))
     return out
 
 def import_ai_tags(c, items, dequeue=True):

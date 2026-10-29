@@ -362,21 +362,26 @@ PRIO_SKIP = ("ambiguous", "reviewed_none", "skipped", "filled")  # already in re
 def queued_film_ids(c):
     return [r[0] for r in c.execute("SELECT film_id FROM smart_queue ORDER BY added_at")]
 
+RETRY_DAYS = 7  # not found / no exact date: tried again for queued films once the last try is this old
+
 def queue_todo(c, film_ids, retry=False):
     """[(name, mode)] to look up for these films' cast: never tried ('full'), tried before the fallback sites existed
-    ('recheck'), errors, and with retry=True also earlier not found / no exact date ('full' again)."""
+    ('recheck'), errors, not found / no exact date last tried more than RETRY_DAYS ago, and with retry=True every earlier
+    not found / no exact date ('full' again). Scene cast entries that are really a title ('Kelsey Kane Cum Inside Me')
+    are skipped: no site knows them (fix the cast; export-queue lists them as 'title_as_name')."""
     ensure(c)
     out, seen = [], set()
+    old = time.time() - RETRY_DAYS * 86400
     for fid in film_ids:
-        r = c.execute("SELECT cast_ FROM films WHERE id=?", (fid,)).fetchone()
-        for m in db.cast_missing_birthdates(c, r["cast_"] if r else ""):
+        r = c.execute("SELECT cast_, kind FROM films WHERE id=?", (fid,)).fetchone()
+        for m in db.cast_missing_birthdates(c, r["cast_"] if r else "", scene=bool(r) and r["kind"] == "scene"):
             k = db.fold(m["name"])
-            if k in seen or m["status"] in PRIO_SKIP or m["status"] == "hand_edited": continue
+            if k in seen or m["status"] in PRIO_SKIP or m["status"] in ("hand_edited", "title_as_name"): continue
             seen.add(k)
-            lk = c.execute("SELECT status, fb_at FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone()
+            lk = c.execute("SELECT status, fb_at, at FROM birthdate_lookup WHERE name_norm=?", (k,)).fetchone()
             if lk is None or lk["status"] == "error": out.append((m["name"], "full"))
             elif lk["status"] in FB_RETRY and lk["fb_at"] is None: out.append((m["name"], "recheck"))
-            elif retry: out.append((m["name"], "full"))
+            elif retry or (lk["status"] in ("not_found", "no_birthday") and (lk["at"] or 0) < old): out.append((m["name"], "full"))
     return out
 
 def queue_lookup(connect, film_ids=None, retry=False, sync=False, auto=False):

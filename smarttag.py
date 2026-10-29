@@ -3,11 +3,12 @@
 Typical use: export the queue, paste SMART_TAG_PROMPT.txt + the exported JSON into any AI chat,
 save its JSON reply to a file, then import it.
 
-  python smarttag.py export-queue [out.json] [--wait SECONDS] [--no-lookup]
+  python smarttag.py export-queue [out.json] [--wait SECONDS] [--no-lookup] [--retry]
                                                   write the smart-tag queue (default: smart_queue.json); first looks up
                                                   birth dates for queued films' cast that lack one (through the running app,
                                                   else here; waits up to 600 s) and lists per film who still lacks one
-                                                  ("cast_missing_birthdate")
+                                                  ("cast_missing_birthdate"); names not found before are tried again after
+                                                  7 days (--retry: now); a scene with no cast lists "(no performers listed)"
   python smarttag.py import-tags file.json        import AI tags -> pending approval in the app
   python smarttag.py status                       show queue / pending counts
   python smarttag.py clear-queue                  empty the queue
@@ -26,7 +27,7 @@ queue once their tags are imported (use --keep-queue to keep them).
 """
 import os, sys, json, time, db
 
-def lookup_birthdates(wait):
+def lookup_birthdates(wait, retry=False):
     """Birth dates for the queued films' cast before exporting: asks the running app (same database) so its rate limits
     and background job are shared; runs the lookup here when the app is not running."""
     import urllib.request
@@ -39,7 +40,7 @@ def lookup_birthdates(wait):
         rq = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(rq, timeout=15) as r: return json.loads(r.read().decode("utf-8"))
     try:
-        r = call("queue-lookup", {"retry": False}); st = lambda: call("status")["queued"]
+        r = call("queue-lookup", {"retry": retry}); st = lambda: call("status")["queued"]
         same = os.path.normcase(os.path.abspath(r.get("db_path") or db.DB_PATH)) == os.path.normcase(os.path.abspath(db.DB_PATH))
         if not same: raise OSError("the running app uses another database")
         print(f"Birth-date lookup (Film Tagger app on port {port}): {r.get('added', 0)} name(s) added")
@@ -49,10 +50,10 @@ def lookup_birthdates(wait):
         if not bd.enabled(): return
         c = db.connect(); bd.ensure(c); c.close()
         import threading
-        n = len(bd.queue_todo(db.connect(), bd.queued_film_ids(db.connect())))
+        n = len(bd.queue_todo(db.connect(), bd.queued_film_ids(db.connect()), retry))
         if not n: return
         print(f"Birth-date lookup (app not running, looking up here): {n} name(s)")
-        th = threading.Thread(target=bd.queue_lookup, args=(db.connect,), kwargs=dict(sync=True), daemon=True); th.start()
+        th = threading.Thread(target=bd.queue_lookup, args=(db.connect,), kwargs=dict(sync=True, retry=retry), daemon=True); th.start()
         st = lambda: dict(bd.PRIO, left=len(bd.PRIO["todo"]), running=th.is_alive())
     end, last = time.time() + wait, None
     while True:
@@ -67,6 +68,24 @@ def lookup_birthdates(wait):
     for x in q.get("results", [])[-q.get("done", 0):] if q.get("done") else []:
         if x.get("birthday"): print(f"  found: {x['name']} {x['birthday']} ({(x.get('source') or '').split(' ')[0]})")
 
+WHY = {"title_as_name": "a title stored as a person (fix the cast: python scenecast.py report)", "no_cast": "scenes with no performers listed",
+       "ambiguous": "in the birth-date review list", "not_found": "not found (tried again after 7 days, or now with --retry)",
+       "no_birthday": "no exact date found (tried again after 7 days, or now with --retry)", "hand_edited": "birth date cleared by hand",
+       "reviewed_none": "marked 'none' in review", "not_looked_up": "not looked up yet (lookup still running or off)", "error": "lookup errors"}
+
+def missing_summary(q):
+    """One line: how many queued films still have cast without a birth date, and why (by lookup status)."""
+    from collections import Counter
+    films = [f for f in q if f["cast_missing_birthdate"]]
+    if not films: return f"All {len(q)} queued film(s) have a birth date for every cast member."
+    st = Counter(); seen = set()
+    for f in films:
+        for m in f["cast_missing_birthdate"]:
+            k = (m["name"].casefold(), m["status"])
+            if k not in seen: seen.add(k); st[m["status"]] += 1
+    return f"{len(films)} of {len(q)} queued film(s) still have cast without a birth date: " + \
+        "; ".join(f"{n} {WHY.get(s, s)}" for s, n in st.most_common())
+
 def main(a):
     if not a or a[0] in ("-h", "--help"): print(__doc__); return 0
     c = db.connect(); cmd = a[0]
@@ -74,13 +93,14 @@ def main(a):
         pos = [x for i, x in enumerate(a[1:], 1) if not x.startswith("--") and a[i - 1] != "--wait"]
         out = pos[0] if pos else "smart_queue.json"
         wait = float(a[a.index("--wait") + 1]) if "--wait" in a else 600.0
-        if "--no-lookup" not in a and c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0]: lookup_birthdates(wait)
+        if "--no-lookup" not in a and c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0]: lookup_birthdates(wait, "--retry" in a)
         q = db.export_queue(c)
         with open(out, "w", encoding="utf-8") as f: json.dump(q, f, indent=2, ensure_ascii=False)
         print(f"Exported {len(q)} queued film(s) to {out} (database: {db.DB_PATH})")
         for f0 in q:
             if f0["cast_missing_birthdate"]:
                 print(f"  {f0['title']} ({f0['year'] or '?'}): no birth date for " + ", ".join(f"{m['name']} [{m['status']}]" for m in f0["cast_missing_birthdate"]))
+        print(missing_summary(q))
     elif cmd == "import-tags":
         if len(a) < 2: print("usage: smarttag.py import-tags file.json"); return 2
         with open(a[1], encoding="utf-8-sig") as f: data = json.load(f)
