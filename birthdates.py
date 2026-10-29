@@ -484,7 +484,7 @@ def init(app, connect, tmdb):
         d = request.get_json(silent=True) or {}
         if not enabled(): return jsonify(added=0, note="offline (test database)")
         n = queue_lookup(connect, d.get("film_ids"), retry=bool(d.get("retry", True)))
-        return jsonify(added=n, running=PRIO["running"], left=len(PRIO["todo"]))
+        return jsonify(added=n, running=PRIO["running"], left=len(PRIO["todo"]), db_path=db.DB_PATH)
 
     @app.post("/api/birthdates/stop")
     def bd_stop():
