@@ -43,6 +43,7 @@ def lookup_birthdates(wait):
         same = os.path.normcase(os.path.abspath(r.get("db_path") or db.DB_PATH)) == os.path.normcase(os.path.abspath(db.DB_PATH))
         if not same: raise OSError("the running app uses another database")
         print(f"Birth-date lookup (Film Tagger app on port {port}): {r.get('added', 0)} name(s) added")
+        if not r.get("added") and not r.get("running"): return
     except (OSError, ValueError):
         import birthdates as bd
         if not bd.enabled(): return
