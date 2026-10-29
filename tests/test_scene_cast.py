@@ -112,6 +112,12 @@ class Library(unittest.TestCase):
         self.assertEqual(c.execute("SELECT cast_ FROM films WHERE id=?", (u,)).fetchone()[0], "Snoopy Stepdaddy Summer Renee")
         self.assertEqual(r["removed_lookups"], 2)
         self.assertEqual(scenecast.apply_plan(c, [pa])["skipped"], [a])  # cast changed since the plan: skipped
+        # a date in the file name fills an empty release date (birth-date checks compare it with career years)
+        d = self.add_scene(r"D:\Porn Scenes\Family Strokes\familystrokes.18.03.01.kelsey.kane.cum.inside.me.mp4", "familystrokes 18 03 01 kelsey kane cum inside me")
+        pd = scenecast.propose(c, scenecast.scene_rows(c, {d})[0], k)
+        self.assertEqual((pd["confident"], pd["new"], pd["date"]), (True, ["Kelsey Kane"], "2018-03-01"))
+        self.assertEqual(scenecast.apply_plan(c, [pd])["dated"], [d])
+        self.assertEqual(tuple(c.execute("SELECT release_date, year FROM films WHERE id=?", (d,)).fetchone()), ("2018-03-01", 2018))
 
     def test_queue_lookup_retries_stale(self):
         c = self.c

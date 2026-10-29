@@ -12,7 +12,8 @@ Uncertain scenes are left unchanged for review. Hand-edited casts are never touc
   python scenecast.py report [--ids 1,2]                       count title-as-person cast entries (read-only)
   python scenecast.py plan out.json [--ids 1,2] [--tpdb] [--cache cands.json]
                                                                proposals (read-only); --tpdb asks ThePornDB for candidates
-  python scenecast.py apply plan.json                          apply the confident proposals in a plan
+  python scenecast.py apply plan.json                          apply the confident proposals in a plan (also fills an empty
+                                                               release date from a date in the file name)
 """
 import json, os, re, sys, time
 import db, tpdb
@@ -65,6 +66,7 @@ def propose(c, r, kp, cands=None):
             for n in x.get("performers") or []:
                 if tpdb.nrm(n) not in k2.map: k2.add(n); confirmed.add(n)
     n = tpdb.parse_name(r["path"], k2)
+    out["date"] = n.get("date")  # filled in when the scene has none (birth-date checks compare it with career years)
     rest = n.get("title") or ""
     perf, left = tpdb.split_performers(rest, k2) if rest else (n["performers"], [])
     perf = n["performers"]
@@ -86,13 +88,17 @@ def still_used(c, name):
 def apply_plan(c, plan):
     """Apply confident proposals: the cast becomes the real performers (existing people's spelling); hand-edited casts and
     changed rows are skipped. Junk names nobody credits any more lose their lookup row and their empty people row."""
-    done, skipped, removed_people, removed_lookups = [], [], 0, 0
+    done, skipped, dated, removed_people, removed_lookups = [], [], [], 0, 0
     for p in plan:
         if not p.get("confident") or not p.get("new"): continue
-        r = c.execute("SELECT cast_, edited_fields, tpdb_id FROM films WHERE id=?", (p["film_id"],)).fetchone()
-        if not r or "cast_" in json.loads(r["edited_fields"] or "[]") or r["tpdb_id"] or split_cast(r["cast_"]) != p["old"]:
+        r = c.execute("SELECT cast_, edited_fields, tpdb_id, release_date, year FROM films WHERE id=?", (p["film_id"],)).fetchone()
+        ed = set(json.loads(r["edited_fields"] or "[]")) if r else set()
+        if not r or "cast_" in ed or r["tpdb_id"] or split_cast(r["cast_"]) != p["old"]:
             skipped.append(p["film_id"]); continue
         c.execute("UPDATE films SET cast_=?, updated_at=? WHERE id=?", (", ".join(p["new"]), time.time(), p["film_id"]))
+        if p.get("date") and not (r["release_date"] or "").strip() and not ed & {"release_date", "year"}:  # like a new scan would
+            c.execute("UPDATE films SET release_date=?, year=COALESCE(year, ?) WHERE id=?", (p["date"], int(p["date"][:4]), p["film_id"]))
+            dated.append(p["film_id"])
         done.append(p["film_id"])
         for name in p["old"]:
             if db.fold(name) in {db.fold(x) for x in p["new"]} or still_used(c, name): continue
@@ -102,7 +108,7 @@ def apply_plan(c, plan):
                                         "AND tpdb_performer_id IS NULL AND COALESCE(tmdb_person_id,0)<=0 AND merged_into IS NULL "
                                         "AND NOT EXISTS (SELECT 1 FROM people q WHERE q.merged_into=people.id)", (k,)).rowcount
     c.commit()
-    return dict(fixed=done, skipped=skipped, removed_people=removed_people, removed_lookups=removed_lookups)
+    return dict(fixed=done, skipped=skipped, dated=dated, removed_people=removed_people, removed_lookups=removed_lookups)
 
 def main(a):
     if not a or a[0] in ("-h", "--help"): print(__doc__); return 0
