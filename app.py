@@ -1100,13 +1100,15 @@ def bulk_delete():
 def excluded_list():
     c = C(); sr = db.scene_roots(c)
     rows = c.execute("SELECT id, path, size, title, kind, removed_at, oshash IS NOT NULL hashed, studio, cast_ FROM excluded").fetchall()
-    return jsonify(items=sort_excluded([excluded_item(dict(r), sr) for r in rows]))
+    kp = db.known_performers(c)
+    return jsonify(items=sort_excluded([excluded_item(dict(r), sr, kp) for r in rows]))
 
-def excluded_item(r, sr):
-    """Studio and performers: stored at removal, else from the <Studio> folder / file name (scene roots only)."""
+def excluded_item(r, sr, kp=None):
+    """Studio and performers: stored at removal, else from the <Studio> folder / file name (scene roots only; names known
+    in the library, never the whole file name as one person)."""
     import tpdb
     in_scenes = any(db.under(r["path"], x) for x in sr)
-    n = tpdb.parse_name(r["path"]) if in_scenes else {}
+    n = tpdb.parse_name(r["path"], kp) if in_scenes else {}
     st = (r.get("studio") or "").strip() or (db.folder_studio(r["path"], sr) if in_scenes else None) or n.get("studio") or ""
     if st.startswith("_"): st = ""  # '_No Studio' / '_Duplicates' folders are not studios
     perf = [x.strip() for x in (r.get("cast_") or "").split(",") if x.strip()] or n.get("performers") or []

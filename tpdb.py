@@ -20,8 +20,11 @@ def _date(s):
         if 1 <= int(mo) <= 12 and 1 <= int(d) <= 31: return f"{y}-{mo}-{d}", m
     return None, None
 
-def parse_name(path):
-    """-> dict(studio, date, performers[list], title). Missing parts are None/[]."""
+def parse_name(path, known=None):
+    """-> dict(studio, date, performers[list], title). Missing parts are None/[].
+    'Studio - Date - Performers - Title' names are split on ' - '. Any other name ('StudioName Title Words Jane Doe') is only
+    split into performers with `known` (KnownPerformers or None): names already in the library, never the whole text, so a
+    title is never stored as a person. Without `known`, a bare 2-3 word name ('BrattySis Lya Cutie') is still a performer."""
     segs = re.split(r"[\\/]", path or "")
     stem = os.path.splitext(segs[-1])[0]
     parent = segs[-2] if len(segs) > 1 else ""
@@ -37,18 +40,94 @@ def parse_name(path):
         if len(rest) >= 2: out["performers"] = [x.strip() for x in re.split(r",|&| and ", rest[1]) if x.strip()]
         if len(rest) >= 3: out["title"] = " - ".join(rest[2:])
         return out
-    s = re.sub(r"[._]+", " ", stem)
-    d, m = _date(s)
-    if m: out["date"] = d; s = s[:m.start()] + " " + s[m.end():]
-    s = re.sub(r"\s+", " ", JUNK.sub(" ", s)).strip()
-    toks = s.split(" ")
-    if toks and re.search(r"[a-z][A-Z]", toks[0]):  # 'BeautyAndTheSenior Nikky Thorne'
-        out["studio"] = camel_split(toks[0]); toks = toks[1:]
-    elif parent and parent.lower() not in ("", "porn scenes"):
-        out["studio"] = parent
-    name = " ".join(toks).strip()
-    if name: out["performers"] = [x.strip() for x in re.split(r",|&| and ", name) if x.strip()]
+    d, m = _date(stem)  # before dots become spaces: 'familystrokes.18.03.01.jade.amber'
+    s = stem[:m.start()] + " " + stem[m.end():] if m else stem
+    if m: out["date"] = d
+    s = re.sub(r"\s+", " ", JUNK.sub(" ", re.sub(r"[._]+", " ", s))).strip(" -")
+    folder = parent if parent and parent.lower() not in ("porn scenes",) and not parent.startswith("_") else None
+    studio, rest = split_studio(s, folder)
+    if studio and rest == s and not re.search(r"[a-z][A-Z]", s.split(" ")[0] if s else ""):
+        rest = s  # folder name used as the studio, nothing stripped from the text
+    out["studio"] = studio
+    rest = rest.strip(" -")
+    out["performers"], left = split_performers(rest, known)
+    if rest and (not out["performers"] or left): out["title"] = rest  # names only: the title is made from the performers
     return out
+
+TITLE_WORDS = set("""a an and the of in on at to for with from by my me you your our his her him it its is are be am i we us they them this that
+all not no yes up down out off over into onto too so oh ok okay please just new first last big little lil hot sexy naughty dirty nasty
+step stepmom stepdad stepsis stepsister stepbro stepbrother stepdaughter stepson stepdaddy stepmother stepfather mom mommy moms mother
+dad daddy dads father sis sister bro brother son daughter aunt uncle family friend friends wife husband girlfriend boyfriend teacher
+student nurse doctor boss maid babysitter neighbor roommate roommates cum cums cumming creampie creampies inside fill fuck fucks fucking
+fucked sex threesome foursome orgy lesbian lesbians anal oral blowjob squirt squirting teen milf pov part scene vol episode story
+date love loves lover want wants need needs help let lets can can't don't won't i'm it's you're make makes take takes get gets got
+give gives keep watch watching caught home house room bed bedroom bath shower kitchen office school college party night day morning
+time christmas halloween easter birthday holiday special secret surprise lesson lessons game games""".split())
+
+def split_performers(text, known=None):
+    """Performer names in free filename text -> (performers, leftover words). With `known` (KnownPerformers), the longest
+    known names (2-4 words, aliases too) are taken left to right and everything else is title. Without it, the text is
+    one performer (also when no known name is found) only when it is a bare 2-3 word capitalised name with no title words."""
+    text = (text or "").strip()
+    if not text: return [], []
+    segs = [x.strip() for x in re.split(r",|&| and ", text) if x.strip()]
+    bare = (segs, []) if all(_bare_name(x) for x in segs) else ([], text.split())
+    if known is None: return bare
+    w = text.replace(",", " ").replace("&", " ").split()
+    out, left, i = [], [], 0
+    while i < len(w):
+        for n in (4, 3, 2):
+            name = known.get(" ".join(w[i:i + n])) if i + n <= len(w) else None
+            if name:
+                if name not in out: out.append(name)
+                i += n; break
+        else:
+            left.append(w[i]); i += 1
+    if not out and bare[0]: return bare  # nothing known: a bare name ('Lya Cutie') is still that one performer
+    return out, left
+
+def _bare_name(s):
+    ws = s.split()
+    return 2 <= len(ws) <= 3 and all(re.fullmatch(r"[A-Z][a-zA-Z'\-]*", x) for x in ws) and not any(x.lower().strip("'") in TITLE_WORDS for x in ws)
+
+class KnownPerformers:
+    """fold/alnum name -> display name for performers already in the library (see db.known_performers)."""
+    def __init__(self, names=(), aliases=None, first_names=None, title_vocab=None):
+        self.map = {}
+        for n in names: self.add(n)
+        for a, n in (aliases or {}).items(): self.add(a, n)
+        self.first = {nrm(x) for x in (first_names if first_names is not None else [n.split()[0] for n in names if n.split()])}
+        self.vocab = set(title_vocab or ()) | TITLE_WORDS
+    def add(self, name, display=None):
+        if len(name.split()) >= 2 and nrm(name): self.map.setdefault(nrm(name), display or name)
+    def get(self, text): return self.map.get(nrm(text))
+    def __len__(self): return len(self.map)
+    def name_like(self, words):
+        """Leftover words that could be part of an unknown performer's name: a known performer first name, or a word never
+        seen in a title (scene or film titles in the library, or common title words)."""
+        out = []
+        for x in words:
+            k = x.lower().strip("'.!?,")
+            if not k or re.fullmatch(r"\d+", k) or k in TITLE_WORDS: continue
+            if nrm(k) in self.first or k not in self.vocab: out.append(x)
+        return out
+    def title_only(self, words):
+        """True when leftover words are plainly title words (nothing that could be an unknown performer)."""
+        return not self.name_like(words)
+
+def looks_like_title(name, known=None):
+    """True for a cast entry that is really a title / whole file name stored as a person: digits, 4+ words, a known
+    performer's name plus other words, or title words ('Cum Inside Me')."""
+    n = " ".join((name or "").split())
+    if not n: return False
+    if known is not None and known.get(n): return False
+    ws = n.split()
+    if re.search(r"\d", n) or len(ws) >= 4 or re.search(r"[-_]\w+[-_]", n): return True
+    if known is not None and len(ws) >= 3:
+        p, left = split_performers(n, known)
+        if p and left: return True
+    return len(ws) >= 2 and sum(1 for x in ws if x.lower().strip("'") in TITLE_WORDS) >= 1 and not _bare_name(n) and \
+        any(x.lower() in {"cum", "creampie", "daddy", "mommy", "fuck", "me", "my", "your", "inside", "threesome", "scene", "part", "audition", "test"} for x in ws)
 
 def default_title(p):
     return p.get("title") or (" & ".join(p["performers"]) if p.get("performers") else None)

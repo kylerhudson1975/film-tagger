@@ -509,10 +509,48 @@ def under(path, root):
     p, r = os.path.normcase(path), os.path.normcase(root.rstrip("\\/"))
     return p.startswith(r) and len(p) > len(r) and p[len(r)] in "\\/"
 
+_KP = {"key": None, "kp": None}
+
+def known_performers(c):
+    """tpdb.KnownPerformers for splitting scene file names: performers credited on ThePornDB-matched scenes, hand-edited
+    scene casts and adult films, people with a ThePornDB profile, their multi-word aliases and merged names (-> the
+    main name). Title words come from matched scene titles and film titles. Cached until people or matched scenes change."""
+    import tpdb
+    try:
+        key = tuple(c.execute("SELECT COUNT(*), MAX(id), SUM(LENGTH(COALESCE(aliases,''))), SUM(COALESCE(merged_into,0)) FROM people").fetchone()) + \
+              tuple(c.execute("SELECT COUNT(*), MAX(updated_at) FROM films WHERE kind='scene' AND COALESCE(tpdb_id,'')<>''").fetchone())
+    except sqlite3.Error: return tpdb.KnownPerformers()
+    if _KP["key"] == key: return _KP["kp"]
+    names, vocab = {}, set()
+    for r in c.execute("SELECT cast_, title, kind, tpdb_id, edited_fields, primary_genre FROM films WHERE (kind='scene' AND (COALESCE(tpdb_id,'')<>'' "
+                       "OR edited_fields LIKE '%cast_%')) OR (COALESCE(kind,'')<>'scene' AND primary_genre IN ('Hardcore','Softcore'))"):
+        for n in (r["cast_"] or "").split(","):
+            n = " ".join(n.split())
+            if 2 <= len(n.split()) <= 4 and not re.search(r"\d", n): names.setdefault(fold(n), n)
+        if r["kind"] == "scene" and r["tpdb_id"]: vocab |= {w.lower() for w in re.findall(r"[A-Za-z']+", r["title"] or "")}
+    for (t,) in c.execute("SELECT title FROM films WHERE COALESCE(kind,'')<>'scene'"):  # film titles: everyday title words
+        vocab |= {w.lower() for w in re.findall(r"[A-Za-z']+", t or "")}
+    for r in c.execute("SELECT name FROM people WHERE tpdb_performer_id IS NOT NULL AND merged_into IS NULL"):
+        n = " ".join(r[0].split())
+        if len(n.split()) >= 2: names.setdefault(fold(n), n)
+    aliases = {}
+    for r in c.execute("SELECT p.name, p.aliases, p.merged_into, t.name AS main FROM people p LEFT JOIN people t ON t.id=p.merged_into "
+                       "WHERE p.aliases IS NOT NULL OR p.merged_into IS NOT NULL"):
+        main = " ".join((r["main"] or r["name"]).split())
+        if fold(main) not in names and fold(r["name"]) not in names: continue
+        if r["main"]: aliases[r["name"]] = main
+        try: al = json.loads(r["aliases"] or "[]")
+        except ValueError: al = []
+        for a in al if isinstance(al, list) else []:
+            if isinstance(a, str) and len(a.split()) >= 2 and not re.search(r"\d", a): aliases[a] = main
+    kp = tpdb.KnownPerformers(list(names.values()), aliases, title_vocab=vocab)
+    _KP.update(key=key, kp=kp)
+    return kp
+
 def new_scene(c, p, size, root, now):
     """Insert a scene found in a scenes library, prefilled from its filename (studio/date/performers/title)."""
     import tpdb
-    n = tpdb.parse_name(p)
+    n = tpdb.parse_name(p, known_performers(c))  # only names already known: never the whole title as a person
     t = tpdb.default_title(n) or os.path.splitext(os.path.basename(p))[0]
     cur = c.execute("INSERT INTO films(title,year,release_date,studio,cast_,storage,kind,primary_genre,added_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (t, int(n["date"][:4]) if n["date"] else None, n["date"], canon_studio(n["studio"] or folder_studio(p, scene_roots(c)), c), ", ".join(n["performers"]) or None,
@@ -586,7 +624,7 @@ def promote_to_scene(c, film_id, path):
     if f["kind"] != "scene": sets["kind"] = "scene"
     if not f["tpdb_id"]:
         import tpdb
-        n = tpdb.parse_name(path)
+        n = tpdb.parse_name(path, known_performers(c))
         title = tpdb.default_title(n)
         if title and "title" not in edited and _auto_film_title(path, f["title"]): sets["title"] = title
         if n.get("date") and "release_date" not in edited and not (f["release_date"] or "").strip():

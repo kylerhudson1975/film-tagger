@@ -14,9 +14,10 @@ class ExcludedSort(unittest.TestCase):
         add(os.path.join(root, "Perv Mom", "Perv Mom - 2023-01-02 - Ada A - Y.mp4"), 2)
         add("/elsewhere/movie.mkv", 9); add(os.path.join(root, "_No Studio", "Ryan Conner Skylar Snow.mp4"), 8)                                                      # no studio -> last
         add("/x/a.mp4", 3, "Angels Love", "Bea B, Cy C"); add("/x/b.mp4", 5, "Angels Love", "Bea B")  # stored; newest first on tie
+        c.execute("INSERT INTO films(title,kind,tpdb_id,cast_) VALUES('Known','scene','t1','Ryan Conner, Skylar Snow')")  # known performers
         c.commit()
         items = A.app.test_client().get("/api/excluded").get_json()["items"]
         self.assertEqual([(x["studio"], x["performers"][:1], x["removed_at"]) for x in items],
-                         [("Angels Love", ["Bea B"], 5), ("Angels Love", ["Bea B"], 3), ("Perv Mom", ["Ada A"], 2), ("Perv Mom", ["Zoe Z"], 1), ("", ["Ryan Conner Skylar Snow"], 8), ("", [], 9)])
+                         [("Angels Love", ["Bea B"], 5), ("Angels Love", ["Bea B"], 3), ("Perv Mom", ["Ada A"], 2), ("Perv Mom", ["Zoe Z"], 1), ("", ["Ryan Conner"], 8), ("", [], 9)])
 
 if __name__ == "__main__": unittest.main()
