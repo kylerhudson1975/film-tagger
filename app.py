@@ -61,6 +61,16 @@ def split_list(v):
     if isinstance(v, list): return [x.strip() for x in v if x and x.strip()]
     return [x.strip() for x in v.split(",") if x.strip()]
 
+def lib_clause(c, lib, col):
+    """SQL '<col> IN (films with a file under library folder lib)' + args: the one folder match used by the film list
+    (?lib=) and the tag counts. All scene roots count as one 'Porn Scenes' library (db.lib_prefixes)."""
+    likes, args = [], []
+    for pre in db.lib_prefixes(c, lib):
+        esc_ = pre.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        likes += ["LOWER(path) LIKE ? ESCAPE '\\'", "LOWER(path) LIKE ? ESCAPE '\\'"]; args += [esc_ + "\\\\%", esc_ + "/%"]
+    if not likes: return "0", []
+    return f"{col} IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")", args
+
 def build_query(q):
     where, args = [], []
     T = "SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND tag_norm(t.name)=tag_norm(?)"
@@ -125,11 +135,7 @@ def build_query(q):
         where.append("(" + parts[0] + ")"); args += args_mp
     lib = (q.get("lib") or "").strip().rstrip("\\/")
     if lib:
-        likes = []
-        for pre in db.lib_prefixes(C(), lib):  # all scene roots count as one 'Porn Scenes' library
-            esc_ = pre.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            likes += ["LOWER(path) LIKE ? ESCAPE '\\'", "LOWER(path) LIKE ? ESCAPE '\\'"]; args += [esc_ + "\\\\%", esc_ + "/%"]
-        where.append("f.id IN (SELECT film_id FROM files WHERE " + " OR ".join(likes) + ")")
+        lw, la = lib_clause(C(), lib, "f.id"); where.append(lw); args += la
     if q.get("nompaa") in ("1", 1): where.append("f.tmdb_id IS NOT NULL AND COALESCE(f.mpaa,'')=''")
     if q.get("needs_tmdb") in ("1", 1): where.append("f.tmdb_status='needs_match'")
     if q.get("soft_match") in ("1", 1):  # matched scenes whose file is not renamed yet (orange flag)
@@ -960,8 +966,15 @@ def merge_films():
 @app.get("/api/tags")
 def list_tags():
     c = C()
-    rows = c.execute("SELECT t.id, t.name, t.category, (SELECT COUNT(*) FROM film_tags ft WHERE ft.tag_id=t.id AND ft.status='approved') n FROM tags t ORDER BY t.category IS NULL, t.category, t.name COLLATE FOLD")
-    return jsonify([dict(r) for r in rows])
+    rows = [dict(r) for r in c.execute("SELECT t.id, t.name, t.category, (SELECT COUNT(*) FROM film_tags ft WHERE ft.tag_id=t.id AND ft.status='approved') n FROM tags t ORDER BY t.category IS NULL, t.category, t.name COLLATE FOLD")]
+    lib = (request.args.get("lib") or "").strip().rstrip("\\/")
+    if lib:  # ?lib=: n = approved titles in that library folder, exactly what /api/films?lib=&all=<tag> returns (same folder
+        # match; spelling variants that tag_norm folds together count as one tag, like the film list's tag filter); n_all = whole library
+        lw, la = lib_clause(c, lib, "ft.film_id")
+        cnt = dict(c.execute(f"SELECT tag_norm(t.name) k, COUNT(DISTINCT ft.film_id) FROM film_tags ft JOIN tags t ON t.id=ft.tag_id JOIN films f ON f.id=ft.film_id WHERE ft.status='approved' AND {lw} GROUP BY k", la).fetchall())
+        key = dict(c.execute("SELECT id, tag_norm(name) FROM tags").fetchall())
+        for r in rows: r["n_all"] = r["n"]; r["n"] = cnt.get(key.get(r["id"]), 0)
+    return jsonify(rows)
 
 @app.put("/api/tags/<int:tid>")
 def edit_tag(tid):

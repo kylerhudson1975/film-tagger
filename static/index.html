@@ -324,7 +324,7 @@ window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.rest
  else if(q.in=='studios'){S.page=null;dashNav(false);await stList();$('content').scrollTop=q.scroll||0}
  else{S.page=null;const j=await api('/api/films?'+params({limit:Math.max(300,q.n||0),offset:0}));S.films=j.films;S.total=j.total;await searchPeople();render();personHeader();$('content').scrollTop=q.scroll||0}
  if(q.film)await openFilm(q.film);else closeM()}finally{S.restoring=false}});
-async function load(keep){keep=keep===true;if(S.tagGroups)renderTagCloud();if(keep&&S.page)return S.page=="dash"?showDash({keep:true,nohist:true}):String(S.page).startsWith("co:")?showCo(CO.ids,{keep:true,nohist:true}):String(S.page).startsWith("studio:")?showStudio(String(S.page).slice(7),{keep:true,nohist:true,lib:S.stLib||''}):showPerson(S.pageId,{keep:true,nohist:true});S.page=null;dashNav(false);if(!keep)histSave();if($('f_in').value=='studios')return stList(keep);const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
+async function load(keep){keep=keep===true;if(S.tagGroups)renderTagCloud();if(($('f_lib').value||'')!==(S.tagScopeLib||''))loadTagScope().then(()=>{if(S.tagGroups)renderTagCloud()});if(keep&&S.page)return S.page=="dash"?showDash({keep:true,nohist:true}):String(S.page).startsWith("co:")?showCo(CO.ids,{keep:true,nohist:true}):String(S.page).startsWith("studio:")?showStudio(String(S.page).slice(7),{keep:true,nohist:true,lib:S.stLib||''}):showPerson(S.pageId,{keep:true,nohist:true});S.page=null;dashNav(false);if(!keep)histSave();if($('f_in').value=='studios')return stList(keep);const st=$('content').scrollTop;const j=$('f_in').value=='people'?{films:[],total:0}:await api('/api/films?'+params({limit:keep?Math.max(300,S.films.length):300,offset:0}));await searchPeople();S.films=j.films;S.total=j.total;render();$('content').scrollTop=keep?st:0;personHeader()}
 function reload(){return load(true)}
 const ROLES={director:['director','Director'],cast:['actor','Cast'],writer:['writer','Writers'],producer:['producer','Producers'],cinematographer:['cinematographer','Cinematography'],composer:['composer','Music']};
 const PF=[['director','director'],['cast_','cast'],['writers','writer'],['producers','producer'],['cinematographer','cinematographer'],['composer','composer']];
@@ -431,7 +431,7 @@ async function refreshMeta(){loadPGenres();loadCountries();loadStudios();loadDec
  $('stats').textContent=`${st.films.toLocaleString()} films · ${tags.length} tags`;
  $('pendBtn').textContent=`AI review (${st.pending})`;$('queueBtn').textContent=`Queue (${st.queue})`;$('pendBtn').classList.toggle('pri',st.pending>0);
  let g={};tags.forEach(t=>(g[t.category||'Uncategorized']??=[]).push(t));
- S.tagGroups=g;renderTagCloud();
+ S.tagGroups=g;await loadTagScope();renderTagCloud();
  $('saved').innerHTML=ss.map(s=>`<div class=ss><a onclick='applySearch(${JSON.stringify(s.query).replace(/'/g,"&#39;")})'>${esc(s.name)}</a><x style="cursor:pointer" onclick="api('/api/searches/${s.id}',{method:'DELETE'}).then(refreshMeta)">×</x></div>`).join('')||'none'}
 const TC_KEY='ft.collapsedCats';
 function tcCollapsed(){try{return new Set(JSON.parse(localStorage.getItem(TC_KEY)||'[]'))}catch(e){return new Set()}}
@@ -439,11 +439,15 @@ function tcSave(s){try{localStorage.setItem(TC_KEY,JSON.stringify([...s]))}catch
 function tcSelected(){const s=new Set();['all','any','none'].forEach(k=>{const el=$('f_'+k);if(el)el.value.split(',').map(x=>x.trim().toLowerCase()).filter(Boolean).forEach(x=>s.add(x))});return s}
 function toggleCat(c){const s=tcCollapsed();s.has(c)?s.delete(c):s.add(c);tcSave(s);renderTagCloud()}
 function setAllCats(collapse){tcSave(collapse?new Set(Object.keys(S.tagGroups||{})):new Set());renderTagCloud()}
-function renderTagCloud(){const g=S.tagGroups||{},col=tcCollapsed(),sel=tcSelected();
+/* Tag counts follow the library folder: S.tagScope = {tag id: approved titles in $('f_lib')} (null = All libraries) */
+async function loadTagScope(){const lib=$('f_lib').value||'';if(!lib){S.tagScope=null;S.tagScopeLib='';return}
+ try{const j=await api('/api/tags?'+new URLSearchParams({lib}));if(($('f_lib').value||'')!==lib)return;S.tagScope=Object.fromEntries(j.map(t=>[t.id,t.n]));S.tagScopeLib=lib}catch(e){}}
+function renderTagCloud(){const sc=S.tagScope&&S.tagScopeLib===($('f_lib').value||'')?S.tagScope:null,col=tcCollapsed(),sel=tcSelected(),tn=t=>sc?(sc[t.id]||0):t.n;
+ const g=sc?Object.fromEntries(Object.entries(S.tagGroups||{}).map(([c,ts])=>[c,ts.filter(t=>tn(t)>0||sel.has(t.name.toLowerCase()))]).filter(([c,ts])=>ts.length)):(S.tagGroups||{});
  const ctl=`<div class=muted style="font-size:11px;margin:2px 0"><a href="#" onclick="setAllCats(false);return false">Expand all</a> · <a href="#" onclick="setAllCats(true);return false">Collapse all</a></div>`;
  $('tagcloud').innerHTML=ctl+Object.entries(g).map(([c,ts])=>{const shut=col.has(c),vis=shut?ts.filter(t=>sel.has(t.name.toLowerCase())):ts;
-  return `<div class="muted cathead" style="margin-top:6px;cursor:pointer;user-select:none" title="Click to ${shut?'expand':'collapse'}" onclick="toggleCat('${jsq(c)}')"><span style="display:inline-block;width:1em">${shut?'▸':'▾'}</span>${esc(c)} <span style="font-size:11px">(${ts.length})</span></div>`
-  +vis.map(t=>`<span class=tag${sel.has(t.name.toLowerCase())?' style="outline:1px solid var(--a)"':''} onclick="addF(event,'${esc(t.name).replace(/'/g,"\\'")}')">${esc(t.name)} <span class=c>${t.n}</span></span>`).join('')}).join('')}
+  return `<div class="muted cathead" style="margin-top:6px;cursor:pointer;user-select:none" title="Click to ${shut?'expand':'collapse'}" onclick="toggleCat('${jsq(c)}')"><span style="display:inline-block;width:1em">${shut?'▸':'▾'}</span>${esc(c)} <span style="font-size:11px">(${sc?ts.filter(t=>tn(t)>0).length:ts.length})</span></div>`
+  +vis.map(t=>`<span class=tag${sel.has(t.name.toLowerCase())?' style="outline:1px solid var(--a)'+(tn(t)?'':';opacity:.5')+'"':''}${sc?` title="${tn(t)} in this folder · ${t.n} in all libraries"`:''} onclick="addF(event,'${esc(t.name).replace(/'/g,"\\'")}')">${esc(t.name)} <span class=c>${tn(t)}</span></span>`).join('')}).join('')}
 function addF(e,name){const el=$(e.shiftKey?'f_none':'f_all'),ot=$(e.shiftKey?'f_all':'f_none'),lc=name.toLowerCase(),sp=v=>v.split(',').map(s=>s.trim()).filter(Boolean);let l=sp(el.value);const on=l.some(x=>x.toLowerCase()==lc);const o=sp(ot.value),inO=o.some(x=>x.toLowerCase()==lc);if(inO)ot.value=o.filter(x=>x.toLowerCase()!=lc).join(', ');if(on&&!inO)l=l.filter(x=>x.toLowerCase()!=lc);else if(!on)l.push(name);el.value=l.join(', ');renderTagCloud();load()}
 /* Home's reset: empty search, no filters, Search in: Everything, all libraries, title order (also used by Dashboard + startup) */
 function resetSearch(){closeM();$('libPop').classList.remove('open');$('ctx').style.display='none';
