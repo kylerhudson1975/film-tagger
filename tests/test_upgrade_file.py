@@ -130,4 +130,15 @@ res, err = upgrade.apply(c, fa, fb, nb, move=True, recycler=fake_recycle)
 assert not err, err
 assert res["path"] == b and os.path.exists(b) and not os.path.exists(nb) and upgrade.probe(b)["resolution"] == "1080p"
 assert sorted(r[0] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fa,))) == sorted([a, b])
+# ---- Recycle Bin switched off ('Don't move files to the Recycle Bin', policy, too big): never treated as recyclable ----
+reg = {}
+real_reg = upgrade._reg; upgrade._reg = lambda h, k, n: reg.get((h, k, n))
+vol = upgrade._BB + "\\Volume\\{abc}"
+assert upgrade._bin_off("{abc}") is None
+reg[("HKCU", vol, "NukeOnDelete")] = 1; assert "turned off" in upgrade._bin_off("{abc}")
+reg.clear(); reg[("HKCU", upgrade._BB, "NukeOnDelete")] = 1; assert "turned off" in upgrade._bin_off(None)
+reg[("HKCU", vol, "NukeOnDelete")] = 0; assert upgrade._bin_off("{abc}") is None  # the drive's own setting wins
+reg[("HKCU", vol, "MaxCapacity")] = 1; assert "bigger" in upgrade._bin_off("{abc}", 2 * 1024 * 1024) and upgrade._bin_off("{abc}", 1000) is None
+reg[("HKLM", upgrade._POL, "NoRecycleFiles")] = 1; assert "policy" in upgrade._bin_off("{abc}")
+upgrade._reg = real_reg
 print("OK test_upgrade_file")

@@ -96,6 +96,43 @@ def recycle_problem(path):
     if t == 2: return "Removable drives have no Recycle Bin"
     if t == 4: return "Network drives have no Recycle Bin"
     if t not in (3,): return "This drive has no Recycle Bin"
+    try: size = os.path.getsize(path)
+    except OSError: size = None
+    return _bin_off(_volume_guid(root), size)
+
+# Windows silently deletes for good (even when asked to recycle) when the Recycle Bin is switched off for the drive
+# ('Don't move files to the Recycle Bin'), by policy, or when the file is bigger than the drive's bin. Checked first.
+_BB = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket"
+_POL = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+
+def _reg(hive, key, name):
+    """A registry value (hive 'HKCU' or 'HKLM') or None."""
+    try:
+        import winreg
+        with winreg.OpenKey(getattr(winreg, "HKEY_CURRENT_USER" if hive == "HKCU" else "HKEY_LOCAL_MACHINE"), key) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except (OSError, ImportError): return None
+
+def _volume_guid(root):
+    try:
+        import ctypes, re
+        buf = ctypes.create_unicode_buffer(100)
+        if ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(root, buf, 100):
+            m = re.search(r"\{[0-9A-Fa-f-]+\}", buf.value)
+            return m.group(0) if m else None
+    except Exception: pass
+    return None
+
+def _bin_off(guid, size=None):
+    """Why this volume's Recycle Bin would not keep the file, or None."""
+    if any(_reg(h, _POL, "NoRecycleFiles") == 1 for h in ("HKLM", "HKCU")):
+        return "Windows is set by policy to delete files right away instead of using the Recycle Bin"
+    vol = _BB + "\\Volume\\" + guid if guid else None
+    nuke = _reg("HKCU", vol, "NukeOnDelete") if vol else None
+    if nuke is None: nuke = _reg("HKCU", _BB, "NukeOnDelete")
+    if nuke == 1: return "the Recycle Bin is turned off for this drive (Windows would delete the file right away)"
+    cap = _reg("HKCU", vol, "MaxCapacity") if vol else None
+    if cap and size and size > int(cap) * 1024 * 1024: return "the file is bigger than this drive's Recycle Bin"
     return None
 
 def recycle(path):
