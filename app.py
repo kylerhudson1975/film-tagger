@@ -396,19 +396,34 @@ def sniff_image(b):
     return None
 
 def _drop_local_poster(c, fid):
-    r = c.execute("SELECT custom_poster FROM films WHERE id=?", (fid,)).fetchone()
-    v = (r and r[0]) or ""
-    if v.startswith("/posters/"):
-        p = os.path.join(POSTERS_DIR, os.path.basename(v))
-        try: os.remove(p)
-        except OSError: pass
+    """The film's current custom poster is being replaced or removed: a local file is moved to posters/backup/ (never
+    deleted) and remembered for Restore previous. Uploaded posters are never deleted by the app."""
+    prev = _fp_backup_current(c, fid)
+    if prev is not None: db.set_setting(c, _fp_prev_key(fid), {"value": prev, "at": time.time()})
+    return prev
+
+def _poster_name(fid, ext):
+    """A new file name in posters/ that is not used yet (also not in posters/backup/): an existing file is never overwritten."""
+    name = f"film-{fid}-{int(time.time())}.{ext}"  # timestamp busts the browser cache
+    n = 0
+    while os.path.exists(os.path.join(POSTERS_DIR, name)) or os.path.exists(os.path.join(POSTER_BACKUP_DIR, name)):
+        n += 1; name = f"film-{fid}-{int(time.time() * 1000)}-{n}.{ext}"
+    return name
 
 def _save_poster(c, fid, data, ext):
     os.makedirs(POSTERS_DIR, exist_ok=True)
     _drop_local_poster(c, fid)
-    name = f"film-{fid}-{int(time.time())}.{ext}"  # timestamp busts the browser cache
+    name = _poster_name(fid, ext)
     with open(os.path.join(POSTERS_DIR, name), "wb") as fh: fh.write(data)
     return "/posters/" + name
+
+def _set_custom_poster(c, fid, val):
+    """Store a poster the user chose (upload, URL, gallery photo) as the film's custom poster, marked hand-edited so
+    no automatic job (TMDB / ThePornDB refresh, scans, scene-cast or Upgrade file) ever replaces or removes it."""
+    ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
+    if val: ed.add("custom_poster")
+    else: ed.discard("custom_poster")
+    c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", (val or None, json.dumps(sorted(ed)), time.time(), fid))
 
 @app.get("/posters/<path:name>")
 def poster_file(name):
@@ -445,13 +460,13 @@ def set_poster(fid):
         except Exception:
             pass
         if val is None: _drop_local_poster(c, fid); val = url
-    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
+    _set_custom_poster(c, fid, val); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note=note))
 
 @app.delete("/api/films/<int:fid>/poster")
 def remove_poster(fid):
-    c = C(); _drop_local_poster(c, fid)
-    c.execute("UPDATE films SET custom_poster=NULL, updated_at=? WHERE id=?", (time.time(), fid)); c.commit(); kick_focus()
+    c = C(); _drop_local_poster(c, fid)  # the file goes to posters/backup/ (Restore previous), never deleted
+    _set_custom_poster(c, fid, None); c.commit(); kick_focus()
     return get_film(fid)
 
 # ---------- Find Posters: pick any TMDB poster for a mainstream movie (stored as a hand-set custom_poster) ----------
@@ -582,7 +597,7 @@ def findposters_restore(fid):
     if err: return jsonify(error=err), 410
     _fp_backup_current(c, fid)  # the poster being replaced is kept in posters/backup too
     c.execute("DELETE FROM settings WHERE key=?", (_fp_prev_key(fid),))
-    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
+    _set_custom_poster(c, fid, val); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note="previous poster restored", can_restore=False))
 
 # ---------- Poster editor: crop / rotate / flip the current poster (done on the full-size original with OpenCV) ----------
@@ -996,6 +1011,9 @@ def upgrade_file_subtitles(fid):
 def merge_films():
     c = C(); ids = request.json["ids"]; keep = ids[0]
     for o in ids[1:]:
+        cp = c.execute("SELECT custom_poster FROM films WHERE id=?", (o,)).fetchone()
+        if cp and cp[0] and not (c.execute("SELECT custom_poster FROM films WHERE id=?", (keep,)).fetchone() or [None])[0]:
+            _set_custom_poster(c, keep, cp[0])  # the kept item takes over an uploaded poster instead of losing it
         c.execute("UPDATE files SET film_id=? WHERE film_id=?", (keep, o))
         c.execute("INSERT OR IGNORE INTO film_tags SELECT ?,tag_id,source,status,added_at FROM film_tags WHERE film_id=?", (keep, o))
         c.execute("DELETE FROM films WHERE id=?", (o,))
@@ -1631,6 +1649,8 @@ def studios_of(m):
     return ", ".join(dict.fromkeys((x.get("name") or "").strip() for x in (m.get("production_companies") or []) if (x.get("name") or "").strip()))
 
 # Columns TMDB code must never write, whatever the caller asks for (user data / user art / local detection).
+POSTER_NEVER = {"custom_poster"}  # the user's own poster: only the poster endpoints (upload, URL, gallery, Find Posters,
+                                  # editor, Remove custom poster, Restore previous) ever write it; no job or refresh does
 TMDB_NEVER = {"kind", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
 
@@ -2460,7 +2480,7 @@ def apply_scene(c, fid, s, keep=(), override=False):
     locked = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
     ed = (set(keep) | ({"poster", "poster_wide"} if "poster" in locked or "poster_wide" in locked else set())) if override else locked | set(keep)
     if ed & {"year", "release_date"}: ed |= {"year", "release_date"}  # date and year are protected together
-    upd = {k: v for k, v in f.items() if k != "tags" and v not in (None, "") and k not in ed}
+    upd = {k: v for k, v in f.items() if k != "tags" and k not in POSTER_NEVER and v not in (None, "") and k not in ed}
     if is_review(c, fid): upd.pop("poster", None); upd.pop("poster_wide", None)  # possibly-underage review flag: never fetch images
     if upd.get("studio"): upd["studio"] = db.canon_studio(upd["studio"], c)  # 'angels.love' -> 'Angels Love'
     if upd.get("studio") and keep_parent_studio(c, fid, s, upd["studio"]): upd.pop("studio")  # never swap Kyle's studio for a sub-label
@@ -2769,7 +2789,7 @@ def gallery_poster(fid):
         data, ext = fit_poster(data)
         if data is None: return jsonify(error=ext), 413
     val = _save_poster(c, fid, data, ext)
-    c.execute("UPDATE films SET custom_poster=?, updated_at=? WHERE id=?", (val, time.time(), fid)); c.commit(); kick_focus()
+    _set_custom_poster(c, fid, val); c.commit(); kick_focus()
     return jsonify(dict(get_film(fid).json, poster_note="from gallery"))
 
 # ---------- Find Gallery: guest ViperGirls search + gallery-dl download (findgallery.py) ----------
