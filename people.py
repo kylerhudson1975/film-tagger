@@ -1525,3 +1525,35 @@ def init(app, tmdb, posters_dir):
         INS[ck] = (time.time(), res)
         if len(INS) > 128: INS.pop(next(iter(INS)))
         return jsonify(dict(res, cached=False))
+
+    BUILT = {}  # (dkey, lib) -> rows of /api/people/built
+    @app.get("/api/people/built")
+    def people_built():
+        """People whose profile was built (ThePornDB scene list loaded when their page was opened: people.tpdb_scenes_json),
+        with the same per-year counts as the person page graph (person_rows: library + ThePornDB + TMDB, age rule applied).
+        lib = library folder: only people credited on a title there. Cached until the films/people data changes."""
+        c = C(); dk = co_dkey(c)
+        lib = (request.args.get("lib") or "").strip().rstrip("\\/")
+        ck = (dk, lib); hit = BUILT.get(ck)
+        if hit is None:
+            from collections import Counter
+            keep = None
+            if lib: keep = set(k for k in lib_scope(c, index(c), lib) if k)
+            out, seen = [], set()
+            for r0 in c.execute("SELECT id FROM people WHERE tpdb_scenes_json IS NOT NULL ORDER BY id").fetchall():
+                row = co_canon(c, r0[0])
+                if not row or row["id"] in seen: continue
+                seen.add(row["id"])
+                if keep is not None and not ({row["name_norm"]} | {fold(n) for n in db.expand_person(c, row["name"])}) & keep: continue
+                try: rows = person_rows(c, row, dk)[0]
+                except Exception: continue
+                yrs = Counter(r["year"] for r in rows if r["year"])
+                busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
+                first, last = (min(yrs), max(yrs)) if yrs else (None, None)
+                span = (last - first + 1) if yrs else 0
+                out.append(dict(id=row["id"], name=row["name"], total=len(rows), dated=sum(yrs.values()),
+                                busiest_year=busy[0] if busy else None, busiest_n=busy[1] if busy else 0, first=first, last=last,
+                                years=span, avg=round(sum(yrs.values()) / span, 1) if span else None))
+            hit = BUILT[ck] = out
+            if len(BUILT) > 16: BUILT.pop(next(iter(BUILT)))
+        return jsonify(people=hit, total=len(hit))
