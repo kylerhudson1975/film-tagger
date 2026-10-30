@@ -1156,8 +1156,13 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
    +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})</p>`:'')
    +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
    +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
-  if(ld&&!S.ppPoll){const pid=d.person.id;S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){}},3000)}}
- c.innerHTML=h+'</div>'}
+}
+ c.innerHTML=h+'</div>';ppPollStart(d)}
+/* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
+function ppPollStart(d){const ld=d.scenes_loading;if(!ld||S.ppPoll)return;const pid=d.person.id;
+ if(!(d.scenes&&(d.scenes.length||ld))){const x=$('content').querySelector('.pp');if(x&&!$('ppLoad'))x.insertAdjacentHTML('afterbegin',`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''}</p>`)}
+ S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
+  if(!n.scenes_loading){delete PI.d[pid];delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
 async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData;b.disabled=true;b.textContent='⟳ Refreshing…';

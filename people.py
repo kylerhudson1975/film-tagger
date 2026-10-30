@@ -271,8 +271,16 @@ def init(app, tmdb, posters_dir):
                     if final: break
                     page += 1
             except Exception as ex: st["error"] = type(ex).__name__
-            finally: st["running"] = False; c2.close()
+            finally:
+                st["running"] = False; c2.close()
+                try: scenes_changed(pid)
+                except Exception: pass
         threading.Thread(target=run, daemon=True).start()
+    def scenes_changed(pid):
+        """A scene list finished loading: drop every cache built from the partial list (insights, credits, built list)."""
+        for cache in (INS, CO_ITEMS, SALL):
+            for k in [k for k in list(cache) if k[0] == pid]: cache.pop(k, None)
+        BUILT.clear()
 
     def best_name(e): return max(e["names"].items(), key=lambda kv: (kv[1], len(kv[0])))[0]
     def top_role(e): return max(e["roles"].items(), key=lambda kv: len(kv[1]))[0]
