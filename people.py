@@ -424,6 +424,11 @@ def init(app, tmdb, posters_dir):
                 if fold(p.get("name") or "") == target or fold(p.get("original_name") or "") == target: return p["id"]
         res = tmdb("search/person", key, query=row["name"], include_adult="true").get("results", [])
         exact = [p for p in res if fold(p.get("name") or "") == target or fold(p.get("original_name") or "") == target]
+        ad = adult_film_ids(c)
+        if lib_ids and set(lib_ids) <= ad and not set(lib_ids) & classic_film_ids(c):
+            # scene performers: a same-named mainstream TMDB person (e.g. a casting director) is not them; only an
+            # adult-flagged TMDB person, or one whose known-for titles are adult, counts as a match
+            exact = [p for p in exact if p.get("adult") or any(k.get("adult") for k in p.get("known_for") or [])]
         if not exact: return NO_MATCH
         owned = {r[0] for r in c.execute("SELECT tmdb_id FROM films WHERE tmdb_id IS NOT NULL")}
         exact.sort(key=lambda p: (-sum(1 for k in p.get("known_for", []) if k.get("id") in owned), -(p.get("popularity") or 0)))
@@ -566,6 +571,8 @@ def init(app, tmdb, posters_dir):
                     fetch(c, key, row, keep_profile=on_tpdb or manual, tmdb_primary=tmdb_primary); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
             except urllib.error.HTTPError as ex:
                 tm_err = ("TMDB rejected the API key (401)." if ex.code == 401 else f"TMDB error {ex.code}.")
+            except __import__("sqlite3").OperationalError as ex:
+                tm_err = f"The library database was busy ({ex}); showing cached/library data. Try again in a moment."
             except Exception as ex:
                 tm_err = f"Could not reach TMDB ({type(ex).__name__}); showing cached/library data."
         if not row["birthday"] and "birthday" not in json.loads(row["edited_fields"] or "[]"):
@@ -1534,34 +1541,137 @@ def init(app, tmdb, posters_dir):
         if len(INS) > 128: INS.pop(next(iter(INS)))
         return jsonify(dict(res, cached=False))
 
-    BUILT = {}  # (dkey, lib) -> rows of /api/people/built
+    # ---------- built / not-yet-opened profiles (people credited on adult titles: Porn Scenes + Classic Porn) ----------
+    # Built = the person page has its career data: a ThePornDB scene list (scene performers, loaded when the page is first
+    # opened) or, for Classic Porn people (TMDB primary), a TMDB filmography (page opened or the Classic Porn backfill).
+    BUILT = {}  # (key, lib) -> (at, rows of /api/people/built)
+    def is_built(row, classic):
+        return bool(row["tpdb_scenes_json"]) or bool(classic and row["credits_json"] and (row["tmdb_person_id"] or 0) > 0)
+    def adult_people(c, lib=""):
+        """[(people row, classic?)] for everyone credited on an adult title (optionally only under folder lib)."""
+        data = index(c); adult = adult_film_ids(c); cl = classic_film_ids(c)
+        keys = {k for k, e in data.items() if e["films"] & adult}
+        if lib: keys &= {k for k in lib_scope(c, data, lib) if k}
+        out = []
+        for row in c.execute("SELECT * FROM people WHERE merged_into IS NULL").fetchall():
+            if row["name_norm"] in keys: out.append((row, bool(data[row["name_norm"]]["films"] & cl)))
+        return out
+    def career_years(row):
+        ys = [int(y) for y in re.findall(r"(?<!\d)(19[2-9]\d|20[0-4]\d)(?!\d)", row["career"] or "")]
+        if not ys: return None, None
+        first = min(ys); last = max(ys)
+        if re.search(r"present", row["career"] or "", re.I) or (len(ys) == 1 and not re.search(r"until", row["career"] or "", re.I)):
+            last = max(last, time.localtime().tm_year)
+        if re.search(r"until", row["career"] or "", re.I) and len(ys) == 1: first = None
+        return first, last
+
     @app.get("/api/people/built")
     def people_built():
-        """People whose profile was built (ThePornDB scene list loaded when their page was opened: people.tpdb_scenes_json),
-        with the same per-year counts as the person page graph (person_rows: library + ThePornDB + TMDB, age rule applied).
-        lib = library folder: only people credited on a title there. Cached until the films/people data changes."""
+        """Built profiles with the same per-year counts as the person page graph (person_rows: library + ThePornDB + TMDB,
+        age rule applied). lib = library folder. Cached until the films or a built person's data change (10 min at most)."""
         c = C(); dk = co_dkey(c)
         lib = (request.args.get("lib") or "").strip().rstrip("\\/")
-        ck = (dk, lib); hit = BUILT.get(ck)
-        if hit is None:
+        ppl = [(r, k) for r, k in adult_people(c, lib) if is_built(r, k)]
+        nf = c.execute("SELECT COUNT(*) FROM films").fetchone()[0]
+        key = (nf, tuple((r["id"], r["tpdb_scenes_at"], r["fetched_at"], r["birthday"]) for r, _ in ppl))
+        hit = BUILT.get((key, lib))
+        if hit is None or time.time() - hit[0] > 600:
+            # per-person figures persist in people_built_stats; only people whose data changed are recomputed
             from collections import Counter
-            keep = None
-            if lib: keep = set(k for k in lib_scope(c, index(c), lib) if k)
-            out, seen = [], set()
-            for r0 in c.execute("SELECT id FROM people WHERE tpdb_scenes_json IS NOT NULL ORDER BY id").fetchall():
-                row = co_canon(c, r0[0])
-                if not row or row["id"] in seen: continue
-                seen.add(row["id"])
-                if keep is not None and not ({row["name_norm"]} | {fold(n) for n in db.expand_person(c, row["name"])}) & keep: continue
+            c.execute("CREATE TABLE IF NOT EXISTS people_built_stats(person_id INTEGER PRIMARY KEY, k TEXT, data TEXT)")
+            have = {r[0]: (r[1], r[2]) for r in c.execute("SELECT person_id, k, data FROM people_built_stats")}
+            out, new = [], []
+            for row, _ in ppl:
+                pk = json.dumps([nf, row["tpdb_scenes_at"], row["fetched_at"], row["birthday"], len(row["credits_json"] or ""), len(row["tpdb_scenes_json"] or ""), row["name"]])
+                if row["id"] in have and have[row["id"]][0] == pk: out.append(json.loads(have[row["id"]][1])); continue
                 try: rows = person_rows(c, row, dk)[0]
                 except Exception: continue
                 yrs = Counter(r["year"] for r in rows if r["year"])
                 busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
                 first, last = (min(yrs), max(yrs)) if yrs else (None, None)
                 span = (last - first + 1) if yrs else 0
-                out.append(dict(id=row["id"], name=row["name"], total=len(rows), dated=sum(yrs.values()),
-                                busiest_year=busy[0] if busy else None, busiest_n=busy[1] if busy else 0, first=first, last=last,
-                                years=span, avg=round(sum(yrs.values()) / span, 1) if span else None))
-            hit = BUILT[ck] = out
+                d = dict(id=row["id"], name=row["name"], total=len(rows), dated=sum(yrs.values()),
+                         busiest_year=busy[0] if busy else None, busiest_n=busy[1] if busy else 0, first=first, last=last,
+                         years=span, avg=round(sum(yrs.values()) / span, 1) if span else None)
+                out.append(d)
+                new.append((row["id"], pk, json.dumps(d)))
+            if new:  # one short write at the end: never hold the database write lock while computing
+                c.executemany("INSERT OR REPLACE INTO people_built_stats VALUES(?,?,?)", new); c.commit()
+            hit = BUILT[(key, lib)] = (time.time(), out)
             if len(BUILT) > 16: BUILT.pop(next(iter(BUILT)))
-        return jsonify(people=hit, total=len(hit))
+        return jsonify(people=hit[1], total=len(hit[1]))
+
+    @app.get("/api/people/unopened")
+    def people_unopened():
+        """People on adult titles whose profile is not built yet, with the career years / scene total ThePornDB gave the
+        background career-info job (or an earlier lookup). lib = library folder."""
+        c = C(); lib = (request.args.get("lib") or "").strip().rstrip("\\/")
+        out = []
+        for row, k in adult_people(c, lib):
+            if is_built(row, k): continue
+            first, last = career_years(row)
+            out.append(dict(id=row["id"], name=row["name"], career=row["career"], first=first, last=last,
+                            years=(last - first + 1) if first and last else None, scenes=row["tpdb_scenes_total"],
+                            looked_up=row["tpdb_performer_id"] is not None, found=row["tpdb_performer_id"] not in (None, TPDB_NONE)))
+        return jsonify(people=out, total=len(out), job={k: v for k, v in CJ.items() if k != "thread"})
+
+    # ---------- career-info job: lightweight ThePornDB performer lookup for adult people never looked up ----------
+    # Same lookup the person page does on first open (tpdb_update: hand-edited fields kept, manual ids never replaced,
+    # Classic Porn people only get empty fields filled) plus the performer's scene count; no scene lists, no image download.
+    CJ = dict(running=False, done=0, total=0, found=0, not_found=0, errors=0, started=None, finished=None, error=None)
+    def career_job(delay=2.0, wait=60):
+        def work():
+            time.sleep(wait)
+            import tpdb as tpdbmod
+            c = C()
+            try:
+                tok = db.get_setting(c, "tpdb_key", "") or ""
+                if not tok or db.get_setting(c, "career_job", "on") == "off": CJ.update(error="off" if tok else "No ThePornDB token set."); return
+                rv = review_film_ids(c); e_of = lambda row: person_entry(c, row)["films"]
+                linked = lambda r: r["tpdb_performer_id"] not in (None, TPDB_NONE)
+                todo = [(r, k) for r, k in adult_people(c) if (r["tpdb_performer_id"] is None and r["source"] != "manual" and not r["tpdb_manual"])
+                        or (linked(r) and r["tpdb_scenes_total"] is None and r["tpdb_scenes_json"] is None)]  # 2nd case: scene count only
+                todo.sort(key=lambda rk: is_built(*rk))  # not-yet-opened people first
+                CJ.update(total=len(todo), done=0, started=time.time())
+                call = lambda path, **kw: tpdbmod.call_retry(path, tok, **kw)
+                for row, classic in todo:
+                    CJ["done"] += 1
+                    try:
+                        row = c.execute("SELECT * FROM people WHERE id=?", (row["id"],)).fetchone()
+                        if not row or row["tpdb_scenes_json"] is not None: continue  # opened meanwhile
+                        if linked(row):
+                            p = dict(id=row["tpdb_performer_id"])  # already matched: only the scene count is missing
+                            if row["tpdb_scenes_total"] is not None: continue
+                        elif row["tpdb_performer_id"] is not None: continue
+                        else: p = tpdb_resolve(c, tok, row, call)
+                        if not p:
+                            c.execute("UPDATE people SET tpdb_performer_id=?, tpdb_fetched_at=? WHERE id=? AND tpdb_performer_id IS NULL", (TPDB_NONE, time.time(), row["id"])); c.commit()
+                            CJ["not_found"] += 1
+                        else:
+                            if not linked(row): apply_tpdb(c, row, p, allow_image=not (e_of(row) & rv), fill_only=classic)
+                            meta = call(f"/performers/{p['id']}/scenes", per_page=1).get("meta")  # total only, no list
+                            n = meta.get("total") if isinstance(meta, dict) else None
+                            n = int(n) if isinstance(n, (int, str)) and str(n).isdigit() else None
+                            if isinstance(n, int) and n > 0:
+                                c.execute("UPDATE people SET tpdb_scenes_total=? WHERE id=? AND tpdb_scenes_json IS NULL", (n, row["id"])); c.commit()
+                            CJ["found"] += 1
+                    except urllib.error.HTTPError as ex:
+                        CJ["errors"] += 1
+                        if ex.code in (401, 403): CJ["error"] = f"ThePornDB refused ({ex.code})"; return
+                        time.sleep(30)
+                    except Exception: CJ["errors"] += 1; time.sleep(10)
+                    try: c.commit()  # never keep a transaction open between people
+                    except Exception: pass
+                    time.sleep(delay)
+            finally:
+                CJ.update(running=False, finished=time.time()); c.close()
+        CJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
+    if "pytest" not in __import__("sys").modules: career_job()
+
+    @app.get("/api/people/career_job")
+    def career_job_status(): return jsonify(CJ)
+
+    @app.post("/api/people/career_job")
+    def career_job_start():
+        if not CJ.get("running"): career_job(float((request.get_json(silent=True) or {}).get("delay", 2.0)), wait=0)
+        return jsonify(CJ)
