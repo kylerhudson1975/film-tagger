@@ -287,6 +287,20 @@ def init(app, tmdb, posters_dir):
         c.execute("INSERT INTO people(name, name_norm) VALUES(?,?)", (" ".join(name.split()), k)); c.commit()
         return c.execute("SELECT * FROM people WHERE name_norm=?", (k,)).fetchone()
 
+    def name_order(hits, q):
+        """One search word: decide first vs last name by how many hits have it as their first vs last word (tie = first);
+        those hits come first (first name: A-Z by full name; last name: A-Z by first name), then everyone else A-Z.
+        Several words or no first/last match: A-Z by name. Keys are already accent/case folded."""
+        az = lambda ke: ke[0]
+        if len(q) != 1: return sorted(hits, key=az)
+        w = q[0]
+        nf = sum(1 for k, _ in hits if k.split()[:1] == [w])
+        nl = sum(1 for k, _ in hits if len(k.split()) > 1 and k.split()[-1] == w)
+        if not nf and not nl: return sorted(hits, key=az)
+        if nf >= nl: top = lambda k: k.split()[0] == w; key = az
+        else: top = lambda k: len(k.split()) > 1 and k.split()[-1] == w; key = lambda ke: (ke[0].split()[0], ke[0])
+        return sorted((h for h in hits if top(h[0])), key=key) + sorted((h for h in hits if not top(h[0])), key=az)
+
     @app.get("/api/people/search")
     def people_search():
         """Accent/case-insensitive name search over everyone credited in the library."""
@@ -313,6 +327,7 @@ def init(app, tmdb, posters_dir):
                 for n in names:
                     kn = fold(n)
                     if kn not in have and kn in data: hits.append((kn, data[kn])); have.add(kn)
+        hits = name_order(hits, q)
         rows = {r["name_norm"]: r for r in c.execute("SELECT * FROM people WHERE name_norm IN (%s)" % ",".join("?" * len(hits[:lim])), [k for k, _ in hits[:lim]])} if hits else {}
         out = []; seen_pid = set()
         for k, e in hits[:lim]:
