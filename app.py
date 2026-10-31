@@ -745,7 +745,7 @@ def posteredit_save(fid):
 def get_film(fid):
     c = C(); r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not r: return jsonify(error="not found"), 404
-    if r["kind"] == "scene" and request.method == "GET" and request.endpoint == "get_film":  # galleries added by hand show up without a scan
+    if request.method == "GET" and request.endpoint == "get_film":  # galleries added by hand show up without a scan
         try:
             scene_gallery(c, fid)  # cheap folder check; stores gallery_path/count only (updated_at untouched)
             r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
@@ -2997,6 +2997,32 @@ def vg_learned_remove():
     k = (request.args.get("key") or "").strip()
     if not k: return jsonify(error="key required"), 400
     return jsonify(ok=True, removed=db.vg_learned_delete(C(), k))
+
+# ---------- Make stills: ~20 frames from the video as the title's gallery (stills.py), when Find Gallery finds nothing ----------
+import stills as stillsmod
+
+@app.post("/api/films/<int:fid>/stills")
+def make_stills(fid):
+    """{overwrite?}: films or scenes. Blocked like galleries for titles flagged 'Review by hand'."""
+    c = C(); f = c.execute("SELECT id FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return jsonify(error="not found"), 404
+    if is_review(c, fid): return jsonify(error="Blocked: this title is flagged for review by hand"), 403
+    if stillsmod.JOB.get("running"): return jsonify(error="Stills are already being made for another title"), 409
+    path = next((p for (p,) in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,)) if os.path.isfile(p)), None)
+    if not path: return jsonify(error="The video file was not found"), 400
+    kind, cur = gallerymod.find(path, db.VIDEO_EXT)
+    existing = len(gallerymod.images(cur)) if cur else 0
+    if existing and not (request.json or {}).get("overwrite"):
+        return jsonify(error=f"This title already has a gallery with {existing} photos", confirm=True, existing=existing), 409
+    dest = cur if kind == "canonical" else gallerymod.canonical_dir(path)
+    def done(): GAL_CACHE.pop(fid, None); scene_gallery(C(), fid)
+    stillsmod.start(fid, path, dest, done)
+    return jsonify(ok=True, dest=os.path.basename(dest))
+
+@app.get("/api/stills/status")
+def stills_status():
+    j = {k: v for k, v in stillsmod.JOB.items() if k != "dest"}; j["dest"] = os.path.basename(stillsmod.JOB.get("dest") or "")
+    return jsonify(j)
 
 @app.get("/api/findgallery/status")
 def findgallery_status():
