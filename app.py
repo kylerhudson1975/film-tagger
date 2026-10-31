@@ -3019,6 +3019,15 @@ def make_stills(fid):
     stillsmod.start(fid, path, dest, done)
     return jsonify(ok=True, dest=os.path.basename(dest))
 
+@app.post("/api/films/<int:fid>/gallery/open")
+def gallery_open(fid):
+    """Open the title's gallery / stills folder in Explorer (blocked for Review by hand, like the gallery itself)."""
+    g, err = _gallery_or_404(fid)
+    if err: return err
+    if os.name != "nt": return jsonify(error="Only available on Windows"), 400
+    os.startfile(g[2])
+    return jsonify(ok=True)
+
 @app.get("/api/stills/status")
 def stills_status():
     j = {k: v for k, v in stillsmod.JOB.items() if k != "dest"}; j["dest"] = os.path.basename(stillsmod.JOB.get("dest") or "")
