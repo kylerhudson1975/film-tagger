@@ -164,13 +164,23 @@ def tpdb_fields(p):
                 links_json=json.dumps(links) if links else None, image_url=p.get("image") or p.get("thumbnail") or None,
                 gender=ex.get("gender") or None)
 
+def photo_locked(row):
+    """A profile photo Kyle set by hand (upload, URL, crop in the Person Profile edit window) is a protected hand edit
+    ('photo' in edited_fields, or a manual-* photo file): no automatic job changes that person's photo sources."""
+    if not row: return False
+    try: ed = set(json.loads(row["edited_fields"] or "[]"))
+    except Exception: ed = set()
+    return "photo" in ed or (row["photo_file"] or "").startswith("manual-")
+
+PHOTO_AUTO = ("image_url", "profile_path", "photo_file", "photo_orig")  # columns automatic writers may never touch on a protected person
+
 def apply_tpdb(c, row, p, allow_image=True, fill_only=False):
     """Write a ThePornDB performer onto a people row, skipping hand-edited fields. fill_only (TMDB-primary people, e.g.
     anyone in Classic Porn): only fill fields that are empty and keep the TMDB source; the ThePornDB image is stored as a
     fallback photo (used only when TMDB has none)."""
     f = tpdb_fields(p); edited = set(json.loads(row["edited_fields"] or "[]"))
     if not allow_image: f["image_url"] = None
-    sets = {k: v for k, v in f.items() if k not in edited}
+    sets = {k: v for k, v in f.items() if k not in edited and not (k in PHOTO_AUTO and photo_locked(row))}
     if fill_only: sets = {k: v for k, v in sets.items() if v and (k == "image_url" or not row[k])}
     if not sets.get("birthday"): sets.pop("birthday", None)  # ThePornDB has none: keep one found elsewhere (Wikidata, TMDB)
     elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"theporndb {p.get('id')}"
@@ -493,7 +503,8 @@ def init(app, tmdb, posters_dir):
             sets = {k: v for k, v in sets.items() if v not in (None, "")}; sets["source"] = "tmdb"
         if not sets.get("birthday"): sets.pop("birthday", None)  # TMDB has none: keep one found elsewhere
         elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"tmdb person {row['tmdb_person_id']}"
-        sets = {k: v for k, v in sets.items() if k not in edited and not (k == "birth_date_source" and "birthday" in edited)}
+        sets = {k: v for k, v in sets.items() if k not in edited and not (k == "birth_date_source" and "birthday" in edited)
+                and not (k in PHOTO_AUTO and photo_locked(row))}  # a hand-set photo is never replaced by a refresh
         c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]])
         c.commit()
 
@@ -719,13 +730,28 @@ def init(app, tmdb, posters_dir):
                    fill_only=bool(e["films"] & classic_film_ids(c)) and (c.execute("SELECT source FROM people WHERE id=?", (pid,)).fetchone()[0] or "") != "manual")
         return jsonify(ok=True, name=p.get("name"))
 
+    def backup_photo(name):
+        """A replaced or removed photo file is moved to posters/people/backup/ (never deleted)."""
+        if not name or os.path.dirname(name): return
+        src = os.path.join(PHOTO_DIR, name)
+        if not os.path.isfile(src): return
+        bd = os.path.join(PHOTO_DIR, "backup"); os.makedirs(bd, exist_ok=True)
+        dst = os.path.join(bd, name); n = 0
+        while os.path.exists(dst): n += 1; dst = os.path.join(bd, f"{n}-{name}")
+        try: os.replace(src, dst)
+        except OSError: pass
+
     def save_photo(c, pid, data, ext):
         ext = ext.lower() if ext and ext.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif") else ".jpg"
         os.makedirs(PHOTO_DIR, exist_ok=True)
-        name = f"manual-{pid}-{int(time.time())}{ext}"
+        name = f"manual-{pid}-{int(time.time())}{ext}"; n = 0
+        while os.path.exists(os.path.join(PHOTO_DIR, name)): n += 1; name = f"manual-{pid}-{int(time.time() * 1000)}-{n}{ext}"  # never overwrite a file
+        old = c.execute("SELECT photo_file, photo_orig FROM people WHERE id=?", (pid,)).fetchone()
         with open(os.path.join(PHOTO_DIR, name), "wb") as fh: fh.write(data)
         ed = set(json.loads(c.execute("SELECT edited_fields FROM people WHERE id=?", (pid,)).fetchone()[0] or "[]")) | {"photo"}
         c.execute("UPDATE people SET photo_file=?, photo_orig=NULL, edited_fields=?, fetched_at=? WHERE id=?", (name, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
+        for x in (old or ()):  # the replaced hand photo (and its uncropped original) go to backup/; cached TMDB/ThePornDB files stay
+            if x and x != name and x.startswith("manual-"): backup_photo(x)
 
     def photo_from_request(c, pid):
         f = request.files.get("photo")
@@ -818,9 +844,7 @@ def init(app, tmdb, posters_dir):
         old = row["photo_file"]
         ed = set(json.loads(row["edited_fields"] or "[]")) | {"photo"}
         c.execute("UPDATE people SET photo_file=?, photo_orig=?, edited_fields=?, fetched_at=? WHERE id=?", (name, orig, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
-        if old and old not in (name, orig) and ".crop-" in old:
-            try: os.remove(os.path.join(PHOTO_DIR, old))
-            except OSError: pass
+        if old and old not in (name, orig) and ".crop-" in old: backup_photo(old)  # moved to backup/, never deleted
         return jsonify(ok=True, width=cw, height=ch, orig_width=w, orig_height=h, photo=f"/api/person/{pid}/photo?v={int(time.time())}")
 
     @app.post("/api/person/<int:pid>/photo/reset_crop")
@@ -830,9 +854,7 @@ def init(app, tmdb, posters_dir):
         if not (row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))): return jsonify(error="The photo is not cropped"), 400
         old = row["photo_file"]
         c.execute("UPDATE people SET photo_file=?, photo_orig=NULL, fetched_at=? WHERE id=?", (row["photo_orig"], time.time(), pid)); c.commit()
-        if old and ".crop-" in old:
-            try: os.remove(os.path.join(PHOTO_DIR, old))
-            except OSError: pass
+        if old and ".crop-" in old: backup_photo(old)  # moved to backup/, never deleted
         return jsonify(ok=True)
 
     @app.post("/api/person/<int:pid>/merge")
@@ -858,6 +880,8 @@ def init(app, tmdb, posters_dir):
         for a in [o["name"]] + oal:
             if isinstance(a, str) and a.strip() and fold(a) not in have: als.append(" ".join(a.split())); have.add(fold(a))
         edited = set(json.loads(row["edited_fields"] or "[]")) | {"aliases"}
+        if photo_locked(o) and o["photo_file"] and not photo_locked(row):  # the kept person takes over a hand-set photo instead of losing it
+            edited.add("photo"); c.execute("UPDATE people SET photo_file=?, photo_orig=?, fetched_at=? WHERE id=?", (o["photo_file"], o["photo_orig"], time.time(), pid))
         c.execute("UPDATE people SET aliases=?, edited_fields=? WHERE id=?", (json.dumps(als), json.dumps(sorted(edited)), pid))
         c.execute("UPDATE people SET merged_into=? WHERE id=?", (pid, o["id"]))
         c.execute("UPDATE people SET merged_into=? WHERE merged_into=?", (pid, o["id"]))  # people merged into the other move along
