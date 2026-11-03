@@ -398,6 +398,11 @@ Run the newer `FilmTaggerSetup.exe` over the existing install (close Film Tagger
 
 The token is stored only in your local database. Never share it or put it in a screenshot or issue.
 
+### MKV titles with MKVToolNix (optional)
+When a scene is hard matched on ThePornDB (matched and its file renamed to the standard name) and the file is an `.mkv`, Film Tagger also writes the container title shown by VLC and Explorer, `<Studio> - <Title> (YYYY-MM-DD)`, plus global tags `TITLE`, `DATE_RELEASED`, `ACTOR` (one per performer), `ARTIST` and `PRODUCTION_STUDIO`. It uses the values in your library, so a title you edited by hand is the one written. This is an in-place header edit with `mkvpropedit` (no re-encode) and the file's modified date is kept. Files that are open in another program, *Review by hand* scenes and titles you changed inside the file yourself are left alone, and a failure never undoes the match (it is shown as a note and logged to `mkv_titles.log` next to the database). **Library & Settings → Rename & Files → Fix MKV titles…** shows a dry-run count first, then updates already hard-matched scenes. Films (not scenes) are not changed.
+
+Install [MKVToolNix](https://mkvtoolnix.download) to turn this on (Windows: `winget install --id MoritzBunkus.MKVToolNix -e`). Film Tagger finds `mkvpropedit` on the PATH or in `C:\Program Files\MKVToolNix\`; restart Film Tagger after installing. Without it the feature is simply off. MKVToolNix is not bundled.
+
 ### TMDB API key (optional)
 Free from themoviedb.org → Settings → API. Paste it under **Library & Settings → TMDB**. Without a key the app works offline with what is in your library.
 
@@ -420,7 +425,7 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
 - API keys are stored only in your local database.
 
 ## Tech
-Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
+Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed; MKVToolNix's mkvpropedit, if installed, writes MKV titles for hard-matched scenes). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Release history
 <details><summary>Older release notes (v1.0.43 to v1.1.0)</summary>

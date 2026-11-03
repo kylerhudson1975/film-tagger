@@ -96,6 +96,19 @@ to download posters, cast, plot and so on.
 
 
 ---------------------------------------------------------------------
+OPTIONAL - MKV titles for matched scenes (MKVToolNix)
+---------------------------------------------------------------------
+If MKVToolNix is installed, scenes stored as .mkv get their container
+title ("Studio - Title (YYYY-MM-DD)", shown by VLC and Explorer) and
+tags written when they are matched on ThePornDB and renamed. No
+re-encode. Install it from https://mkvtoolnix.download (or run
+  winget install --id MoritzBunkus.MKVToolNix -e
+) and restart Film Tagger. For scenes matched earlier use
+Library & Settings > Rename & Files > "Fix MKV titles...".
+Without MKVToolNix this is simply switched off.
+
+
+---------------------------------------------------------------------
 OPTIONAL - Smart tagging with AI
 ---------------------------------------------------------------------
 AI can suggest tags (genre, mood, themes, setting...) for your films.
