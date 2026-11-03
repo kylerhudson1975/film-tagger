@@ -7,7 +7,18 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.3.1
+- **Built profiles list:** a sortable table of everyone whose profile you've built (total scenes, busiest year, years active, average per year).
+- **One-click profile build:** the person page now waits for the ThePornDB scene list to finish loading, then refreshes Insights and graphs on its own.
+- **Career info in the background:** a *Not opened yet* list and a background ThePornDB job that fills in people's career info.
+- **Safer TMDB matching:** scene performers are never matched to a non-adult TMDB person with the same name.
+- **Make stills:** saves about 20 full-size frames from a title's video as its gallery, picking only sharp frames (no motion blur, fades or black frames). An *Open stills folder* button is in the Edit window.
+- **Hand-set person photos are protected:** an uploaded, URL or cropped photo is never replaced by a refresh or profile build, and a replaced photo goes to a backup folder instead of being deleted.
+- **Person edit window stays open** until you click Close or Save. Background refreshes no longer close it or lose what you typed.
+- **Home and Dashboard reset the Tags sidebar:** categories collapse, cleared tags disappear and the sidebar scrolls to the top.
+- Also: **Upgrade file** to swap a video for a better copy while keeping all its data, **studio pages** and a Studios list, tag counts and people search that follow the picked library folder, protected custom posters, better birth-date lookups for queued films, and scene file names that no longer turn a whole title into a performer.
 
 ## What's new in v1.3.0
 A big one: a new **Dashboard** you can click into, **Reports** with plain-English questions, and full **release dates**.
