@@ -299,7 +299,7 @@ async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON
 function ftBuild(b){if(!b)return;if(!window.FT_BUILD){window.FT_BUILD=b;return}if(b==window.FT_BUILD||window.FT_NOTIFIED==b)return;window.FT_NOTIFIED=b;const d=document.createElement('div');d.id='ftReload';
  d.style.cssText='position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:9999;background:#1b1e23;border:1px solid #5b9cff;color:#e6e8eb;padding:8px 12px;border-radius:8px;box-shadow:0 4px 18px #0008;font-size:13px';
  d.innerHTML='Film Tagger was updated. <button class=pri onclick="location.reload()" style="margin-left:8px">Reload</button> <button onclick="this.parentNode.remove()" style="margin-left:4px">Later</button>';document.body.appendChild(d)}
-function toast(m){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}
+function toast(m,ms){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',ms||3500)}
 const FK=['all','any','none','year_min','year_max','rating_min','rating_max','runtime_min','runtime_max','watched','special','mpaa','lib','in','person','prole','country','studio','decade','res','pgenre','aznude','subs','month','cocredit','pin','ids'];
 const INPH={'':'Search everything…',people:'Search people (actors, directors, writers…)…',studios:'Filter studios by name or country…',title:'Search titles (incl. original/alternative)…',plot:'Search plots…',cast:'Search cast…',director:'Search directors…',notes:'Search notes…',tags:'Search tag names…',path:'Search file paths…',country:'Search countries…',studio:'Search studios…',resolution:'Search resolutions (e.g. 1080p)…',subtitles:'Search subtitles (e.g. English, SRT)…'};
 function setIn(v){$('f_in').value=v||'';localStorage.searchIn=$('f_in').value;$('q').placeholder=INPH[$('f_in').value]}
@@ -1072,10 +1072,10 @@ async function doScan(){const roots=$('s_roots').value.split('\n').map(s=>s.trim
   if(r.missing_roots&&r.missing_roots.length)bits.push('Not a folder: '+r.missing_roots.join(', '));
   if(r.roots_found&&r.roots_found.length)bits.push(r.roots_found.map(x=>x.path+': '+x.videos+' video'+(x.videos==1?'':'s')+' in '+(x.folders||0)+' folder'+(x.folders==1?'':'s')).join(' · '));
   if(r.errors&&r.errors.length)bits.push(r.errors.join('; '));
-  toast(bits.join(' · '));
   const sr=r.scene_report||[];
   const note=$('scanNote');
-  if(sr.length){const lines=sr.map(x=>x.error?(x.path+': '+x.error):(x.path+': '+(x.videos||0)+' videos in '+(x.folders||0)+' folders, '+(x.added||0)+' added'+(x.already?', '+x.already+' already in the library':'')+(x.excluded?', '+x.excluded+' left in Removed items':'')+(x.subfolders&&x.subfolders.length?' — '+x.subfolders.slice(0,8).join(', '):'')+(x.errors&&x.errors.length?' — '+x.errors[0]:'')));if(note){note.style.display='block';note.textContent=lines.join(' | ')}alert(lines.join('\n'))}
+  if(sr.length){const lines=sr.map(x=>x.error?(x.path+': '+x.error):(x.path+': '+(x.videos||0)+' videos in '+(x.folders||0)+' folders, '+(x.added||0)+' added'+(x.already?', '+x.already+' already in the library':'')+(x.excluded?', '+x.excluded+' left in Removed items':'')+(x.subfolders&&x.subfolders.length?' — '+x.subfolders.slice(0,8).join(', '):'')+(x.errors&&x.errors.length?' — '+x.errors[0]:'')));if(note){note.style.display='block';note.textContent=lines.join(' | ')}bits.push('Scenes: '+lines.join(' | '))}
+  toast(bits.join(' · '),sr.length?15000:8000);
   refreshMeta();load();loadLibs();pollJob()}
  catch(e){toast((e&&e.error)||'Scan failed')}}
 async function doImport(){const f=$('s_file').files[0];if(!f)return;if(f.name.endsWith('.json')&&!confirm('This REPLACES your whole database. Continue?'))return;
