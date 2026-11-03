@@ -1178,17 +1178,20 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
    +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
    +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
 }
- c.innerHTML=h+'</div>';ppPollStart(d)}
+ const oe=$('ppEdit'),keepE=oe&&oe.style.display=='block'&&+oe.dataset.pid===d.person.id?oe:null;
+ c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppPollStart(d)}
 /* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
 function ppPollStart(d){const ld=d.scenes_loading;if(!ld||S.ppPoll)return;const pid=d.person.id;
  if(!(d.scenes&&(d.scenes.length||ld))){const x=$('content').querySelector('.pp');if(x&&!$('ppLoad'))x.insertAdjacentHTML('afterbegin',`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''}</p>`)}
- S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
+ S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
+  if((S.ppGen||0)!==gen){if(S.ppData)ppPollStart(S.ppData);return}
   if(!n.scenes_loading){delete PI.d[pid];delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
-async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData;b.disabled=true;b.textContent='⟳ Refreshing…';
+async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData,gen=S.ppGen||0;b.disabled=true;b.textContent='⟳ Refreshing…';
  let d;try{d=await api('/api/person/'+pid+'?refresh=1')}catch(e){if(S.page==='person:'+pid){b.disabled=false;b.textContent='↻ Refresh'}toast("Couldn't reach Film Tagger: "+(e.message||e));return}
- if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=d;renderPerson();$('content').scrollTop=st;
+ if(S.page!=='person:'+pid)return;if((S.ppGen||0)!==gen){showPerson(pid,{keep:true,nohist:true});return}  // a hand edit was saved meanwhile: re-read, never show the older answer
+ const st=$('content').scrollTop;S.ppData=d;renderPerson();$('content').scrollTop=st;
  const fresh=d.person.fetched_at&&(!prev||d.person.fetched_at!==prev.person.fetched_at);
  if(!fresh||d.status==='offline'){toast(d.status==='no_key'?'No TMDB API key set':d.status==='no_match'?(d.message||'No matching person found'):"Couldn't reach TMDB"+(d.message?' — '+d.message:''));return}
  const ch=[];if(prev&&prev.total!==d.total)ch.push(`films ${prev.total} → ${d.total}`);if(prev&&prev.owned!==d.owned)ch.push(`in library ${prev.owned} → ${d.owned}`);
@@ -1197,13 +1200,14 @@ async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const 
  toast(`Updated from ${d.person.source||'TMDB'} — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
 async function setPersonTpdb(pid,auto){try{await api('/api/person/'+pid+'/tpdb',{method:'POST',body:{tpdb:auto?'':$('ppTpdb').value}})}catch(e){toast(e.message||String(e));return}showPerson(pid,{keep:true,nohist:true,refresh:!!auto})}
 const PPF=[['links','Links (one per line, "IAFD: https://…" or just the URL)'],['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
-function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}
- e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
+function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}e.dataset.pid=p.id;
+ e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <button onclick="$('ppEdit').style.display='none'">Close</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
 async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{const v=$('ppe_'+k).value;if(v!==ppVal(p,k))b[k]=v});
- if(Object.keys(b).length)await api('/api/person/'+pid+'/edit',{method:'POST',body:b});
+ S.ppGen=(S.ppGen||0)+1;
+ if(Object.keys(b).length){try{await api('/api/person/'+pid+'/edit',{method:'POST',body:b})}catch(e){toast(e.message||String(e));return}}
  const fd=new FormData(),f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
- if(f||u){try{await api('/api/person/'+pid+'/photo/upload',{method:'POST',body:fd})}catch(e){toast(e.message||String(e))}}
- showPerson(pid,{keep:true,nohist:true})}
+ if(f||u){try{await api('/api/person/'+pid+'/photo/upload',{method:'POST',body:fd})}catch(e){toast(e.message||String(e));return}}
+ S.ppGen++;const e=$('ppEdit');if(e)e.style.display='none';showPerson(pid,{keep:true,nohist:true})}
 // ---------- person photo crop: fixed 2:3 portrait frame (the TMDB profile-photo ratio, w300 = 300x450); drag pans, wheel/slider zooms ----------
 const PC_W=300,PC_H=450;
 function cropPhoto(pid){let ov=$('pcOv');if(ov)ov.remove();ov=document.createElement('div');ov.id='pcOv';
@@ -1224,7 +1228,7 @@ function cropPhoto(pid){let ov=$('pcOv');if(ov)ov.remove();ov=document.createEle
  fr.onpointerup=fr.onpointercancel=()=>{drag=null;fr.style.cursor='grab'};
  ov.onclick=e=>{if(e.target===ov)ov.remove()};
  $('pcSave').onclick=async()=>{if(!W)return;const b={x:-tx/s,y:-ty/s,w:PC_W/s,h:PC_H/s};
-  try{await api('/api/person/'+pid+'/photo/crop',{method:'POST',body:b})}catch(e){toast(e.message||String(e));return}
+  S.ppGen=(S.ppGen||0)+1;try{await api('/api/person/'+pid+'/photo/crop',{method:'POST',body:b})}catch(e){toast(e.message||String(e));return}
   ov.remove();toast('Photo cropped (original kept)');showPerson(pid,{keep:true,nohist:true})}}
 async function resetCrop(pid){try{await api('/api/person/'+pid+'/photo/reset_crop',{method:'POST',body:{}})}catch(e){toast(e.message||String(e));return}
  toast('Crop removed - showing the full photo');showPerson(pid,{keep:true,nohist:true})}
