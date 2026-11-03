@@ -456,7 +456,7 @@ function addF(e,name){const el=$(e.shiftKey?'f_none':'f_all'),ot=$(e.shiftKey?'f
 /* Home's reset: empty search, no filters, Search in: Everything, all libraries, title order (also used by Dashboard + startup) */
 function resetSearch(){closeM();$('libPop').classList.remove('open');$('ctx').style.display='none';
  FK.forEach(k=>{if(k!='in'&&k!='lib')$('f_'+k).value=''});$('q').value='';setLib('');setIn('');$('sort').value='title';S.order='asc';$('ord').textContent='↑';renderMpaa();S.sel.clear();$('content').scrollTop=0}
-function goHome(){resetSearch();setAllCats(true);load()}
+function goHome(){try{setAllCats(true)}catch(e){}resetSearch();load()}
 document.addEventListener('keydown',e=>{if(e.altKey&&!e.ctrlKey&&!e.metaKey&&(e.key=='h'||e.key=='H'||e.code=='KeyH')){e.preventDefault();goHome()}});
 function clearF(){FK.forEach(k=>{if(k!='lib'&&k!='in')$('f_'+k).value=''});renderMpaa();$('q').value='';load()}
 async function saveSearch(){const name=prompt('Name for this search?');if(!name)return;await api('/api/searches',{method:'POST',body:{name,query:{...query(),sort:$('sort').value,order:S.order}}});refreshMeta()}
@@ -1500,7 +1500,7 @@ const DSC={films:'Films',movies:'Movies',classic:'Classic Porn',scenes:'Scenes'}
 function dshA(i){const f=DSH.acts&&DSH.acts[i];if(f)f()}
 function dAct(fn){(DSH.acts=DSH.acts||[]).push(fn);return `dshA(${DSH.acts.length-1})`}
 /* Dashboard nav button = default view (like Home): Films scope, no drill-down, default chart toggles, top of page */
-function dashHome(){resetSearch();localStorage.removeItem('dshChart');setAllCats(true);DSH.er=null;showDash({scope:'films',ex:null})}
+function dashHome(){try{setAllCats(true)}catch(e){}resetSearch();localStorage.removeItem('dshChart');DSH.er=null;showDash({scope:'films',ex:null})}
 function dshScope(k){DSH.scope=(DSH.scope==k?'':k)||'';showDash({ex:null})}
 function dshGoF(f){const o={...f};dshGo(o)}
 function dshDrill(add,label){const SF=(DSH.d&&DSH.d.scope_filter)||{};const f={...SF,...add};showDash({ex:{f,trail:[{label,f}]}})}
