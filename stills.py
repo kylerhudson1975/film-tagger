@@ -1,4 +1,4 @@
-"""Make stills: ~20 evenly spaced full-resolution JPG frames from a title's video, saved as its gallery
+"""Make stills: ~20 evenly spaced, sharp (never motion-blurred) full-resolution JPG frames from a title's video, saved as its gallery
 ('<video stem> - GALLERY', gallery.canonical_dir) so they show in the normal gallery viewer. A fallback for when
 Find Gallery finds nothing. ffmpeg: the install's tools\\ffmpeg folder, else PATH, else a portable build (gyan.dev
 essentials) downloaded into tools\\ffmpeg on first use. One job at a time; progress in JOB."""
@@ -41,29 +41,106 @@ def download_ffmpeg():
     if not os.path.isfile(p): raise RuntimeError("ffmpeg.exe not found in the download")
     return p, "downloaded (gyan.dev essentials)"
 
-def duration(ffmpeg, video):
+def probe(ffmpeg, video):
+    """-> (seconds, width, height, fps) from ffmpeg's banner; any part may be None."""
     r = subprocess.run([ffmpeg, "-hide_banner", "-i", video], capture_output=True, text=True, errors="replace", creationflags=NOWIN, timeout=120)
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr or "")
-    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+    e = r.stderr or ""
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", e)
+    d = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
+    v = re.search(r"Stream #[^\n]*Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b", e)
+    f = re.search(r"Stream #[^\n]*Video:[^\n]*?([\d.]+) (?:fps|tbr)", e)
+    return d, (int(v.group(1)) if v else None), (int(v.group(2)) if v else None), (float(f.group(1)) if f else None)
+
+def duration(ffmpeg, video):
+    return probe(ffmpeg, video)[0]
+
+# Sharp stills: around each spot, CANDS frames over WIN seconds are decoded small (SW px wide, grey) and scored; the
+# sharpest usable one is then saved at full resolution. Frames are only ever handled as numbers here.
+WIN, CANDS, SW = 3.0, 10, 480
+DARK, BRIGHT, FLAT = 20, 238, 14  # mean-brightness limits and minimum contrast (std): black, white, fades, flat frames
+REL = 0.5  # a spot's best must reach this share of the film's typical best score, or the search widens / moves
+
+def sharpness(g):
+    """g: 2-D grey array. -> score, or None for a near-black / near-white / flat (fade) frame. The score is the
+    weakest of four directional gradient energies, scaled by the Laplacian's: motion blur wipes out detail along
+    the motion's direction, so a smeared frame scores low even if it keeps edges across the motion."""
+    import numpy as np
+    g = g.astype(np.float32); m, sd = float(g.mean()), float(g.std())
+    if m < DARK or m > BRIGHT or sd < FLAT: return None
+    g = g[2:-2, 2:-2]
+    d = [np.mean(np.square(g[:, 1:] - g[:, :-1])), np.mean(np.square(g[1:, :] - g[:-1, :])),
+         np.mean(np.square(g[1:, 1:] - g[:-1, :-1])) / 2, np.mean(np.square(g[1:, :-1] - g[:-1, 1:])) / 2]
+    lap = g[1:-1, :-2] + g[1:-1, 2:] + g[:-2, 1:-1] + g[2:, 1:-1] - 4 * g[1:-1, 1:-1]
+    return float(np.sqrt(min(d) * float(lap.var())))
+
+def candidates(ff, video, t0, win, n, fps, sw, sh):
+    """Score n frames spread over [t0, t0+win]. -> list of (score or None, frame index after the seek)."""
+    import numpy as np
+    step = max(1, int(round(fps * win / n)))
+    r = subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-ss", f"{t0:.3f}", "-i", video, "-an", "-sn",
+                        "-vf", f"select='not(mod(n\\,{step}))',scale={sw}:{sh}:flags=area,format=gray", "-fps_mode", "passthrough",
+                        "-frames:v", str(n), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"],
+                       capture_output=True, creationflags=NOWIN, timeout=300)
+    a, sz = r.stdout or b"", sw * sh
+    return [(sharpness(np.frombuffer(a[k * sz:(k + 1) * sz], np.uint8).reshape(sh, sw)), k * step) for k in range(len(a) // sz)]
+
+def save_frame(ff, video, t0, idx, out):
+    """Full-resolution JPG of frame `idx` after the same seek used for scoring (so it is the very frame scored)."""
+    subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t0:.3f}", "-i", video, "-an", "-sn",
+                    "-vf", f"select='eq(n\\,{idx})'", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "2", out],
+                   capture_output=True, creationflags=NOWIN, timeout=300)
+    return os.path.isfile(out) and os.path.getsize(out) > 0
+
+def best_at(ff, video, d, t, win, n, fps, sw, sh):
+    """Sharpest usable candidate in a window centred on t. -> (score, t0, idx) or None."""
+    t0 = min(max(0.0, t - win / 2), max(0.0, d - win - 1))
+    c = [(s, i) for s, i in candidates(ff, video, t0, win, n, fps, sw, sh) if s is not None]
+    if not c: return None
+    s, i = max(c)
+    return s, t0, i
 
 def run(fid, video, dest, done=None):
-    """Background job body: make COUNT stills of `video` into `dest`."""
+    """Background job body: make up to COUNT sharp stills of `video` into `dest`."""
     try:
-        JOB.update(phase="looking for ffmpeg", done=0, total=COUNT, error=None, dest=dest)
+        JOB.update(phase="looking for ffmpeg", done=0, total=COUNT, error=None, dest=dest, skipped=0)
         ff, src = find_ffmpeg()
         if not ff: ff, src = download_ffmpeg()
         JOB.update(source=src, phase="reading video")
-        d = duration(ff, video)
+        d, w, h, fps = probe(ff, video)
         if not d or d < 5: raise RuntimeError("Could not read the video's length")
-        os.makedirs(dest, exist_ok=True); JOB["phase"] = "making stills"
-        for i in range(COUNT):
-            t = d * (SKIP + (1 - 2 * SKIP) * i / (COUNT - 1))
-            hh, rem = divmod(int(t), 3600); mm, ss = divmod(rem, 60)
-            out = os.path.join(dest, f"still {i + 1:02d} ({hh:02d}h{mm:02d}m{ss:02d}s).jpg")
-            subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t:.2f}", "-i", video, "-frames:v", "1", "-q:v", "2", out],
-                           capture_output=True, creationflags=NOWIN, timeout=300)
-            JOB["done"] = i + 1
-        if not any(n.startswith("still ") for n in os.listdir(dest)): raise RuntimeError("ffmpeg made no stills")
+        fps = fps if fps and 5 <= fps <= 120 else 24.0
+        sw = SW if not w or w >= SW else w - w % 2
+        sh = max(2, int(round(sw * h / w / 2)) * 2) if w and h else (sw * 9 // 16) // 2 * 2
+        spots = [d * (SKIP + (1 - 2 * SKIP) * i / (COUNT - 1)) for i in range(COUNT)]
+        gap = d * (1 - 2 * SKIP) / (COUNT - 1)
+        JOB["phase"] = "finding sharp frames"; picks = []
+        for i, t in enumerate(spots):
+            picks.append(best_at(ff, video, d, t, WIN, CANDS, fps, sw, sh)); JOB["done"] = i + 1
+        good = sorted(p[0] for p in picks if p)
+        if not good: raise RuntimeError("No usable frames found (all dark or blank?)")
+        floor = REL * good[len(good) // 2]  # relative to this film's own typical best frame
+        JOB.update(phase="making stills", done=0)
+        os.makedirs(dest, exist_ok=True); made = []
+        for i, t in enumerate(spots):
+            p = picks[i]
+            if not p or p[0] < floor:  # widen the window, then try spots a little before / after
+                for tt, win, n in ((t, 3 * WIN, 3 * CANDS), (t - gap / 3, 2 * WIN, 2 * CANDS), (t + gap / 3, 2 * WIN, 2 * CANDS),
+                                   (t - gap / 2 + WIN, 2 * WIN, 2 * CANDS), (t + gap / 2 - WIN, 2 * WIN, 2 * CANDS)):
+                    q = best_at(ff, video, d, tt, win, n, fps, sw, sh)
+                    if q and (not p or q[0] > p[0]): p = q
+                    if p and p[0] >= floor: break
+            if p and p[0] >= floor:
+                at = p[1] + p[2] / fps; hh, rem = divmod(int(at), 3600); mm, ss = divmod(rem, 60)
+                out = os.path.join(dest, f"still {len(made) + 1:02d} ({hh:02d}h{mm:02d}m{ss:02d}s).jpg")
+                if save_frame(ff, video, p[1], p[2], out): made.append(os.path.basename(out))
+            else: JOB["skipped"] += 1
+            JOB["done"] = len(made)
+        if not made: raise RuntimeError("ffmpeg made no stills")
+        pat = re.compile(r"still \d{2} \(\d{2}h\d{2}m\d{2}s\)\.jpg$")
+        for n in os.listdir(dest):  # stills left from an earlier run (the user confirmed overwrite)
+            if pat.match(n) and n not in made:
+                try: os.remove(os.path.join(dest, n))
+                except OSError: pass
         JOB["phase"] = "done"
     except Exception as e:
         JOB.update(error=str(e) or type(e).__name__, phase="failed")

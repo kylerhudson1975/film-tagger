@@ -698,7 +698,7 @@ async function fgPoll(){const b=$('fgJob');if(!b)return;let j;try{j=await api('/
 async function makeStills(id,overwrite){let r;try{r=await api('/api/films/'+id+'/stills',{method:'POST',body:{overwrite:!!overwrite}})}catch(e){
   if(e&&e.confirm&&confirm((e.error||'This title already has a gallery')+'. Add the stills to it anyway?'))return makeStills(id,true);return}
  toast('Making stills…');const tick=async()=>{let j;try{j=await api('/api/stills/status')}catch(e){return setTimeout(tick,3000)}
-  if(j.running){toast(j.phase=='downloading ffmpeg'?`Downloading ffmpeg (first use)… ${Math.round((j.dl_bytes||0)/1048576)}${j.dl_total?' of '+Math.round(j.dl_total/1048576):''} MB`:`Making stills… ${j.done} of ${j.total}`);return setTimeout(tick,2000)}
+  if(j.running){toast(j.phase=='downloading ffmpeg'?`Downloading ffmpeg (first use)… ${Math.round((j.dl_bytes||0)/1048576)}${j.dl_total?' of '+Math.round(j.dl_total/1048576):''} MB`:`${j.phase=='finding sharp frames'?'Finding sharp frames':'Making stills'}… ${j.done} of ${j.total}`);return setTimeout(tick,2000)}
   if(j.error){toast('Make stills failed: '+j.error);return}
   toast(`Stills ready (${j.done}) in “${j.dest}”`);try{const f=await api('/api/films/'+id);if($('posterBox'))$('posterBox').innerHTML=posterBoxHtml(f);const x=(S.films||[]).find(z=>z.id==f.id);if(x){x.gallery_count=f.gallery_count;render()}}catch(e){}};setTimeout(tick,1500)}
 async function openGallery(id){let d;try{d=await api(`/api/films/${id}/gallery`)}catch(e){return}
