@@ -664,20 +664,27 @@ async function fpPick(i){const g=S.fp;if(!g||g.busy)return;const p=g.posters[i];
 async function fpRestore(){const g=S.fp;if(!g||!confirm('Put back the previous poster?'))return;
  try{const f=await api(`/api/films/${g.id}/findposters/restore`,{method:'POST',body:{}});if(S.editOrig&&S.editOrig.id==g.id)posterShow(f);else reload();toast('Previous poster restored');fpRestoreBtn(false)}catch(e){}}
 function openFindGallery(id){let o=$('fgOv');if(!o){o=document.createElement('div');o.id='fgOv';document.body.appendChild(o)}
- S.fg={id};o.innerHTML=`<div class=gh><b>Find Gallery</b><span class=muted>ViperGirls search by performers + studio. Nothing downloads until you pick one.</span><span style="flex:1"></span><button onclick="fgClose()">✕ Close</button></div>
+ S.fg={id};o.innerHTML=`<div class=gh><b>Find Gallery</b><span class=muted>ViperGirls search by performers + studio. Nothing downloads until you pick one.</span><span style="flex:1"></span><button title="Stop the search and any gallery download now, and close" onclick="fgCancel()">Cancel</button><button title="Close (a running download keeps going)" onclick="fgClose()">✕ Close</button></div>
  <div style="padding:8px 12px;color:#fff"><div class=row style="gap:4px"><input id=fgQ placeholder="Performers + studio (leave empty for the default search)" style="flex:1" onkeydown="if(event.key=='Enter')fgSearch(true)"><label class=muted style="white-space:nowrap"><input type=checkbox id=fgPre checked> studio prefix</label><button onclick="fgSearch(true)">Search</button></div>
  <div class=row style="gap:4px;margin-top:6px"><input id=fgUrl placeholder="…or paste a thread/post URL (https://vipergirls.to/threads/… or /posts/…)" style="flex:1"><button title="Download this thread, and learn how ViperGirls posts this studio (prefix, whether titles name performers) for future searches" onclick="fgDownload($('fgUrl').value,false,true)">Download</button></div>
  <div id=fgMsg class=muted style="margin:6px 0"></div><div id=fgJob style="margin:6px 0"></div></div><div id=fgRes style="flex:1;overflow:auto;padding:0 12px 12px;color:#fff"></div>`;
  o.style.display='flex';fgSearch(false);fgPoll()}
-function fgClose(){const o=$('fgOv');if(o){o.style.display='none';o.innerHTML=''}S.fg=null}
+function fgClose(){const g=S.fg;const o=$('fgOv');if(o){o.style.display='none';o.innerHTML=''}S.fg=null;
+ if(g){const busy=g.acs&&g.acs.size;fgAbort(g);if(busy)fetch('/api/findgallery/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({search:true,download:false}),keepalive:true}).catch(()=>{})}}
+/* Cancel: close at once (never wait for the server), abort this window's requests, and tell the server to stop the
+   search and the gallery download (it kills gallery-dl and makes no further requests). */
+function fgCancel(){const g=S.fg;const o=$('fgOv');if(o){o.style.display='none';o.innerHTML=''}S.fg=null;if(g)fgAbort(g);
+ fetch('/api/findgallery/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({search:true,download:true}),keepalive:true}).then(r=>{if(r.ok)toast('Find Gallery cancelled')}).catch(()=>{})}
+function fgAbort(g){g.gen=(g.gen||0)+1;(g.acs||new Set()).forEach(a=>{try{a.abort()}catch(e){}});g.acs=new Set();(g.timers||[]).forEach(t=>{clearInterval(t);clearTimeout(t)});g.timers=[]}
+function fgAc(g){const a=new AbortController();(g.acs=g.acs||new Set()).add(a);return a}
 async function fgSearch(custom,t0){const g=S.fg;if(!g)return;t0=t0||Date.now();const q=custom?$('fgQ').value.trim():'';const gen=g.gen=(g.gen||0)+1;
  const live=()=>S.fg===g&&g.gen===gen,sec=()=>Math.round((Date.now()-t0)/1000);$('fgRes').innerHTML='';
  const fail=m=>{if(!live())return;clearInterval(tick);$('fgMsg').innerHTML=`<span style="color:var(--bad)">${esc(m)}</span> <button onclick="fgSearch(${custom?'true':'false'})">Retry</button>`};
- let step='';const tick=setInterval(async()=>{if(!live()){clearInterval(tick);return}try{const j=await api('/api/findgallery/status');step=j.search?j.search.step:step}catch(e){}if(live()&&$('fgMsg'))$('fgMsg').textContent=`Searching… ${step||'starting'} · ${sec()} s (searches are spaced at least 20 s apart)`},1000);
- $('fgMsg').textContent='Searching…';const ac=new AbortController();const lim=setTimeout(()=>ac.abort(),Math.max(5000,180000-(Date.now()-t0)));let r,d;
+ let step='';const tick=setInterval(async()=>{if(!live()){clearInterval(tick);return}try{const j=await api('/api/findgallery/status',{signal:fgAc(g).signal});step=j.search?j.search.step:step}catch(e){}if(live()&&$('fgMsg'))$('fgMsg').textContent=`Searching… ${step||'starting'} · ${sec()} s (searches are spaced at least 20 s apart)`},1000);
+ (g.timers=g.timers||[]).push(tick);$('fgMsg').textContent='Searching…';const ac=fgAc(g);const lim=setTimeout(()=>ac.abort(),Math.max(5000,180000-(Date.now()-t0)));let r,d;
  try{r=await fetch(`/api/films/${g.id}/findgallery/search`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q,prefix:$('fgPre').checked}),signal:ac.signal});d=await r.json().catch(()=>({}))}
- catch(e){clearTimeout(lim);return fail(e.name=='AbortError'?`Gave up after ${sec()} s: the search took too long. The forum may be slow; try again later.`:'Could not reach Film Tagger (was it restarted?).')}
- clearTimeout(lim);if(!live()){clearInterval(tick);return}if(d.default_query&&!$('fgQ').value)$('fgQ').value=d.default_query;
+ catch(e){clearTimeout(lim);g.acs&&g.acs.delete(ac);if(!live()){clearInterval(tick);return}return fail(e.name=='AbortError'?`Gave up after ${sec()} s: the search took too long. The forum may be slow; try again later.`:'Could not reach Film Tagger (was it restarted?).')}
+ clearTimeout(lim);g.acs&&g.acs.delete(ac);if(!live()){clearInterval(tick);return}if(d.default_query&&!$('fgQ').value)$('fgQ').value=d.default_query;
  if(r.status==429&&d.wait&&Date.now()-t0+d.wait*1000<180000){clearInterval(tick);$('fgMsg').textContent=`${d.error} · waiting…`;setTimeout(()=>{if(live())fgSearch(custom,t0)},d.wait*1000+500);return}
  if(!r.ok)return fail((d.error||r.statusText||'Search failed')+(r.status==429?' (gave up after 3 minutes)':''));
  clearInterval(tick);const tr=(d.tried||[]).map(t=>`“${t.query}”${t.prefix?' [prefix '+t.prefix+']':''}: ${t.skipped?'skipped ('+t.skipped+')':t.n+(t.cached?' (cached)':'')}`).join(' → ');
@@ -688,8 +695,12 @@ async function fgDownload(url,over,manual){const g=S.fg;if(!g||!url)return;const
  if(d.learned&&$('fgMsg')){$('fgMsg').insertAdjacentHTML('beforeend',`<br><span class=muted>Learned: ${esc(d.learned.notes||'')}</span>`)}
  if(r.status==409&&d.confirm){if(confirm(d.error+'. Download into it anyway? Existing photos are kept; new ones are added.'))fgDownload(url,true);return}
  if(!r.ok){toast(d.error||r.statusText);return}toast('Downloading gallery…');fgPoll()}
-async function fgPoll(){const b=$('fgJob');if(!b)return;let j;try{j=await api('/api/findgallery/status')}catch(e){return}
- if(j.running){b.innerHTML=`Downloading: <b>${j.files||0}</b> files → ${esc(j.dest||'')}${j.last_msg?` <span class=muted title="${esc(j.last_msg)}">· ${esc(j.last_msg.slice(0,120))}</span>`:''} ${j.cancel?' · <b>Cancelling…</b>':`<button onclick="this.disabled=true;this.textContent='Cancelling…';api('/api/findgallery/cancel',{method:'POST',body:{}}).then(()=>setTimeout(fgPoll,300))">Cancel</button>`}`;setTimeout(fgPoll,j.cancel?500:1500)}
+async function fgPoll(){const g=S.fg;if(!g||!$('fgJob'))return;let j;try{j=await api('/api/findgallery/status',{signal:fgAc(g).signal})}catch(e){return}
+ const b=$('fgJob');if(S.fg!==g||!b)return;
+ if(j.running){/* the text updates in its own span; the Cancel button is made once, so a click is never lost to a redraw */
+  if(!$('fgJobTxt')){b.innerHTML='<span id=fgJobTxt></span> <button id=fgJobCancel onclick="fgCancel()">Cancel</button>'}
+  $('fgJobTxt').innerHTML=`Downloading: <b>${j.files||0}</b> files → ${esc(j.dest||'')}${j.last_msg?` <span class=muted title="${esc(j.last_msg)}">· ${esc(j.last_msg.slice(0,120))}</span>`:''}${j.cancel?' · <b>Cancelling…</b>':''}`;
+  (g.timers=g.timers||[]).push(setTimeout(fgPoll,1500))}
  else if(j.finished_at&&S.fg&&j.film_id==S.fg.id&&j.cancelled){b.innerHTML=`<b>Cancelled</b> · ${j.files||0} fully downloaded file${j.files==1?'':'s'} kept${j.partial_removed?`, ${j.partial_removed} half-written removed`:''}${j.removed?`, ${j.removed} placeholder/tiny removed`:''}`;
   if(!S.fg.done&&j.files){S.fg.done=1;try{const f=await api('/api/films/'+S.fg.id);if($('posterBox'))$('posterBox').innerHTML=posterBoxHtml(f);const x=(S.films||[]).find(z=>z.id==f.id);if(x){x.gallery_count=f.gallery_count;render()}}catch(e){}}}
  else if(j.finished_at&&S.fg&&j.film_id==S.fg.id){b.innerHTML=`Last download: ${j.files||0} files kept${j.removed?`, ${j.removed} placeholder/tiny removed`:''}${j.error?` · <span style="color:var(--bad)">${esc(j.error)}</span>`:''}`;

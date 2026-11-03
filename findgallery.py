@@ -17,7 +17,7 @@ PREFIX_TTL_S = 7 * 86400
 MIN_FILE_BYTES = 10 * 1024
 PLACEHOLDER_SIZES = {8090, 9584, 503, 2142, 8183}  # 8183 = Imagetwist 'deleted or moved' image (HEAD Content-Length)  # known 'image removed' / placeholder sizes (anything < 10 KB is dropped anyway)
 DL_TIMEOUT_S = 45 * 60
-HTTP_TIMEOUT_S = 20     # every request to the forum gives up after this
+HTTP_TIMEOUT_S = 15     # every request to the forum gives up after this
 LOCK_WAIT_S = 30        # a search waits at most this long for another search to finish
 MAX_STEPS = 7           # most forum searches one Find Gallery search may make
 SEARCH_BUDGET_S = 150   # a Find Gallery search stops starting new steps after this
@@ -124,20 +124,44 @@ def search(query, prefix=None, block=False, all_forums=False):
     ck = (query.strip().lower(), prefix or "", "" if all_forums else forum_id())  # forum is part of the key
     hit = _CACHE.get(ck)
     if hit and time.time() - hit[0] < CACHE_S: return hit[1], True
-    if not _LOCK.acquire(timeout=LOCK_WAIT_S if block else 0.5):  # one search at a time, never wait forever
-        raise Busy(max(wait_s(), 5))
+    if search_cancelled(): raise SearchCancelled()
+    t_lock = time.time()
+    while not _LOCK.acquire(timeout=0.2):  # one search at a time, never wait forever; wakes on cancel
+        if search_cancelled(): raise SearchCancelled()
+        if time.time() - t_lock > (LOCK_WAIT_S if block else 0.5): raise Busy(max(wait_s(), 5))
     try:
         w = wait_s()
         if w > 0:
             if not block: raise Busy(w)
-            time.sleep(w)
-        try: page = http(BASE + "search.php?do=process", form(query, prefix, all_forums), timeout=HTTP_TIMEOUT_S)
+            if SEARCH_CANCEL.wait(w): raise SearchCancelled()  # the 20 s spacing wait ends at once on cancel
+        if search_cancelled(): raise SearchCancelled()
+        try: page = _search_http(BASE + "search.php?do=process", form(query, prefix, all_forums))
         finally: _STATE["last"] = time.time()
     finally:
         _LOCK.release()
     res = parse_results(page)
     _CACHE[ck] = (time.time(), res)
     return res, False
+
+SEARCH_CANCEL = threading.Event()  # set by cancel_search(): the running search stops before its next forum request
+
+class SearchCancelled(Exception): pass
+
+def cancel_search(): SEARCH_CANCEL.set()
+def search_cancelled(): return SEARCH_CANCEL.is_set()
+
+def _search_http(url, data):
+    """http() in a helper thread; raises SearchCancelled at once on cancel (the abandoned read ends by its timeout)."""
+    box = {}
+    def run():
+        try: box["r"] = http(url, data, timeout=HTTP_TIMEOUT_S)
+        except BaseException as e: box["e"] = e
+    t = threading.Thread(target=run, daemon=True); t.start()
+    while t.is_alive():
+        if search_cancelled(): raise SearchCancelled()
+        t.join(0.2)
+    if "e" in box: raise box["e"]
+    return box["r"]
 
 class Busy(Exception):
     def __init__(self, s): super().__init__(f"wait {s:.0f}s"); self.seconds = s
@@ -484,11 +508,16 @@ def log_tail(path, n=300):
         return lines[-1][:n] if lines else ""
     except OSError: return ""
 
-def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
+def prepare():
+    """Reset the cancel flag when a download is accepted (before its thread starts), so a Cancel clicked right after
+    Download is never wiped out by the thread starting late."""
+    CANCEL.clear(); DL.update(cancel=False, cancelled=False)
+
+def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fresh=True):
     popen = popen or subprocess.Popen; log = None; log_path = ""; p = None
     os.makedirs(dest, exist_ok=True)
-    CANCEL.clear()
-    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=False, started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None, partial_removed=0, cancelled=False)
+    if fresh: prepare()
+    DL.update(running=True, url=url, dest=dest, files=count_files(dest), error=None, cancel=cancelled(), started_at=time.time(), removed=0, rc=None, dead=set(), passes=0, failed=0, expected=None, partial_removed=0, cancelled=False)
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         # gallery-dl's messages go to a log file, never a pipe: an unread pipe fills up (~4 KB on Windows) and
@@ -583,6 +612,7 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S):
             # Some images failed but others downloaded: gallery-dl already went on past each error, but the host often
             # answers 'not found' only because it was hit fast (thread 7285707: 37 of 75 vipr.im pages). Go over the
             # same links again, slower; files already saved are skipped by gallery-dl.
+            if cancelled(): DL["error"] = "cancelled"; break  # no more forum reads or downloads after Cancel
             if DL.get("expected") is None and count_files(dest) and failed_count(log_path): DL["expected"] = expected_count(url) or 0
             if not DL["error"] and not DL["cancel"] and count_files(dest) and failed_count(log_path) and \
                     not (DL.get("expected") and count_files(dest) >= DL["expected"]) and \

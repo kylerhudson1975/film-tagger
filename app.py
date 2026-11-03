@@ -2923,8 +2923,10 @@ def findgallery_search(fid):
     steps = list(dict.fromkeys(steps))[:fgmod.MAX_STEPS]
     res, pref_used, t0, last_name = [], False, time.time(), False
     fgmod.SEARCH.update(started=t0, n=len(steps), step="")
+    fgmod.SEARCH_CANCEL.clear()
     try:
         for k, (sq, sp, wide, kind) in enumerate(steps):
+            if fgmod.search_cancelled(): raise fgmod.SearchCancelled()
             if k and time.time() - t0 > fgmod.SEARCH_BUDGET_S:
                 tried.append(dict(query=sq, prefix=sp, n=0, skipped="time limit")); break
             fgmod.SEARCH["step"] = f"Step {k + 1} of {len(steps)}: “{sq}”" + (f" with prefix {sp}" if sp else "") + (" in all forums" if wide else "")
@@ -2932,6 +2934,8 @@ def findgallery_search(fid):
             tried.append(dict(query=sq, prefix=sp, n=len(res), cached=cached, all_forums=wide, last_name=kind == "last")); pref_used = bool(sp)
             last_name = kind == "last"
             if res: break
+    except fgmod.SearchCancelled:
+        return jsonify(error="Search cancelled", cancelled=True, default_query=default_q, tried=tried), 499
     except fgmod.Busy as b:
         return jsonify(error=f"Another search ran just now; try again in {b.seconds:.0f} s", wait=round(b.seconds), default_query=default_q, tried=tried), 429
     except Exception as e:
@@ -2965,8 +2969,8 @@ def findgallery_download(fid):
     if existing and not d.get("overwrite"):
         return jsonify(error=f"This scene already has a gallery with {existing} photos", confirm=True, existing=existing, learned=learned), 409
     def done(): scene_gallery(C(), fid)
-    fgmod.DL.update(running=True, film_id=fid, files=0, error=None)
-    threading.Thread(target=fgmod.run_download, args=(url, dest, done), daemon=True).start()
+    fgmod.prepare(); fgmod.DL.update(running=True, film_id=fid, files=0, error=None)
+    threading.Thread(target=fgmod.run_download, args=(url, dest, done), kwargs=dict(fresh=False), daemon=True).start()
     return jsonify(ok=True, url=url, dest=os.path.basename(dest), learned=learned)
 
 def fg_learn(c, f, url):
@@ -3043,7 +3047,11 @@ def findgallery_status():
 
 @app.post("/api/findgallery/cancel")
 def findgallery_cancel():
-    fgmod.cancel(); return jsonify(ok=True)
+    """{search?: bool, download?: bool} (both by default): stop the running search and/or gallery download."""
+    d = request.get_json(silent=True) or {}
+    if d.get("search", True): fgmod.cancel_search()
+    if d.get("download", True) and fgmod.DL.get("running"): fgmod.cancel()
+    return jsonify(ok=True)
 
 @app.post("/api/galleries/refresh")
 def galleries_refresh():
