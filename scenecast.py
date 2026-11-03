@@ -8,9 +8,12 @@ birth-date lookups for that 'person' could never find anything. Performers come 
      same studio (confirmation only) - accepted only when every word left over is a plain title word, so an unknown
      name in the file name ('Summer Vixen') is never dropped silently.
 Uncertain scenes are left unchanged for review. Hand-edited casts are never touched.
+With --clear, a scene whose whole cast is just its title / release name ('[Dorcel] Megan Escort Deluxe (2016) ( )
+[GhostFreakXX]', 'Dorcel - Threesome Anthology') and whose file name holds no known performer gets an empty cast, as a new
+scan of that file would give (exports then list it as 'no performers listed', so it is still never tagged as all-adult).
 
   python scenecast.py report [--ids 1,2]                       count title-as-person cast entries (read-only)
-  python scenecast.py plan out.json [--ids 1,2] [--tpdb] [--cache cands.json]
+  python scenecast.py plan out.json [--ids 1,2] [--tpdb] [--cache cands.json] [--clear]
                                                                proposals (read-only); --tpdb asks ThePornDB for candidates
   python scenecast.py apply plan.json                          apply the confident proposals in a plan (also fills an empty
                                                                release date from a date in the file name)
@@ -47,7 +50,9 @@ def tpdb_candidates(token, path, fetch=None):
     r = tpdb.candidates(token, path, limit=6, fetch=fetch)
     return [_cand_brief(e) for e in r["results"]]
 
-def propose(c, r, kp, cands=None):
+def _norm(s): return " ".join(re.sub(r"[,&]", " ", s or "").split()).casefold()
+
+def propose(c, r, kp, cands=None, clear=False):
     """-> dict(film_id, old, new, source, confident, why, left) for one scene row."""
     old = split_cast(r["cast_"])
     out = dict(film_id=r["id"], title=r["title"], path=r["path"], old=old, new=None, source=None, confident=False, why="", left=[])
@@ -71,7 +76,13 @@ def propose(c, r, kp, cands=None):
     perf, left = tpdb.split_performers(rest, k2) if rest else (n["performers"], [])
     perf = n["performers"]
     out.update(new=perf, left=left)
-    if not perf: out["why"] = "no known performer name in the file name"; return out
+    if not perf:
+        out["why"] = "no known performer name in the file name"
+        whole, t = _norm(", ".join(old)), _norm(n.get("title"))
+        if clear and old and all(tpdb.looks_like_title(x, kp) for x in old) and (whole == _norm(r["title"]) or (t and whole.endswith(t))):
+            out.update(new=[], clear=True, confident=True, source="filename: no performers",
+                       why="the cast is only the title / release name and the file name has no known performer: cast cleared")
+        return out
     if not k2.title_only(left):
         out["why"] = f"'{' '.join(k2.name_like(left))}' in the file name may be an unknown performer (rest: {' '.join(left)})"; return out
     used = [p for p in perf if p in confirmed]
@@ -90,12 +101,12 @@ def apply_plan(c, plan):
     changed rows are skipped. Junk names nobody credits any more lose their lookup row and their empty people row."""
     done, skipped, dated, removed_people, removed_lookups = [], [], [], 0, 0
     for p in plan:
-        if not p.get("confident") or not p.get("new"): continue
+        if not p.get("confident") or not (p.get("new") or p.get("clear")): continue
         r = c.execute("SELECT cast_, edited_fields, tpdb_id, release_date, year FROM films WHERE id=?", (p["film_id"],)).fetchone()
         ed = set(json.loads(r["edited_fields"] or "[]")) if r else set()
         if not r or "cast_" in ed or r["tpdb_id"] or split_cast(r["cast_"]) != p["old"]:
             skipped.append(p["film_id"]); continue
-        c.execute("UPDATE films SET cast_=?, updated_at=? WHERE id=?", (", ".join(p["new"]), time.time(), p["film_id"]))
+        c.execute("UPDATE films SET cast_=?, updated_at=? WHERE id=?", (", ".join(p["new"]) or None, time.time(), p["film_id"]))
         if p.get("date") and not (r["release_date"] or "").strip() and not ed & {"release_date", "year"}:  # like a new scan would
             c.execute("UPDATE films SET release_date=?, year=COALESCE(year, ?) WHERE id=?", (p["date"], int(p["date"][:4]), p["film_id"]))
             dated.append(p["film_id"])
@@ -133,7 +144,7 @@ def main(a):
                 try: cands = tpdb_candidates(token, r["path"])
                 except Exception as e: cands = None; print(f"  ThePornDB error for {r['id']}: {type(e).__name__}")
                 if cands is not None: cache[r["id"]] = cands
-            plan.append(propose(c, r, kp, cands))
+            plan.append(propose(c, r, kp, cands, clear="--clear" in a))
             print(f"[{i + 1}/{len(rows)}] {r['id']}: {'OK ' if plan[-1]['confident'] else '?? '}{plan[-1]['new']} - {plan[-1]['why']}", flush=True)
             with open(out, "w", encoding="utf-8") as f: json.dump(plan, f, indent=1, ensure_ascii=False)
             if "--cache-out" in a:

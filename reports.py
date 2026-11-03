@@ -887,6 +887,13 @@ NO_POSTER_SQL = ("COALESCE(custom_poster,'')='' AND COALESCE(poster,'')='' "
                  "AND NOT (kind='scene' AND COALESCE(poster_wide,'')<>'')")
 
 
+def _bd_review_count(c):
+    """How many entries the 'People without a birth date' review list holds (birthdates.review_items), or 0."""
+    try:
+        import birthdates
+        return birthdates.review_count(c)
+    except Exception: return 0
+
 def _mark_in_library(c, plist, pc):
     """Set in_library on each person dict: credited (name, multi-word alias or merged person) on a library title, or a
     library title in their cached TMDB credits. A person row stays after their only title is removed from the library, so
@@ -1012,7 +1019,8 @@ def dashboard(c, today=None, S="1"):
         no_poster_scenes=one(f"SELECT COUNT(*) FROM films WHERE kind='scene' AND {NO_POSTER_SQL}"),
         needs_tmdb=one(f"SELECT COUNT(*) FROM films WHERE tmdb_status='needs_match'"),
         missing=one(f"SELECT COUNT(*) FROM films WHERE missing=1"),
-        no_birthday=one(f"SELECT COUNT(*) {NB}") if pc else 0,
+        no_birthday=one(f"SELECT COUNT(*) {NB}") if pc else 0,  # person pages without a birth date ('Person pages' list)
+        bd_review=_bd_review_count(c),  # entries in the birth-date review list of the same window
         untagged=one(f"SELECT COUNT(*) FROM films WHERE id NOT IN (SELECT film_id FROM film_tags WHERE status='approved')"),
         pending=one(f"SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'"))
     return dict(stats=s, decades=dec, undated=undated, genres=genres, no_genre=no_genre, countries=top(cc, 8),

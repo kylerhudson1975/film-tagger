@@ -301,6 +301,7 @@ def queue(c, with_recheck=False):
     page = {r[0]: r[1] for r in c.execute("SELECT name_norm, name FROM people WHERE merged_into IS NULL AND COALESCE(birthday,'')='' "
                                           "AND COALESCE(edited_fields,'') NOT LIKE '%birthday%'")}
     groups = db.alias_groups(c)
+    junk = title_as_name_keys(c)  # scene titles stored as a person: no site knows them
     cnt, adult, disp = Counter(), Counter(), {}
     cols = list(db.PEOPLE_ROLES.values())
     for r in c.execute(f"SELECT kind, primary_genre, {', '.join(cols)} FROM films"):
@@ -315,7 +316,7 @@ def queue(c, with_recheck=False):
     for k, n in page.items(): disp.setdefault(k, n)
     out = []
     for k in set(cnt) | set(page):
-        if k in have or k in merged or k in tried: continue
+        if k in have or k in merged or k in tried or k in junk: continue
         if any(db.fold(x) in have for x in groups.get(k, [])): continue
         out.append((k not in page, -adult[k], -cnt[k], k))
     out.sort()
@@ -457,6 +458,81 @@ def lookup_async(connect, name):
         finally: c.close()
     threading.Thread(target=work, daemon=True).start()
 
+def credited_keys(c):
+    """fold name -> set of (film id, column) for every name credited on a library title (any role)."""
+    cols = list(db.PEOPLE_ROLES.values()); out = {}
+    for r in c.execute(f"SELECT id, {', '.join(cols)} FROM films"):
+        for col in cols:
+            for n in (r[col] or "").split(","):
+                n = " ".join(n.split())
+                if n: out.setdefault(db.fold(n), set()).add((r["id"], col))
+    return out
+
+def title_as_name_keys(c, cred=None):
+    """Fold names that are a scene title / release name stored as a person ('[Dorcel] Megan Escort Deluxe (2016) ( )
+    [GhostFreakXX]', 'AHEGAO Extreme Orgasms Summer Vixen Victoria Voxxx'): the scenecast.py rule (cast entries of scenes
+    without a ThePornDB id and without a hand-edited cast that look like a title). Never a name that is also credited
+    anywhere else, or whose person row has a hand edit, a birth date or a ThePornDB / TMDB id. No birth-date site can know
+    them, so they are left out of the review list and the background lookup (fix the cast: python scenecast.py)."""
+    import scenecast
+    j = scenecast.junk_entries(c, db.known_performers(c))
+    occ = {}
+    for fid, names in j.items():
+        for n in names: occ.setdefault(db.fold(" ".join(n.split())), set()).add((fid, "cast_"))
+    if not occ: return set()
+    cred = cred if cred is not None else credited_keys(c)
+    keys = {k for k, o in occ.items() if not (cred.get(k, set()) - o)}
+    pc = {r[1] for r in c.execute("PRAGMA table_info(people)")}
+    ids = (" OR tpdb_performer_id IS NOT NULL" if "tpdb_performer_id" in pc else "") + (" OR COALESCE(tmdb_person_id,0)>0" if "tmdb_person_id" in pc else "")
+    for (k,) in c.execute(f"SELECT name_norm FROM people WHERE COALESCE(edited_fields,'') NOT IN ('','[]') OR COALESCE(birthday,'')<>''{ids}"):
+        keys.discard(k)
+    return keys
+
+def review_items(c):
+    """The 'People without a birth date' review list: every name the lookup left ambiguous, plus queued films' cast that
+    nothing usable was found for (first). Left out (counted in 'hidden'): names settled since, scene titles stored as a
+    person (title_as_name_keys) and names no title in the library credits any more that have no person page."""
+    with db.batch_cache(): return _review_items(c)
+
+def _review_items(c):
+    out = []
+    qd = {}  # name key -> titles of queued films crediting them as cast without a birth date
+    for fid in queued_film_ids(c):
+        f = c.execute("SELECT title, year, cast_ FROM films WHERE id=?", (fid,)).fetchone()
+        if not f: continue
+        for m in db.cast_missing_birthdates(c, f["cast_"]): qd.setdefault(db.fold(m["name"]), []).append(f"{f['title']} ({f['year'] or '?'})")
+    rows = list(c.execute("SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE status='ambiguous' ORDER BY name COLLATE NOCASE"))
+    if qd:
+        ks = list(qd)
+        rows = [r for r in c.execute(f"SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE name_norm IN ({','.join('?' * len(ks))}) "
+                                     "AND status IN ('ambiguous','not_found','no_birthday','error') ORDER BY name COLLATE NOCASE", ks)] + \
+               [r for r in rows if r["name_norm"] not in qd]
+    cred = credited_keys(c)
+    junk = title_as_name_keys(c, cred)
+    hidden = dict(title_as_name=0, not_in_library=0, settled=0)
+    for r in rows:
+        if r["name_norm"] in junk: hidden["title_as_name"] += 1; continue
+        p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
+        if p and p["merged_into"]: p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE id=?", (p["merged_into"],)).fetchone() or p
+        if p and ((p["birthday"] or "") or "birthday" in json.loads(p["edited_fields"] or "[]")): hidden["settled"] += 1; continue  # TMDB, hand edit, merge
+        if not p and r["name_norm"] not in cred: hidden["not_in_library"] += 1; continue  # its titles were removed, no person page
+        try: cands = json.loads(r["detail"] or "[]")
+        except Exception: cands = []
+        x = dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
+                 iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or ""))
+        if r["name_norm"] in qd:
+            x.update(queued=qd[r["name_norm"]], status=r["status"])
+            if r["status"] != "ambiguous":  # nothing usable found: links to check by hand
+                x.update(note=(r["detail"] or "")[:200], links=[dict(label="Wikipedia", url="https://en.wikipedia.org/w/index.php?search=" + urllib.parse.quote(r["name"] or ""))] +
+                         [dict(label=st.label, url=st.url_for(r["name"])) for st, _ in bdsources.SITES])
+        out.append(x)
+    return dict(review=out, count=len(out), queued_count=sum(1 for x in out if x.get("queued")), hidden=hidden)
+
+def review_count(c):
+    """Number of entries the review list holds (for the Dashboard tile)."""
+    ensure(c)
+    return review_items(c)["count"]
+
 def init(app, connect, tmdb):
     from flask import request, jsonify
     TMDB["fn"] = tmdb
@@ -501,33 +577,7 @@ def init(app, connect, tmdb):
     @app.get("/api/birthdates/review")
     def bd_review():
         c = connect(); ensure(c)
-        out = []
-        qd = {}  # name key -> titles of queued films crediting them as cast without a birth date
-        for fid in queued_film_ids(c):
-            f = c.execute("SELECT title, year, cast_ FROM films WHERE id=?", (fid,)).fetchone()
-            if not f: continue
-            for m in db.cast_missing_birthdates(c, f["cast_"]): qd.setdefault(db.fold(m["name"]), []).append(f"{f['title']} ({f['year'] or '?'})")
-        rows = list(c.execute("SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE status='ambiguous' ORDER BY name COLLATE NOCASE LIMIT 500"))
-        if qd:
-            ks = list(qd)
-            rows = [r for r in c.execute(f"SELECT name_norm, name, detail, at, status FROM birthdate_lookup WHERE name_norm IN ({','.join('?' * len(ks))}) "
-                                         "AND status IN ('ambiguous','not_found','no_birthday','error') ORDER BY name COLLATE NOCASE", ks)] + \
-                   [r for r in rows if r["name_norm"] not in qd]
-        for r in rows:
-            try: cands = json.loads(r["detail"] or "[]")
-            except Exception: cands = []
-            p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE name_norm=?", (r["name_norm"],)).fetchone()
-            if p and p["merged_into"]: p = c.execute("SELECT id, birthday, edited_fields, merged_into FROM people WHERE id=?", (p["merged_into"],)).fetchone() or p
-            if p and ((p["birthday"] or "") or "birthday" in json.loads(p["edited_fields"] or "[]")): continue  # settled since (TMDB, hand edit, merge)
-            x = dict(key=r["name_norm"], name=r["name"], pid=p["id"] if p else None, candidates=cands if isinstance(cands, list) else [],
-                     iafd_search="https://www.iafd.com/results.asp?searchtype=comprehensive&searchstring=" + urllib.parse.quote(r["name"] or ""))
-            if r["name_norm"] in qd:
-                x.update(queued=qd[r["name_norm"]], status=r["status"])
-                if r["status"] != "ambiguous":  # nothing usable found: links to check by hand
-                    x.update(note=(r["detail"] or "")[:200], links=[dict(label="Wikipedia", url="https://en.wikipedia.org/w/index.php?search=" + urllib.parse.quote(r["name"] or ""))] +
-                             [dict(label=st.label, url=st.url_for(r["name"])) for st, _ in bdsources.SITES])
-            out.append(x)
-        return jsonify(review=out, queued_count=sum(1 for x in out if x.get("queued")))
+        return jsonify(review_items(c))
 
     @app.post("/api/birthdates/review")
     def bd_review_pick():
