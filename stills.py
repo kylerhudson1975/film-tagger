@@ -1,4 +1,4 @@
-"""Make stills: ~20 evenly spaced, sharp (never motion-blurred) full-resolution JPG frames from a title's video, saved as its gallery
+"""Make stills: 10, 20 (default) or 40 evenly spaced, sharp (never motion-blurred) full-resolution JPG frames from a title's video, saved as its gallery
 ('<video stem> - GALLERY', gallery.canonical_dir) so they show in the normal gallery viewer. A fallback for when
 Find Gallery finds nothing. ffmpeg: the install's tools\\ffmpeg folder, else PATH, else a portable build (gyan.dev
 essentials) downloaded into tools\\ffmpeg on first use. One job at a time; progress in JOB."""
@@ -7,7 +7,8 @@ import os, re, shutil, subprocess, threading, time, zipfile, urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "tools", "ffmpeg")
 ZIP_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-COUNT, SKIP = 20, 0.05  # frames, and the share of the start/end left out (logos, credits, black)
+COUNT, SKIP = 20, 0.05
+COUNTS = (10, 20, 40)  # the choices offered by the Make stills popup  # frames, and the share of the start/end left out (logos, credits, black)
 JOB = dict(running=False, film_id=None, phase=None, done=0, total=0, error=None, dest=None, source=None, dl_bytes=0, dl_total=None)
 NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -99,8 +100,31 @@ def best_at(ff, video, d, t, win, n, fps, sw, sh):
     s, i = max(c)
     return s, t0, i
 
-def run(fid, video, dest, done=None):
-    """Background job body: make up to COUNT sharp stills of `video` into `dest`."""
+PAT = re.compile(r"still (\d{2,3}) \(\d{2}h\d{2}m\d{2}s\)\.jpg$")
+
+def next_number(dest):
+    """First free still number in dest (Add to existing: new stills follow the old ones, nothing is overwritten)."""
+    try: ns = [int(m.group(1)) for m in map(PAT.match, os.listdir(dest)) if m]
+    except OSError: ns = []
+    return max(ns, default=0) + 1
+
+def backup_existing(dest, img_ext):
+    """Replace: move the folder's current images and shoot subfolders into a hidden '.stills-backup-<time>' subfolder
+    (hidden so the gallery no longer shows them). Never deletes. -> (backup folder name, items moved)."""
+    if not os.path.isdir(dest): return None, 0
+    name = ".stills-backup-" + time.strftime("%Y%m%d-%H%M%S"); bk = os.path.join(dest, name); k = 2
+    while os.path.exists(bk): bk = os.path.join(dest, f"{name}-{k}"); k += 1
+    moved = 0
+    for n in sorted(os.listdir(dest)):
+        p = os.path.join(dest, n)
+        if n.startswith((".", "$", "~")): continue
+        if (os.path.isfile(p) and os.path.splitext(n)[1].lower() in img_ext) or (os.path.isdir(p) and not os.path.islink(p)):
+            os.makedirs(bk, exist_ok=True); shutil.move(p, os.path.join(bk, n)); moved += 1
+    return (os.path.basename(bk) if moved else None), moved
+
+def run(fid, video, dest, done=None, count=COUNT, start_no=1):
+    """Background job body: make up to `count` sharp stills of `video` into `dest`, numbered from start_no."""
+    COUNT = count if count in COUNTS else globals()["COUNT"]
     try:
         JOB.update(phase="looking for ffmpeg", done=0, total=COUNT, error=None, dest=dest, skipped=0)
         ff, src = find_ffmpeg()
@@ -131,17 +155,12 @@ def run(fid, video, dest, done=None):
                     if p and p[0] >= floor: break
             if p and p[0] >= floor:
                 at = p[1] + p[2] / fps; hh, rem = divmod(int(at), 3600); mm, ss = divmod(rem, 60)
-                out = os.path.join(dest, f"still {len(made) + 1:02d} ({hh:02d}h{mm:02d}m{ss:02d}s).jpg")
+                out = os.path.join(dest, f"still {start_no + len(made):02d} ({hh:02d}h{mm:02d}m{ss:02d}s).jpg")
                 if save_frame(ff, video, p[1], p[2], out): made.append(os.path.basename(out))
             else: JOB["skipped"] += 1
             JOB["done"] = len(made)
         if not made: raise RuntimeError("ffmpeg made no stills")
-        pat = re.compile(r"still \d{2} \(\d{2}h\d{2}m\d{2}s\)\.jpg$")
-        for n in os.listdir(dest):  # stills left from an earlier run (the user confirmed overwrite)
-            if pat.match(n) and n not in made:
-                try: os.remove(os.path.join(dest, n))
-                except OSError: pass
-        JOB["phase"] = "done"
+        JOB.update(phase="done", saved=len(made))
     except Exception as e:
         JOB.update(error=str(e) or type(e).__name__, phase="failed")
     finally:
@@ -150,6 +169,6 @@ def run(fid, video, dest, done=None):
             try: done()
             except Exception: pass
 
-def start(fid, video, dest, done=None):
-    JOB.update(running=True, film_id=fid, started_at=time.time(), source=None)
-    threading.Thread(target=run, args=(fid, video, dest, done), daemon=True).start()
+def start(fid, video, dest, done=None, count=COUNT, start_no=1):
+    JOB.update(running=True, film_id=fid, started_at=time.time(), source=None, saved=0, done=0, error=None, phase="starting")
+    threading.Thread(target=run, args=(fid, video, dest, done, count, start_no), daemon=True).start()

@@ -3149,23 +3149,47 @@ def vg_learned_remove():
 # ---------- Make stills: ~20 frames from the video as the title's gallery (stills.py), when Find Gallery finds nothing ----------
 import stills as stillsmod
 
+def _stills_target(fid):
+    """-> (video path, dest folder, existing image count, None) or (.., error response)."""
+    c = C(); f = c.execute("SELECT id FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return None, None, 0, (jsonify(error="not found"), 404)
+    if is_review(c, fid): return None, None, 0, (jsonify(error="Blocked: this title is flagged for review by hand"), 403)
+    path = next((p for (p,) in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,)) if os.path.isfile(p)), None)
+    if not path: return None, None, 0, (jsonify(error="The video file was not found"), 400)
+    kind, cur = gallerymod.find(path, db.VIDEO_EXT)
+    dest = cur if kind == "canonical" else gallerymod.canonical_dir(path)
+    existing = len(gallerymod.images(dest)) if os.path.isdir(dest) else 0
+    return path, dest, existing, None
+
+@app.get("/api/films/<int:fid>/stills/info")
+def stills_info(fid):
+    """For the Make stills popup: how many images the target stills folder already holds, and the count choices."""
+    _, dest, existing, err = _stills_target(fid)
+    if err: return err
+    return jsonify(existing=existing, dest=os.path.basename(dest), counts=list(stillsmod.COUNTS), default=stillsmod.COUNT)
+
 @app.post("/api/films/<int:fid>/stills")
 def make_stills(fid):
-    """{overwrite?}: films or scenes. Blocked like galleries for titles flagged 'Review by hand'."""
-    c = C(); f = c.execute("SELECT id FROM films WHERE id=?", (fid,)).fetchone()
-    if not f: return jsonify(error="not found"), 404
-    if is_review(c, fid): return jsonify(error="Blocked: this title is flagged for review by hand"), 403
+    """{count: 10|20|40, mode: 'add'|'replace'} (overwrite: true = add, older clients): films or scenes. Blocked like
+    galleries for titles flagged 'Review by hand'. Replace moves the folder's current images into a hidden backup
+    subfolder first (never deletes); Add numbers the new stills after the old ones."""
+    path, dest, existing, err = _stills_target(fid)
+    if err: return err
     if stillsmod.JOB.get("running"): return jsonify(error="Stills are already being made for another title"), 409
-    path = next((p for (p,) in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,)) if os.path.isfile(p)), None)
-    if not path: return jsonify(error="The video file was not found"), 400
-    kind, cur = gallerymod.find(path, db.VIDEO_EXT)
-    existing = len(gallerymod.images(cur)) if cur else 0
-    if existing and not (request.json or {}).get("overwrite"):
+    b = request.json or {}
+    try: count = int(b.get("count") or stillsmod.COUNT)
+    except (TypeError, ValueError): count = 0
+    if count not in stillsmod.COUNTS: return jsonify(error="count must be one of " + ", ".join(map(str, stillsmod.COUNTS))), 400
+    mode = b.get("mode") or ("add" if b.get("overwrite") else None)
+    if existing and mode not in ("add", "replace"):
         return jsonify(error=f"This title already has a gallery with {existing} photos", confirm=True, existing=existing), 409
-    dest = cur if kind == "canonical" else gallerymod.canonical_dir(path)
+    backup = None
+    if existing and mode == "replace":
+        try: backup, _ = stillsmod.backup_existing(dest, gallerymod.IMG_EXT)
+        except OSError as e: return jsonify(error="Could not move the old stills aside: " + str(e)), 500
     def done(): GAL_CACHE.pop(fid, None); scene_gallery(C(), fid)
-    stillsmod.start(fid, path, dest, done)
-    return jsonify(ok=True, dest=os.path.basename(dest))
+    stillsmod.start(fid, path, dest, done, count, stillsmod.next_number(dest))
+    return jsonify(ok=True, dest=os.path.basename(dest), count=count, backup=backup)
 
 @app.post("/api/films/<int:fid>/gallery/open")
 def gallery_open(fid):
