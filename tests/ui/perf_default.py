@@ -38,6 +38,19 @@ with sync_playwright() as pw:
     pg.go_back(); pg.wait_for_timeout(1500)
     check(pg.evaluate("S.page") == "perf" and pg.evaluate("S.pfCat") == "porn", f"Back restores Porn ({pg.evaluate('S.pfCat')!r})")
     pg.click("#perfBtn"); pg.wait_for_timeout(1200); empty("Performers after Back")
+    # cards without a photo: profiles built in the background (mocked person page), image swapped in place, no reload
+    import re as _re, json as _json
+    built = []
+    def person(r):
+        pid = int(_re.search(r"/api/person/(\d+)", r.request.url).group(1)); built.append(pid)
+        r.fulfill(status=200, content_type="application/json", body=_json.dumps({"person": {"id": pid, "photo": f"/api/person/{pid}/photo?v=9"}}))
+    pg.route(_re.compile(r".*/api/person/\d+$"), person)
+    pg.reload(); pg.wait_for_timeout(1500); pg.click("#perfBtn"); pg.wait_for_timeout(2500)
+    srcs = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc')].map(x=>(x.querySelector('img')||{}).getAttribute?x.querySelector('img').getAttribute('src'):null)")
+    check(len(srcs) == 2 and all(x and x.endswith("?v=9") for x in srcs) and sorted(set(built)) == sorted(built), f"photos swapped in place {srcs} {built}")
+    check(pg.locator("#pfRecent .pph span").count() == 0, "no initials placeholders left")
+    pg.click("#pfRecent .pf-rc >> nth=0"); pg.wait_for_timeout(1200)
+    check(pg.locator("#pfPanel .pf-ph img").count() == 1, "panel shows the photo")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()

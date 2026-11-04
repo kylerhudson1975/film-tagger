@@ -1240,6 +1240,16 @@ S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfC
    screen and at the top of a category (filtered to it); hidden while a search is active. */
 function pfRecentRow(){if(ppQ())return '';const l=S.recent[S.pfCat||'all'];if(!l||!l.length)return '';
  return `<div id=pfRecent class=pf-recent><h4>Recently added</h4>${S.pfCat?'':'<div class=muted style="font-size:11.5px;margin:-4px 0 6px">Mainstream and Porn, in turn</div>'}<div class=pf-rrow>${l.map(p=>`<div class=pf-rc data-pid="${p.id}" onclick="pfOpen(${p.id})" title="${esc(p.name)}: latest title added ${p.added}"><div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.added}</div></div>`).join('')}</div></div>`}
+/* Photos for cards without one: build the profile in the background (GET /api/person/<id>, the same path as Open full
+   profile; hand-set photos stay protected), 3 at a time, then swap the image into every card for that person in place. */
+S.phQ=[];S.phBusy=0;S.phDone={};S.phUrl={};
+function pfPhotoSet(id,url){if(!url)return;S.phUrl[id]=url;[S.recent,{a:S.built,b:S.builtM,c:S.favs,d:S.pfAll&&S.pfAll.people}].forEach(o=>Object.values(o||{}).forEach(l=>(l||[]).forEach(p=>{if((p.id||p.pid)===id)p.photo=url})));Object.values(S.need||{}).forEach(d=>(d&&d.people||[]).forEach(p=>{if(p.id===id)p.photo=url}));
+ if(S.pfCache[id])S.pfCache[id].photo=url;if(S.pfSum&&S.pfSum.id===id&&!S.pfSum.photo){S.pfSum.photo=url;pfPanelDraw()}
+ document.querySelectorAll(`#pfList [data-pid="${id}"] .pph`).forEach(ph=>{if(!ph.querySelector('img'))ph.innerHTML=`<img loading=lazy src="${esc(url)}">`})}
+function pfPhotoQueue(){if(S.page!='perf')return;let n=Object.keys(S.phDone).length+S.phQ.length;  // Needs attention skipped on purpose (people to fix by hand); at most 60 builds per session
+ document.querySelectorAll('#pfList [data-pid] .pph span').forEach(sp=>{const card=sp.closest('[data-pid]'),id=+card.dataset.pid;if(card.closest('#pfNeed')||n>=60)return;if(id&&!S.phDone[id]&&!S.phQ.includes(id)){S.phQ.push(id);n++}});pfPhotoRun()}
+function pfPhotoRun(){while(S.phBusy<3&&S.phQ.length){const id=S.phQ.shift();if(S.phDone[id])continue;S.phDone[id]=1;S.phBusy++;
+  api('/api/person/'+id).then(r=>{S.phDone[id]=2;pfPhotoSet(id,r&&r.person&&r.person.photo)},()=>{}).finally(()=>{S.phBusy--;if(S.page=='perf')pfPhotoRun()})}}
 function pfRecentLoad(){const k=S.pfCat||'all';return api('/api/people/recent?limit=16&cat='+(S.pfCat||'mix')).then(j=>{S.recent[k]=j.people},()=>{S.recent[k]=S.recent[k]||[]}).then(()=>{if(S.page=='perf'&&(S.pfCat||'all')===k)pfDraw()})}S.need={};S.needF='';S.needMax=300;
 /* Needs attention: people missing a birth date, photo, gender or ThePornDB/TMDB link, badges on each card; Porn sorted by most
    scenes first; Mainstream = opened profiles only. Filter chips narrow to one missing field. */
@@ -1315,8 +1325,8 @@ function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).l
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){if(S.pfTab!==k&&S.pfSel)pfClose();S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
- if(!S.pfCat){el.innerHTML=ppQ()?pfAllList():pfRecentRow()+'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
- el.innerHTML=pfRecentRow()+(t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList());pfMark()}
+ if(!S.pfCat){setTimeout(pfPhotoQueue,0);el.innerHTML=ppQ()?pfAllList():pfRecentRow()+'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
+ el.innerHTML=pfRecentRow()+(t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList());pfMark();setTimeout(pfPhotoQueue,0)}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
 async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();if(!cat){if(ppQ())await pfAllSearch().then(()=>{if(S.page=='perf'&&!S.pfCat)pfDraw()});return}const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
  jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>{done('fav');setTimeout(pfPrefetch,400)}));
@@ -1336,12 +1346,12 @@ function pfAllList(){const a0=S.pfAll,a=a0&&a0.q&&S.pfCat?{...a0,people:a0.peopl
 async function pfOpenName(name){try{const r=await api('/api/person/lookup?'+new URLSearchParams({name}));pfOpen(r.id)}catch(e){toast('Could not open '+name)}}
 async function pfOpen(id,quiet){if(S.page!='perf')return showPerson(id);S.pfSel=id;if(!quiet||!S.pfSum||S.pfSumFor!==id){S.pfSum=S.pfCache[id]||null;S.pfSumFor=id}pfPanelDraw();pfMark();
  let d;try{d=await api('/api/people/'+id+'/summary')}catch(e){if(S.pfSel===id&&!S.pfSum){S.pfSum={error:true};pfPanelDraw()}return}
- S.pfCache[id]=d;if(S.pfSel!==id)return;S.pfSum=d;S.pfSumFor=id;pfPanelDraw();pfCoLoad(id);
- if(!d.built&&!S.pfKick[id]){S.pfKick[id]='running';pfPanelDraw();  // never opened: open the person page in the background (the normal profile build)
-  api('/api/person/'+id).catch(()=>{}).then(()=>{S.pfKick[id]='done';if(S.pfSel===id)pfPoll(id,true)})}
+ if(!d.photo&&S.phUrl[id])d.photo=S.phUrl[id];S.pfCache[id]=d;if(S.pfSel!==id)return;S.pfSum=d;S.pfSumFor=id;pfPanelDraw();pfCoLoad(id);
+ if((!d.built||!d.photo)&&!S.pfKick[id]&&S.phDone[id]!==2){S.pfKick[id]='running';S.phDone[id]=1;pfPanelDraw();  // never opened (or no photo yet): open the person page in the background (the normal profile build)
+  api('/api/person/'+id).then(r=>{S.phDone[id]=2;pfPhotoSet(id,r&&r.person&&r.person.photo)},()=>{}).then(()=>{S.pfKick[id]='done';if(S.pfSel===id)pfPoll(id,true)})}
  else if(d.loading)pfPoll(id)}
 function pfPoll(id,now){clearTimeout(S.pfPollT);S.pfPollT=setTimeout(async()=>{if(S.page!='perf'||S.pfSel!==id)return;let d;try{d=await api('/api/people/'+id+'/summary')}catch(e){return pfPoll(id)}
- if(S.pfSel!==id)return;S.pfSum=d;S.pfCache[id]=d;pfPanelDraw();if(d.loading)pfPoll(id);else{pfCoLoad(id,true);if(d.built)pfFetch()}},now?300:3000)}
+ if(S.pfSel!==id)return;if(!d.photo&&S.phUrl[id])d.photo=S.phUrl[id];S.pfSum=d;S.pfCache[id]=d;pfPanelDraw();if(d.loading)pfPoll(id);else{pfCoLoad(id,true);if(d.built)pfFetch()}},now?300:3000)}
 async function pfCoLoad(id,force){const c=S.pfCo[id];if(c&&!force&&(c.busy||c.list))return;S.pfCo[id]={busy:true,list:c&&c.list};
  try{const j=await api('/api/people/'+id+'/costars');S.pfCo[id]={list:j.costars,loading:j.loading}}catch(e){S.pfCo[id]={list:c&&c.list||[],error:true}}
  if(S.pfSel===id)pfCoDraw()}
