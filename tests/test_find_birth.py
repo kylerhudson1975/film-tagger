@@ -5,7 +5,7 @@ import os, sys, io, json, tempfile, urllib.request, urllib.parse
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
-_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); _c0.commit()
+_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); db.set_setting(_c0, "death_backfill_done", 1); _c0.commit()
 import app, tpdb, birthdates as bd
 c = db.connect(); db.set_setting(c, "scene_roots", [r"D:\S"]); db.set_setting(c, "tmdb_key", "k" * 32); db.set_setting(c, "tpdb_key", "t")
 c.execute("INSERT INTO films(id,title,kind,cast_,release_date,year) VALUES(1,'Early One','scene','Ann Old','1978-05-01',1978)")

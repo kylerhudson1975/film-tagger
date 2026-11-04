@@ -5,7 +5,7 @@ import os, sys, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import db
-_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); _c0.commit()
+_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); db.set_setting(_c0, "death_backfill_done", 1); _c0.commit()
 import app
 from werkzeug.serving import make_server
 from playwright.sync_api import sync_playwright
@@ -14,6 +14,9 @@ c.execute("INSERT INTO films(id,title,kind,cast_,added_at) VALUES(1,'Sc','scene'
 c.execute("INSERT INTO films(id,title,cast_,added_at) VALUES(2,'Mv','Max Main',1780000000)"); c.execute("INSERT INTO files(film_id,path) VALUES(2,'D:\\Movies\\Mv.mkv')")
 c.commit(); cl = app.app.test_client()
 for n in ("Pia Porn", "Max Main"): cl.get("/api/person/lookup?name=" + n)
+import datetime as _d; _t = _d.date.today()
+c.execute("UPDATE people SET birthday=? WHERE name='Pia Porn'", (f"1985-{_t.month:02d}-{_t.day:02d}" if (_t.month, _t.day) != (2, 29) else "1984-02-29",))
+c.execute("UPDATE people SET birthday='1943-01-02', deathday='2010-06-01' WHERE name='Max Main'"); c.commit()
 srv = make_server("127.0.0.1", 5104, app.app, threaded=True); threading.Thread(target=srv.serve_forever, daemon=True).start()
 fails = []
 def check(ok, msg):
@@ -51,6 +54,16 @@ with sync_playwright() as pw:
     check(pg.locator("#pfRecent .pph span").count() == 0, "no initials placeholders left")
     pg.click("#pfRecent .pf-rc >> nth=0"); pg.wait_for_timeout(1200)
     check(pg.locator("#pfPanel .pf-ph img").count() == 1, "panel shows the photo")
+    bd = pg.evaluate("[...document.querySelectorAll('#pfBday .pf-rc')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
+    rip = pg.evaluate("[...document.querySelectorAll('#pfRip .pf-rc')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
+    order = pg.evaluate("[...document.querySelectorAll('#pfList .pf-recent')].map(x=>x.id)")
+    check(len(bd) == 1 and "Pia Porn" in bd[0] and "today" in bd[0] and pg.locator("#pfBday h4").inner_text().startswith("🎂"), f"birthday row {bd}")
+    check(rip == ["Max Main 1943–2010 · age 67"], f"memoriam row {rip}")
+    check(order == ["pfBday", "pfRecent", "pfRip"], f"row order {order}")
+    pg.click("#pfRip .pf-rc"); pg.wait_for_timeout(1200)
+    check(pg.locator("#pfPanel .rip").count() == 1, "RIP marker on the side panel")
+    pg.click("#pfCatP"); pg.wait_for_timeout(1500)
+    check(pg.locator("#pfBday .pf-rc").count() == 1 and pg.locator("#pfRip").count() == 0, "Porn filter on the rows")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()

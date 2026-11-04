@@ -1,5 +1,5 @@
 """Person pages: library people index, TMDB person resolution/caching, filmography with owned-film matching."""
-import os, re, json, time, threading, urllib.request, urllib.error, urllib.parse
+import os, re, json, time, datetime, threading, urllib.request, urllib.error, urllib.parse
 from collections import Counter as Counter_
 from flask import request, jsonify, send_from_directory
 import db
@@ -62,7 +62,7 @@ TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", 
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
              ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT")]
-EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender")
+EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender", "deathday")
 # Gender values: ThePornDB's wording (what the library already holds) plus 'Unknown' (set by hand: checked, not known).
 GENDERS = ("Female", "Male", "Non Binary", "Transgender Female", "Transgender Male", "Unknown")
 TMDB_GENDER = {1: "Female", 2: "Male", 3: "Non Binary"}  # TMDB person.gender (0 = not set)
@@ -128,6 +128,9 @@ def clean_value(k, v):
         v = {str(a): str(b) for a, b in (v or {}).items() if str(b).startswith("http")}
         return json.dumps(v) if v else None
     if k == "gender": return norm_gender(v)
+    if k == "deathday":  # YYYY-MM-DD only; anything else clears it
+        m = re.match(r"\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$", str(v or ""))
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
     return (str(v).strip() or None) if v is not None else None
 
 def adult_roots(c):
@@ -218,6 +221,7 @@ def apply_tpdb(c, row, p, allow_image=True, fill_only=False):
     sets = {k: v for k, v in f.items() if k not in edited and not (k in PHOTO_AUTO and photo_locked(row))}
     if fill_only: sets = {k: v for k, v in sets.items() if v and (k == "image_url" or not row[k])}
     if not sets.get("gender") or row["gender"]: sets.pop("gender", None)  # gender is add-only: never replaces a stored value
+    if not sets.get("deathday") or row["deathday"]: sets.pop("deathday", None)  # death date is add-only
     if not sets.get("birthday"): sets.pop("birthday", None)  # ThePornDB has none: keep one found elsewhere (Wikidata, TMDB)
     elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"theporndb {p.get('id')}"
     if fill_only: sets.update(tpdb_performer_id=str(p.get("id")), tpdb_fetched_at=time.time())
@@ -539,9 +543,11 @@ def init(app, tmdb, posters_dir):
                     fetched_at=time.time(), source="tmdb")
         if keep_profile:  # bio/photo/etc. come from ThePornDB or hand edits: only take the filmography (and a birth date ThePornDB lacks)
             sets = dict(credits_json=sets["credits_json"], known_for=sets["known_for"], fetched_at=sets["fetched_at"],
-                        **({"birthday": sets["birthday"]} if sets["birthday"] and not row["birthday"] else {}))
+                        **({"birthday": sets["birthday"]} if sets["birthday"] and not row["birthday"] else {}),
+                        **({"deathday": sets["deathday"]} if sets["deathday"] else {}))
         if tmdb_primary:  # TMDB is the primary profile; fields TMDB lacks keep what ThePornDB / others filled in
             sets = {k: v for k, v in sets.items() if v not in (None, "")}; sets["source"] = "tmdb"
+        if not sets.get("deathday") or row["deathday"]: sets.pop("deathday", None)  # death date is add-only
         if not sets.get("birthday"): sets.pop("birthday", None)  # TMDB has none: keep one found elsewhere
         elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"tmdb person {row['tmdb_person_id']}"
         sets = {k: v for k, v in sets.items() if k not in edited and not (k == "birth_date_source" and "birthday" in edited)
@@ -550,6 +556,8 @@ def init(app, tmdb, posters_dir):
         if g and not row["gender"] and "gender" not in edited: sets["gender"] = g  # add-only
         c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]])
         c.commit()
+        if not row["deathday"] and "deathday" not in sets and "deathday" not in edited and "pytest" not in __import__("sys").modules:
+            threading.Thread(target=death_wikidata, args=([row["id"]],), daemon=True).start()  # Wikidata P570 (TMDB id link), off the request
 
     def filmography(c, credits):
         lib = [dict(r) for r in c.execute("SELECT id, title, original_title, year, tmdb_id, poster, custom_poster FROM films")]
@@ -1884,7 +1892,7 @@ def init(app, tmdb, posters_dir):
                    first=min(yrs) if yrs else None, last=max(yrs) if yrs else None,
                    busiest=dict(year=busy[0], n=busy[1]) if busy else None,
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
-                   studios=studios, excluded=excluded, birthday=row["birthday"],
+                   studios=studios, excluded=excluded, birthday=row["birthday"], deathday=row["deathday"],
                    excluded_why=None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday"))
         if not loading:
             SUMC[ck] = res
@@ -1973,6 +1981,133 @@ def init(app, tmdb, posters_dir):
                             added=time.strftime("%Y-%m-%d", time.localtime(at))))
             if len(out) >= lim: break
         return out
+
+    # ---------- Happy Birthday! / In memoriam (Performers rows): people credited in the library ----------
+    def lib_people(c, cat, where):
+        """(row-lite, is_adult) for un-merged people credited on a library title, filtered by Mainstream / Porn."""
+        data = index(c); adult = adult_film_ids(c); out = []
+        for r in c.execute("SELECT id, name, name_norm, birthday, deathday FROM people WHERE merged_into IS NULL AND " + where):
+            e = data.get(r["name_norm"])
+            if not e: continue
+            a = bool(e["films"] & adult)
+            if cat == "porn" and not a or cat == "mainstream" and a: continue
+            out.append((r, a))
+        return out
+    def _ymd(s):
+        m = re.match(r"(\d{4})-(\d{2})-(\d{2})$", (s or "")[:10])
+        if not m: return None
+        try: return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError: return None
+    def _bday_in(b, year):
+        """b's birthday in `year`; Feb 29 falls on Feb 28 in non-leap years."""
+        try: return datetime.date(year, b.month, b.day)
+        except ValueError: return datetime.date(year, 2, 28)
+    def _cards(c, picks):
+        full = {r["id"]: r for r in c.execute("SELECT * FROM people WHERE id IN (%s)" % ",".join("?" * len(picks)), [p["id"] for p in picks])} if picks else {}
+        for p in picks:
+            r = full[p["id"]]; p.update(photo=photo_url(r), fav=bool(r["favorite"]))
+        return picks
+    @app.get("/api/people/birthdays")
+    def people_birthdays():
+        """Today's birthdays (local date) with the age turning; if none, the next 7 days. People with a death date are left out."""
+        c = C(); cat = request.args.get("cat") or ""; today = datetime.date.today(); hits = []
+        for r, a in lib_people(c, cat, "COALESCE(birthday,'')<>'' AND COALESCE(deathday,'')=''"):
+            b = _ymd(r["birthday"])
+            if not b or b.year < 1900: continue
+            d = _bday_in(b, today.year)
+            if d < today: d = _bday_in(b, today.year + 1)
+            n = (d - today).days
+            if n <= 7: hits.append(dict(id=r["id"], name=r["name"], adult=a, date=d.isoformat(), days=n, turns=d.year - b.year))
+        mode = "today" if any(h["days"] == 0 for h in hits) else "week"
+        hits = [h for h in hits if (h["days"] == 0) == (mode == "today")]
+        hits.sort(key=lambda h: (h["days"], db.fold_key(h["name"])))
+        return jsonify(mode=mode, today=today.isoformat(), people=_cards(c, hits[:40]), total=len(hits))
+    @app.get("/api/people/memoriam")
+    def people_memoriam():
+        """People with a death date, most recent first: '1943–2010 · age 67'."""
+        c = C(); cat = request.args.get("cat") or ""; hits = []
+        for r, a in lib_people(c, cat, "COALESCE(deathday,'')<>''"):
+            dd = _ymd(r["deathday"]); b = _ymd(r["birthday"])
+            if not dd: continue
+            age = (dd.year - b.year - ((dd.month, dd.day) < (b.month, b.day))) if b else None
+            hits.append(dict(id=r["id"], name=r["name"], adult=a, deathday=dd.isoformat(), born=b.year if b else None, died=dd.year, age=age))
+        hits.sort(key=lambda h: (h["deathday"], h["id"]), reverse=True)
+        return jsonify(people=_cards(c, hits[:40]), total=len(hits))
+
+    # ---------- death-date backfill (add-only): Wikidata P570 via TMDB person id (P4985) or a linked QID, then TMDB deathday ----------
+    def _p570(where_vals, var, pred):
+        import birthdates as bdm
+        q = (f"SELECT ?k ?d ?pr ?occ WHERE {{ VALUES ?k {{ {where_vals} }} {pred} p:P570/psv:P570 [wikibase:timeValue ?d; wikibase:timePrecision ?pr]; "
+             f"wdt:P106 ?occ . }}")
+        res = {}
+        for b in bdm._sparql(q)["results"]["bindings"]:
+            if b["occ"]["value"].rsplit("/", 1)[1] not in bdm.FILM_OCC or int(b["pr"]["value"]) < 11: continue  # film people, day precision
+            v = b["d"]["value"]
+            if v.startswith("-"): continue
+            res.setdefault(b["k"]["value"].rsplit("/", 1)[-1], set()).add(v[:10])
+        return {k: next(iter(v)) for k, v in res.items() if len(v) == 1}  # one unambiguous date
+    def _save_death(c, pid, d, src):
+        n = c.execute("UPDATE people SET deathday=? WHERE id=? AND COALESCE(deathday,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"deathday\"%'", (d, pid)).rowcount
+        c.commit(); return n
+    def death_wikidata(ids, gap=1.0, st=None):
+        """Wikidata pass for people ids (batched SPARQL). Returns how many were filled."""
+        c = C(); filled = 0
+        try:
+            rows = [r for r in c.execute("SELECT id, tmdb_person_id, birth_date_source FROM people WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)] if ids else []
+            bytm = {str(r["tmdb_person_id"]): r["id"] for r in rows if (r["tmdb_person_id"] or 0) > 0}
+            byq = {}
+            for r in rows:
+                m = re.match(r"wikidata (Q\d+)", r["birth_date_source"] or "")
+                if m: byq[m.group(1)] = r["id"]
+            for keys, mk, pred in ((list(bytm), lambda k: f'"{k}"', "?p wdt:P4985 ?k . ?p"), (list(byq), lambda k: "wd:" + k, "?k")):
+                for i in range(0, len(keys), 150):
+                    chunk = keys[i:i + 150]
+                    try: got = _p570(" ".join(mk(k) for k in chunk), "k", pred)
+                    except Exception:
+                        if st is not None: st["errors"] += 1
+                        time.sleep(10); continue
+                    for k, d in got.items():
+                        pid = (bytm if pred.startswith("?p") else byq).get(k)
+                        if pid and _save_death(c, pid, d, "wikidata"): filled += 1; st is not None and st.__setitem__("wikidata", st["wikidata"] + 1)
+                    if st is not None: st["wd_done"] += len(chunk)
+                    time.sleep(gap)
+        finally: c.close()
+        return filled
+    DJ = dict(running=False, phase=None, total=0, wd_done=0, tmdb_done=0, tmdb_total=0, wikidata=0, tmdb=0, errors=0, started=None, finished=None, error=None)
+    def death_job(wait=0, tmdb_gap=0.3):
+        def work():
+            time.sleep(wait); c = C()
+            try:
+                data = index(c); key = key_of(c)
+                todo = [r for r in c.execute("SELECT id, name_norm, tmdb_person_id, birth_date_source, edited_fields FROM people WHERE merged_into IS NULL AND COALESCE(deathday,'')='' "
+                                             "AND (COALESCE(tmdb_person_id,0)>0 OR birth_date_source LIKE 'wikidata Q%')")
+                        if r["name_norm"] in data and "deathday" not in json.loads(r["edited_fields"] or "[]")]
+                DJ.update(total=len(todo), wd_done=0, tmdb_done=0, wikidata=0, tmdb=0, errors=0, started=time.time(), phase="wikidata")
+                death_wikidata([r["id"] for r in todo], st=DJ)
+                left = [r for r in todo if (r["tmdb_person_id"] or 0) > 0]
+                left = [r for r in left if not (c.execute("SELECT deathday FROM people WHERE id=?", (r["id"],)).fetchone()[0] or "")]
+                DJ.update(phase="tmdb", tmdb_total=len(left))
+                for r in left:
+                    DJ["tmdb_done"] += 1
+                    if not key: break
+                    try: d = (tmdb(f"person/{r['tmdb_person_id']}", key).get("deathday") or "")[:10]
+                    except Exception: DJ["errors"] += 1; time.sleep(5); continue
+                    if _ymd(d) and _save_death(c, r["id"], d, "tmdb"): DJ["tmdb"] += 1
+                    time.sleep(tmdb_gap)
+                db.set_setting(c, "death_backfill_done", time.time()); c.commit()
+            except Exception as ex: DJ["error"] = str(ex)[:200]
+            finally: DJ.update(running=False, phase="done", finished=time.time()); c.close()
+        DJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
+    if "pytest" not in __import__("sys").modules:
+        _c = C()
+        if not db.get_setting(_c, "death_backfill_done", None): death_job(wait=120)  # one-off, rate-limited, after start-up settles
+    @app.get("/api/people/death_job")
+    def death_job_status():
+        c = C(); return jsonify(dict(DJ, with_death=c.execute("SELECT COUNT(*) FROM people WHERE merged_into IS NULL AND COALESCE(deathday,'')<>''").fetchone()[0]))
+    @app.post("/api/people/death_job")
+    def death_job_start():
+        if not DJ.get("running"): death_job()
+        return jsonify(DJ)
 
     # ---------- Needs attention (Performers tab): people missing key info ----------
     # Porn: everyone credited on an adult title, most scenes first (library scenes or ThePornDB total, whichever is larger).

@@ -6,7 +6,7 @@ import os, sys, json, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import db
-_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); _c0.commit()
+_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); db.set_setting(_c0, "death_backfill_done", 1); _c0.commit()
 import app
 from werkzeug.serving import make_server
 from playwright.sync_api import sync_playwright

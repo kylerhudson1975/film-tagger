@@ -5,7 +5,7 @@ import os, sys, time, tempfile
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
-_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); _c0.commit()
+_c0 = db.connect(); db.set_setting(_c0, "gender_backfill_done", 1); db.set_setting(_c0, "death_backfill_done", 1); _c0.commit()
 import app
 c = db.connect(); db.set_setting(c, "scene_roots", [r"D:\S"]); db.set_setting(c, "roots", [r"D:\Movies"])
 T = time.mktime((2026, 11, 1, 12, 0, 0, 0, 0, -1))
