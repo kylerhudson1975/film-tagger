@@ -18,10 +18,13 @@ spec = {"Cora Chase": [("Taboo Heat", 6, 2019), ("Jerky Wives", 4, 2018), ("Solo
 c.execute("INSERT INTO films(id,title,kind,cast_,studio,release_date,year) VALUES(1,'L1','scene','Cora Chase, Mia Jay','Taboo Heat','2020-01-01',2020)")
 c.execute("INSERT INTO films(id,title,kind,cast_,studio,release_date,year) VALUES(2,'L2','scene','Amy Cam','Lib Studio','2020-01-01',2020)")
 c.execute("INSERT INTO films(id,title,kind,cast_,studio,release_date,year) VALUES(3,'L3','scene','Tess New','Lib Studio','2012-01-01',2012)")
+c.execute("INSERT INTO films(id,title,cast_,release_date,year) VALUES(4,'Big Movie','Max Main, Mo Other','2011-01-01',2011)")
+c.execute("INSERT INTO files(film_id,path) VALUES(4,'D:\\Movies\\Big Movie.mkv')")
 for i in (1, 2, 3): c.execute("INSERT INTO files(film_id,path) VALUES(?,?)", (i, f"D:\\S\\L{i}.mp4"))
 c.commit()
 cl = app.app.test_client()
-ids = {n: cl.get("/api/person/lookup?name=" + n).json["id"] for n in list(spec) + ["Tess New"]}
+ids = {n: cl.get("/api/person/lookup?name=" + n).json["id"] for n in list(spec) + ["Tess New", "Max Main"]}
+c.execute("UPDATE people SET tmdb_person_id=77, fetched_at=1, credits_json=? WHERE id=?", (json.dumps({"cast": [{"id": 9, "title": "Big Movie", "release_date": "2011-01-01", "character": "Hero"}, {"id": 10, "title": "Sequel", "release_date": "2013-01-01", "character": "Hero"}], "crew": []}), ids["Max Main"]))
 for n, sl in spec.items():
     lst = [dict(id=f"{n[:2]}{st[:3]}{k}", _id="", title="S", date=f"{y}-01-01", studio=st, slug=None, thumb=None) for st, m, y in sl for k in range(m)]
     c.execute("UPDATE people SET birthday='1985-01-01', tpdb_scenes_json=?, tpdb_scenes_at=1, fetched_at=1 WHERE id=?", (json.dumps(lst), ids[n]))
@@ -55,9 +58,29 @@ with sync_playwright() as pw:
     check(pg.evaluate("[...document.querySelectorAll('#navRow button.on')].map(b=>b.id)") == ["perfBtn"], "only Performers active")
     check(pg.inner_text(".pf-h") == "PERFORMERS" and pg.get_attribute("#pfQ", "placeholder") == "Search performers…", "header + search")
     tabs = lambda: pg.evaluate("[...document.querySelectorAll('#pfTabs button')].map(b=>b.innerText.replace(/\\s+/g,' ').trim())")
+    # empty default: search box + Mainstream / Porn, no performers, no tabs
+    check(pg.locator("#pfCatM").inner_text() == "Mainstream" and pg.locator("#pfCatP").inner_text() == "Porn", "category buttons")
+    check(pg.locator(".pf-cats button.on").count() == 0 and pg.locator("#pfEmpty").count() == 1 and pg.locator("#pfList .pcard").count() == 0
+          and not pg.is_visible("#pfTabs"), "opens empty: no performers, no tabs")
+    pg.fill("#pfQ", "ma"); pg.wait_for_timeout(1200)   # search from the empty default spans everyone
+    hits = pg.evaluate("[...document.querySelectorAll('#pfAll .pcard b')].map(x=>x.textContent)")
+    check("Max Main" in hits and "Amy Cam" not in hits and pg.locator(".pf-cats button.on").count() == 0, f"empty-default search {hits}")
+    pg.fill("#pfQ", ""); pg.wait_for_timeout(400); check(pg.locator("#pfEmpty").count() == 1, "cleared search -> empty again")
+    pg.click("#pfCatM"); pg.wait_for_timeout(1200)
+    check("on" in pg.get_attribute("#pfCatM", "class") and pg.get_attribute("#pfCatM", "aria-pressed") == "true", "Mainstream active")
+    mt = tabs(); names = pg.evaluate("[...document.querySelectorAll('#pfList .bcard .bname')].map(x=>x.childNodes[0].textContent.trim())")
+    check(names == ["Max Main"] and pg.locator("#pfTabs button.on").get_attribute("data-tab") == "built", f"mainstream built {names}")
+    check([x.split(" (")[0] for x in mt] == ["★ Favorites", "Built profiles", "All people"] and not pg.is_visible("#ppBGroupSel"), f"mainstream tabs {mt}")
+    pg.fill("#pfQ", "c"); pg.wait_for_timeout(300); check(pg.locator("#pfList .bcard").count() == 0, "mainstream list excludes porn"); pg.fill("#pfQ", ""); pg.wait_for_timeout(300)
+    pg.click("#pfCatM"); pg.wait_for_timeout(500)
+    check(pg.locator("#pfEmpty").count() == 1 and pg.locator(".pf-cats button.on").count() == 0, "click again -> empty default")
+    pg.click("#pfCatP"); pg.wait_for_timeout(1500)
+    check("on" in pg.get_attribute("#pfCatP", "class") and "on" not in pg.get_attribute("#pfCatM", "class"), "Porn active")
+    check(pg.locator("#pfTabs button.on").get_attribute("data-tab") == "built", "Porn opens Built profiles")
+    pg.click("#pfTabs button[data-tab=fav]"); pg.wait_for_timeout(600)
     t = tabs()
     check(t[0] == "★ Favorites (0)" and t[1] == "Built profiles (3)" and t[2].startswith("Not opened yet") and t[3] == "All people" and t[4].startswith("Studios"), f"tabs {t}")
-    check(pg.locator("#pfTabs button.on").get_attribute("data-tab") == "fav" and pg.locator("#ppFav").count() == 1, "Favorites tab first")
+    check(pg.locator("#pfTabs button.on").get_attribute("data-tab") == "fav" and pg.locator("#ppFav").count() == 1, "Favorites tab")
     pg.click("#pfTabs button[data-tab=built]"); pg.wait_for_timeout(1200)
     names = pg.evaluate("[...document.querySelectorAll('#pfList .bcard .bname')].map(x=>x.childNodes[0].textContent.trim())")
     check(sorted(names) == ["Amy Cam", "Cora Chase", "Mia Jay"], f"built cards {names}")
@@ -126,13 +149,13 @@ with sync_playwright() as pw:
     pg.click("#pfOpenBtn"); pg.wait_for_timeout(1500)
     check(pg.evaluate("String(S.page)") == f"person:{ids['Mia Jay']}" and "on" not in (pg.get_attribute("#perfBtn", "class") or ""), "full profile opened")
     pg.go_back(); pg.wait_for_timeout(1500)
-    check(pg.evaluate("S.page") == "perf" and pg.locator("#pfTabs button.on").get_attribute("data-tab") == "all", "Back returns to the Performers tab")
+    check(pg.evaluate("S.page") == "perf" and pg.locator("#pfTabs button.on").get_attribute("data-tab") == "all" and "on" in pg.get_attribute("#pfCatP", "class"), "Back returns to the Performers tab + category")
     # remembered tab
     pg.reload(); pg.wait_for_timeout(1500); pg.evaluate("goHome()"); pg.wait_for_timeout(800)
     check(pg.evaluate("S.page") is None and "on" not in (pg.get_attribute("#perfBtn", "class") or ""), "Home: library")
     pg.click("#perfBtn"); pg.wait_for_timeout(1200)
-    check(pg.locator("#pfTabs button.on").get_attribute("data-tab") == "all", "last tab remembered")
-    pg.wait_for_timeout(2500)   # after a reload: the favorite's panel figures are fetched in the background, nothing opened
+    check(pg.locator("#pfEmpty").count() == 1 and pg.locator("#pfList .pcard").count() == 0, "reopened: empty default again")
+    pg.click("#pfCatP"); pg.wait_for_timeout(2500)   # after a reload: the favorite's panel figures are fetched in the background, nothing opened
     pf = pg.evaluate("Object.keys(S.pfCache).map(Number)"); co = pg.evaluate("Object.keys(S.pfCo).filter(k=>S.pfCo[k].list).map(Number)")
     check(pf == [ids["Cora Chase"]] and co == [ids["Cora Chase"]] and not pg.is_visible("#pfPanel"), f"favorite prefetched {pf} {co}")
     pg.click("#dashBtn"); pg.wait_for_timeout(1200)

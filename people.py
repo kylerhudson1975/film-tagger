@@ -370,6 +370,7 @@ def init(app, tmdb, posters_dir):
                     kn = fold(n)
                     if kn not in have and kn in data: hits.append((kn, data[kn])); have.add(kn)
         hits = name_order(hits, q)
+        adult_ids = adult_film_ids(c)
         rows = {r["name_norm"]: r for r in c.execute("SELECT * FROM people WHERE name_norm IN (%s)" % ",".join("?" * len(hits[:lim])), [k for k, _ in hits[:lim]])} if hits else {}
         out = []; seen_pid = set()
         for k, e in hits[:lim]:
@@ -385,7 +386,8 @@ def init(app, tmdb, posters_dir):
             if r: seen_pid.add(r["id"])
             out.append(dict(name=best_name(e), key=k, pid=r["id"] if r else None, n=len(e["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT[role]),
-                            roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r), fav=bool(r and r["favorite"])))
+                            roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r), fav=bool(r and r["favorite"]),
+                            adult=bool(e["films"] & adult_ids)))
         return jsonify(people=out, total=len(hits), lib=lib or None, age_left_out=left_out if scoped else None)
 
     def lib_scope(c, data, lib, ctx=None):
@@ -1616,6 +1618,14 @@ def init(app, tmdb, posters_dir):
         for row in c.execute("SELECT * FROM people WHERE merged_into IS NULL").fetchall():
             if row["name_norm"] in keys: out.append((row, bool(data[row["name_norm"]]["films"] & cl)))
         return out
+    def mainstream_built(c, lib=""):
+        """[(people row, False)] for Mainstream built profiles: credited in the library, on no adult title (the Porn rule
+        above), with a TMDB filmography loaded (person page opened)."""
+        data = index(c); adult = adult_film_ids(c)
+        keys = {k for k, e in data.items() if e["films"] and not (e["films"] & adult)}
+        if lib: keys &= {k for k in lib_scope(c, data, lib) if k}
+        return [(row, False) for row in c.execute("SELECT * FROM people WHERE merged_into IS NULL AND credits_json IS NOT NULL AND tmdb_person_id>0").fetchall()
+                if row["name_norm"] in keys]
     def career_years(row):
         ys = [int(y) for y in re.findall(r"(?<!\d)(19[2-9]\d|20[0-4]\d)(?!\d)", row["career"] or "")]
         if not ys: return None, None
@@ -1631,9 +1641,11 @@ def init(app, tmdb, posters_dir):
         age rule applied). lib = library folder. Cached until the films or a built person's data change (10 min at most)."""
         c = C(); dk = co_dkey(c)
         lib = (request.args.get("lib") or "").strip().rstrip("\\/")
-        ppl = [(r, k) for r, k in adult_people(c, lib) if is_built(r, k)]
+        cat = "mainstream" if request.args.get("cat") == "mainstream" else "porn"  # Performers page: Mainstream / Porn buttons
+        ppl = mainstream_built(c, lib) if cat == "mainstream" else [(r, k) for r, k in adult_people(c, lib) if is_built(r, k)]
         nf = c.execute("SELECT COUNT(*) FROM films").fetchone()[0]
         key = (nf, tuple((r["id"], r["tpdb_scenes_at"], r["fetched_at"], r["birthday"]) for r, _ in ppl))
+        key = (cat,) + key
         hit = BUILT.get((key, lib))
         if hit is None or time.time() - hit[0] > 600:
             # per-person figures persist in people_built_stats; only people whose data changed are recomputed
@@ -1666,7 +1678,7 @@ def init(app, tmdb, posters_dir):
         def more(p):
             r = extra.get(p["id"])
             return dict(p, fav=bool(r and r["favorite"]), photo=photo_url(r) if r else None)
-        return jsonify(people=[more(p) for p in hit[1]], total=len(hit[1]))
+        return jsonify(people=[more(p) for p in hit[1]], total=len(hit[1]), cat=cat)
 
     # ---------- favorites: starred people (Porn Scenes > People > Favorites) ----------
     def fav_sort_key(name):
@@ -1699,7 +1711,7 @@ def init(app, tmdb, posters_dir):
     def people_favorites():
         """Starred people A-Z by first name, then last name: photo, library scene count (and other library titles)."""
         c = C(); out = {}
-        scene_ids = {r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")}
+        scene_ids = {r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")}; adult_ids = adult_film_ids(c)
         for row in c.execute("SELECT * FROM people WHERE favorite=1").fetchall():
             hops = 0
             while row["merged_into"] and hops < 5:  # starred before a merge: list the kept person
@@ -1710,7 +1722,7 @@ def init(app, tmdb, posters_dir):
             films = person_entry(c, row)["films"]
             sc = len(films & scene_ids)
             out[row["id"]] = dict(id=row["id"], name=row["name"], photo=photo_url(row), scenes=sc, titles=len(films) - sc,
-                                  added=row["favorite_at"])
+                                  added=row["favorite_at"], adult=bool(films & adult_ids))
         ppl = sorted(out.values(), key=lambda p: fav_sort_key(p["name"]))
         return jsonify(people=ppl, total=len(ppl))
 

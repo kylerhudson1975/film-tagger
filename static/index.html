@@ -65,6 +65,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .ppfav{background:none;border:0;padding:0 4px;font-size:.9em;cursor:pointer;vertical-align:middle;line-height:1}.ppfav:hover{transform:scale(1.15)}.ppfav:hover .st-off{opacity:1}.pfs{font-size:.9em}
 .st-on{color:#ff00ff;text-shadow:0 0 3px #ff00ffaa,0 0 8px #ff00ff66;font-variant-emoji:text}.st-off{color:#f5c518;opacity:.7;font-variant-emoji:text}
 .pf{padding:14px 14px 0}.pf-h{margin:0 0 10px;font-size:22px;letter-spacing:.04em}.pf-bar{display:flex;gap:10px;margin:0 0 10px}.pf-bar input{flex:1;max-width:560px;font-size:14px;padding:7px 10px}
+.pf-cats{display:flex;gap:6px}.pf-cats button{font-size:13.5px;padding:6px 14px}.pf-cats button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600;box-shadow:inset 0 0 0 1px var(--a)}
 .pf-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}.pf-tabs button{font-size:13.5px;padding:6px 12px}.pf-tabs button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600}.pf-tabs button.pf-fav.on{color:#ff6bff;border-color:#ff00ff88}.pf-n{color:var(--m);font-weight:400}
 .pf-main{display:flex;gap:14px;align-items:flex-start}.pf-list{flex:1;min-width:0}.pf-panel{flex:0 0 340px;position:sticky;top:8px;max-height:calc(100vh - 140px);overflow:auto;background:var(--p);border:1px solid var(--b);border-radius:10px;padding:14px;font-size:13px}
 .pf-x{float:right;background:none;border:0;color:var(--m);font-size:16px;cursor:pointer}.pf-x:hover{color:var(--t)}.pf-ph-row{display:flex;gap:12px;align-items:flex-start}.pf-ph{width:96px;height:120px;flex:none;border-radius:8px;overflow:hidden;background:#555;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:bold}.pf-ph img{width:100%;height:100%;object-fit:cover}
@@ -335,7 +336,7 @@ function histSave(){if(S.restoring)return;const st=navState(),cur=history.state;
 function histFilm(id){if(S.restoring)return;const c=history.state||navState();if(c.film==id)return;snap();history.pushState({...navState(),film:id,page:S.page||null,...(S.page=='dash'?{dscope:DSH.scope||'',ex:DSH.ex||null}:{}),...(String(S.page||'').startsWith('studio:')?{slib:S.stLib||''}:{})},'')}
 window.addEventListener('popstate',async e=>{const q=e.state;if(!q)return;S.restoring=true;try{FK.forEach(k=>{if(k=='lib')setLib(q.lib||'');else if(k=='in')setIn(q.in||'');else $('f_'+k).value=q[k]||''});$('q').value=q.q||'';$('sort').value=q.sort||'title';S.order=q.order||'asc';$('ord').textContent=S.order=='asc'?'↑':'↓';renderMpaa();
  if(q.page=='dash'){await showDash({nohist:true,scope:q.dscope||'',ex:q.ex||null})}
- else if(q.page=='perf'){await showPerformers({nohist:true,tab:q.ptab,scroll:q.scroll||0})}
+ else if(q.page=='perf'){await showPerformers({nohist:true,tab:q.ptab,cat:q.pcat||'',scroll:q.scroll||0})}
  else if(q.page&&String(q.page).startsWith('co:')){await showCo(String(q.page).slice(3).split(',').map(Number),{nohist:true});$('content').scrollTop=q.scroll||0}
  else if(q.page&&String(q.page).startsWith('person:')){await showPerson(+String(q.page).slice(7),{nohist:true});$('content').scrollTop=q.scroll||0}
  else if(q.page&&String(q.page).startsWith('studio:')){await showStudio(String(q.page).slice(7),{nohist:true,lib:q.slib||''});$('content').scrollTop=q.scroll||0}
@@ -1160,7 +1161,7 @@ function ppFavToggle(){S.ppFav=!S.ppFav;localStorage.ppFav=S.ppFav?'1':'0';load(
 function favSortKey(n){const w=String(n||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().split(/\s+/).filter(Boolean);return [w[0]||'',w.length>1?w[w.length-1]:'',w.join(' ')]}
 function ppFavList(){const qq=ppQ();
  if(S.favs==null)return '<div id=ppFav class=muted>Loading favorites…</div>';
- const l=S.favs.filter(p=>!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w)));
+ const l=S.favs.filter(p=>(S.page!='perf'||pfInCat(p))&&(!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w))));
  l.sort((a,b)=>{const x=favSortKey(a.name),y=favSortKey(b.name);for(let i=0;i<3;i++){const c=x[i].localeCompare(y[i]);if(c)return c}return 0});
  if(!l.length)return `<div id=ppFav><p class=muted>${S.favs.length?'No favorite matches the search.':'No favorites yet. Open a performer\'s page and click the '+ST_OFF+' star next to her name to add her here; click '+ST_ON+' again to remove her.'}</p></div>`;
  return `<div id=ppFav><div class=pcards>${l.map(p=>`<div class=pcard data-pid="${p.id}" onclick="ppOpen(${p.id})" title="Open ${esc(p.name)}'s page">
@@ -1202,26 +1203,26 @@ async function ppBgLoad(){const by=curGrp(),lib=S.peopleLib||'',want=by+'|'+lib;
 function ppBgOpenKey(k){return curGrp()+':'+k}
 function ppBgToggle(k,i){const ok=ppBgOpenKey(k),cur=S.bgOpen[ok]??(i<3);S.bgOpen[ok]=!cur;localStorage.bgOpen=JSON.stringify(S.bgOpen);ppBRedraw()}
 function ppBgAll(open){(S.bgrp&&S.bgrp.groups||[]).forEach(g=>S.bgOpen[ppBgOpenKey(g.key)]=open);localStorage.bgOpen=JSON.stringify(S.bgOpen);ppBRedraw()}
-function ppBuiltTable(){const qq=ppQ(),grp=curGrp(),sorts=grp?[['here','Scenes with this studio'],...BSORT]:BSORT,s=S.bSort.k&&sorts.some(o=>o[0]==S.bSort.k)?S.bSort:{k:grp?'here':'busiest_n',d:-1};
- if(S.built==null)return '<div id=ppBuilt class=muted>Loading built profiles…</div>';
+function ppBuiltTable(){const B=bList(),mm=pfMain(),qq=ppQ(),grp=curGrp(),sorts=grp?[['here','Scenes with this studio'],...BSORT]:mm?BSORT.map(([k,t])=>[k,t.replace('scenes','credits')]):BSORT,s=S.bSort.k&&sorts.some(o=>o[0]==S.bSort.k)?S.bSort:{k:grp?'here':'busiest_n',d:-1};
+ if(B==null)return '<div id=ppBuilt class=muted>Loading built profiles…</div>';
  const match=p=>!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w));
- const l=S.built.filter(match);
+ const l=B.filter(match);
  const v=(p,k)=>k=='career'?p.first:k=='here'?p.here:p[k];
  const cmp=(a,b)=>{if(s.k=='name')return s.d*a.name.localeCompare(b.name,undefined,{sensitivity:'base'});const x=v(a,s.k),y=v(b,s.k);if(x==null&&y==null)return a.name.localeCompare(b.name);if(x==null)return 1;if(y==null)return -1;return s.d*(x-y)||a.name.localeCompare(b.name)};
- const ctl=`<div class=bctl><label class=muted>Group by <select id=ppBGroupSel onchange="ppGroupPick(this.value)">${(S.page=='perf'&&S.pfTab=='studios'?BGROUP.slice(1):BGROUP).map(([k,t])=>`<option value="${k}"${grp==k?' selected':''}>${t}</option>`).join('')}</select></label><label class=muted>Sort by <select id=ppBSortSel onchange="ppBSortSet(this.value)">${sorts.map(([k,t])=>`<option value="${k}"${s.k==k?' selected':''}>${t}</option>`).join('')}</select></label><button id=ppBDirBtn onclick="ppBDir()" title="${s.d<0?'Highest first. Click for lowest first':'Lowest first. Click for highest first'}">${s.k=='name'?(s.d<0?'Z–A':'A–Z'):(s.d<0?'▼ High to low':'▲ Low to high')}</button>${grp?`<label class=muted>Order groups: <select id=ppBgOrd onchange="ppBgOrdSet(this.value)" title="How the ${grp=='site'?'site':'studio / label'} sections are ordered (remembered)">${BGORD.map(([k,t])=>`<option value="${k}"${S.bgOrd==k?' selected':''}>${t}</option>`).join('')}</select></label> <button id=ppBgExp onclick="ppBgAll(true)" title="Open every section">Expand all</button><button id=ppBgCol onclick="ppBgAll(false)" title="Close every section">Collapse all</button>`:''}${qq?`<span class=muted>${dN(l.length)} of ${dN(S.built.length)} match the search</span>`:''}</div>`;
- if(!l.length)return `<div id=ppBuilt>${S.built.length?ctl:''}<p class=muted>${S.built.length?'No built profile matches the search.':'No built profiles '+(S.peopleLib?'for people credited in this folder':'yet')+'. A profile is built the first time you open a ThePornDB performer\'s page.'}</p></div>`;
+ const ctl=`<div class=bctl><label class=muted${mm?' style="display:none"':''}>Group by <select id=ppBGroupSel onchange="ppGroupPick(this.value)">${(S.page=='perf'&&S.pfTab=='studios'?BGROUP.slice(1):BGROUP).map(([k,t])=>`<option value="${k}"${grp==k?' selected':''}>${t}</option>`).join('')}</select></label><label class=muted>Sort by <select id=ppBSortSel onchange="ppBSortSet(this.value)">${sorts.map(([k,t])=>`<option value="${k}"${s.k==k?' selected':''}>${t}</option>`).join('')}</select></label><button id=ppBDirBtn onclick="ppBDir()" title="${s.d<0?'Highest first. Click for lowest first':'Lowest first. Click for highest first'}">${s.k=='name'?(s.d<0?'Z–A':'A–Z'):(s.d<0?'▼ High to low':'▲ Low to high')}</button>${grp?`<label class=muted>Order groups: <select id=ppBgOrd onchange="ppBgOrdSet(this.value)" title="How the ${grp=='site'?'site':'studio / label'} sections are ordered (remembered)">${BGORD.map(([k,t])=>`<option value="${k}"${S.bgOrd==k?' selected':''}>${t}</option>`).join('')}</select></label> <button id=ppBgExp onclick="ppBgAll(true)" title="Open every section">Expand all</button><button id=ppBgCol onclick="ppBgAll(false)" title="Close every section">Collapse all</button>`:''}${qq?`<span class=muted>${dN(l.length)} of ${dN(B.length)} match the search</span>`:''}</div>`;
+ if(!l.length)return `<div id=ppBuilt>${B.length?ctl:''}<p class=muted>${B.length?'No built profile matches the search.':'No built profiles '+(S.peopleLib?'for people credited in this folder':'yet')+'. '+(mm?'A mainstream profile is built the first time you open the person\'s page (TMDB filmography).':'A profile is built the first time you open a ThePornDB performer\'s page.')+''}</p></div>`;
  const on=k=>s.k==k||(k=='years'&&s.k=='career')?' class=on':'';
  const card=(p,g)=>`<div class="pcard bcard" data-pid="${p.id}" onclick="ppOpen(${p.id})" title="Open ${esc(p.name)}'s page">
  <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div class=bbody><div class=bname>${esc(p.name)}${favStar(p)}</div>
  ${g?`<div class="bhere${s.k=='here'?' on':''}"><b>${dN(p.here)}</b> scene${p.here==1?'':'s'} with ${esc(g.name)} <span>· ${dN(p.total)} total</span></div>`:''}
  <div class=bst><div${on('total')}><span>Total</span><b>${dN(p.total)}</b></div><div${on('busiest_n')||on('busiest_year')}><span>Busiest</span><b>${p.busiest_year?`${dN(p.busiest_n)} in ${p.busiest_year}`:'—'}</b></div>
  <div${on('years')}><span>Active</span><b>${p.first?(p.first==p.last?p.first:p.first+'–'+p.last)+` <small>(${p.years} yr${p.years==1?'':'s'})</small>`:'—'}</b></div><div${on('avg')}><span>Avg / yr</span><b>${p.avg??'—'}</b></div></div></div></div>`;
- const foot=`<p class=muted style="font-size:.85em">Counts are the same as each person's page graph: their ThePornDB scenes plus your library titles, undated scenes left out of the yearly figures; Active = first to last year inclusive.</p>`;
+ const foot=mm?`<p class=muted style="font-size:.85em">Counts are the same as each person's page graph: their TMDB credits plus your library titles; Active = first to last year inclusive.</p>`:`<p class=muted style="font-size:.85em">Counts are the same as each person's page graph: their ThePornDB scenes plus your library titles, undated scenes left out of the yearly figures; Active = first to last year inclusive.</p>`;
  if(!grp){l.sort(cmp);return `<div id=ppBuilt>${ctl}<div class=pcards>${l.map(p=>card(p)).join('')}</div>${foot}</div>`}
  const G=S.bgrp;
- if(!G||G.by!==grp||(G.lib||'')!==(S.peopleLib||'')||(G.nb!=null&&G.nb!==S.built.length&&!qq)){setTimeout(ppBgLoad,0);return `<div id=ppBuilt>${ctl}<p class=muted>Grouping ${dN(S.built.length)} built profiles by ${grp=='site'?'site':'studio / label'}…</p></div>`}
+ if(!G||G.by!==grp||(G.lib||'')!==(S.peopleLib||'')||(G.nb!=null&&G.nb!==B.length&&!qq)){setTimeout(ppBgLoad,0);return `<div id=ppBuilt>${ctl}<p class=muted>Grouping ${dN(B.length)} built profiles by ${grp=='site'?'site':'studio / label'}…</p></div>`}
  if(G.error)return `<div id=ppBuilt>${ctl}<p class=muted>Could not group the built profiles. <a href="#" onclick="S.bgrp=null;ppBRedraw();return false">Try again</a></p></div>`;
- const byId={};S.built.forEach(p=>byId[p.id]=p);
+ const byId={};B.forEach(p=>byId[p.id]=p);
  let shown=0;const secs=bgOrder(G.groups).map((g,i)=>{const ps=g.people.map(x=>byId[x.id]?{...byId[x.id],here:x.n}:null).filter(p=>p&&match(p));if(qq&&!ps.length)return '';shown++;
   const open=qq?true:(S.bgOpen[ppBgOpenKey(g.key)]??(i<3));ps.sort(cmp);
   return `<div class=bgrp data-g="${esc(g.key)}"><div class=bgh onclick="ppBgToggle('${jsq(g.key)}',${i})" title="${open?'Collapse':'Expand'} (remembered)"><span class=bgc>${open?'▾':'▸'}</span><b>${esc(g.name)}</b><span class=muted>${qq?`${dN(ps.length)} of ${dN(g.people.length)}`:dN(g.people.length)} performer${g.people.length==1?'':'s'} · ${dN(g.scenes)} scene${g.scenes==1?'':'s'}</span></div>${open?`<div class=pcards>${ps.map(p=>card(p,g)).join('')}</div>`:''}</div>`}).join('');
@@ -1231,38 +1232,50 @@ function ppBuiltTable(){const qq=ppQ(),grp=curGrp(),sorts=grp?[['here','Scenes w
 /* ---------- Performers page (top bar): Favorites | Built profiles | Not opened yet | All people | Studios, with a side
    summary panel (/api/people/<id>/summary). Reuses the People lists above; their search box is #pfQ here. ---------- */
 const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['all','All people'],['studios','Studios']];
-S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfSGroup=localStorage.pfSGroup=='site'?'site':'label';S.pfAll=null;S.pfSel=null;S.pfSum=null;S.pfKick={};S.pfCache={};S.pfCo={};
+S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfCat='';S.builtM=null;
+/* Mainstream / Porn buttons: nothing is listed until one is picked (search works across everyone meanwhile). Porn = credited
+   on an adult title (a scene, or a file under an adult library), the same rule as Built profiles / the person page; Mainstream =
+   everyone else. Mainstream hides the ThePornDB-only tabs (Not opened yet, Studios). */
+const pfTabsFor=c=>c=='mainstream'?PF_TABS.filter(t=>t[0]!='unop'&&t[0]!='studios'):PF_TABS;
+const pfInCat=p=>!S.pfCat||(S.pfCat=='porn')===!!p.adult;
+const pfMain=()=>S.page=='perf'&&S.pfCat=='mainstream';
+function bList(){return pfMain()?S.builtM:S.built}
+function pfCatSet(k){S.pfCat=S.pfCat==k?'':k;if(S.pfCat){S.pfTab='built'}if(history.state&&history.state.page=='perf')history.replaceState({...history.state,pcat:S.pfCat,ptab:S.pfTab},'');pfClose();pfCatDraw();pfTabsDraw();pfDraw();if(S.pfCat||ppQ())pfFetch()}
+function pfCatDraw(){[['mainstream','pfCatM'],['porn','pfCatP']].forEach(([k,id])=>{const b=$(id);if(b){b.classList.toggle('on',S.pfCat==k);b.setAttribute('aria-pressed',S.pfCat==k?'true':'false');b.title=S.pfCat==k?'Showing '+(k=='porn'?'porn performers':'mainstream people')+'. Click again to clear':'Show built profiles for '+(k=='porn'?'porn performers':'mainstream people')}})}S.pfSGroup=localStorage.pfSGroup=='site'?'site':'label';S.pfAll=null;S.pfSel=null;S.pfSum=null;S.pfKick={};S.pfCache={};S.pfCo={};
 function ppQ(){return (S.page=='perf'&&$('pfQ')?$('pfQ').value:$('q').value).trim().toLowerCase()}
-function curGrp(){return S.page=='perf'?(S.pfTab=='studios'?S.pfSGroup:S.pfTab=='built'?S.bGroup:''):S.bGroup}
+function curGrp(){return S.page=='perf'?(pfMain()?'':S.pfTab=='studios'?S.pfSGroup:S.pfTab=='built'?S.bGroup:''):S.bGroup}
 function ppOpen(id){if(S.page=='perf')return pfOpen(id);showPerson(id)}
 function ppGroupPick(v){if(S.page=='perf'&&S.pfTab=='studios'){S.pfSGroup=v;localStorage.pfSGroup=v;pfTabsDraw();ppBRedraw()}else ppBGroupSet(v)}
 async function showPerformers(opt={}){
  if(opt.tab&&PF_TABS.some(t=>t[0]==opt.tab)){S.pfTab=opt.tab;localStorage.pfTab=opt.tab}
- if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='perf'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'perf',ptab:S.pfTab},'')}}
+ if('cat' in opt)S.pfCat=opt.cat||'';else if(!opt.keep)S.pfCat='';if(!pfTabsFor(S.pfCat).some(t=>t[0]==S.pfTab))S.pfTab='built';
+ if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='perf'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'perf',ptab:S.pfTab,pcat:S.pfCat},'')}}
  if(!opt.keep&&!S.restoring)closeM();
  S.page='perf';S.pageId=null;S.peopleLib='';S.sel.clear();$('personHdr').style.display='none';$('bulk').style.display='none';$('count').textContent='';$('selAllBtn').style.display='none';dashNav(false);$('perfBtn').classList.add('on');
  if(!opt.keep||!$('pfList')){const q=$('pfQ')?$('pfQ').value:(S.pfQv||'');
-  $('content').innerHTML=`<div class=pf><h1 class=pf-h>PERFORMERS</h1><div class=pf-bar><input id=pfQ type=search placeholder="Search performers…" autocomplete=off value="${esc(q)}"></div><div id=pfTabs class=pf-tabs></div><div id=pfMain class=pf-main><div id=pfList class=pf-list></div><aside id=pfPanel class=pf-panel style="display:none"></aside></div></div>`;
-  let t;$('pfQ').addEventListener('input',()=>{S.pfQv=$('pfQ').value;clearTimeout(t);t=setTimeout(()=>{if(S.pfTab=='all')pfAllSearch().then(()=>{pfTabsDraw();pfDraw()});else pfDraw()},150)});
+  $('content').innerHTML=`<div class=pf><h1 class=pf-h>PERFORMERS</h1><div class=pf-bar><input id=pfQ type=search placeholder="Search performers…" autocomplete=off value="${esc(q)}"><div class=pf-cats><button id=pfCatM onclick="pfCatSet('mainstream')">Mainstream</button><button id=pfCatP onclick="pfCatSet('porn')">Porn</button></div></div><div id=pfTabs class=pf-tabs></div><div id=pfMain class=pf-main><div id=pfList class=pf-list></div><aside id=pfPanel class=pf-panel style="display:none"></aside></div></div>`;
+  let t;$('pfQ').addEventListener('input',()=>{S.pfQv=$('pfQ').value;clearTimeout(t);t=setTimeout(()=>{if(S.pfTab=='all'||!S.pfCat)pfAllSearch().then(()=>{pfTabsDraw();pfDraw()});else pfDraw()},150)});
   if(!opt.keep)$('content').scrollTop=0}
- pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
+ pfCatDraw();pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
  if(S.pfSel&&!opt.keep)pfOpen(S.pfSel,true);
  await pfFetch();if(opt.scroll)$('content').scrollTop=opt.scroll}
-function pfCount(k){const n=k=='fav'?(S.favs&&S.favs.length):k=='built'?(S.built&&S.built.length):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&S.pfAll.q?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
-function pfTabsDraw(){const el=$('pfTabs');if(!el)return;el.innerHTML=PF_TABS.map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
+function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&S.pfAll.q?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
+function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
+ if(!S.pfCat){el.innerHTML=ppQ()?pfAllList():'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
  el.innerHTML=t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():pfAllList();pfMark()}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
-async function pfFetch(){const t=S.pfTab,jobs=[];const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
+async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];if(!cat){if(ppQ())await pfAllSearch().then(()=>{if(S.page=='perf'&&!S.pfCat)pfDraw()});return}const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
  jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>{done('fav');setTimeout(pfPrefetch,400)}));
- jobs.push(api('/api/people/built').then(j=>{S.built=j.people},()=>{S.built=S.built||[]}).then(()=>done('built')));
- if(t=='unop')jobs.push(api('/api/people/unopened').then(j=>{S.unop=j.people;S.unopJob=j.job},()=>{S.unop=S.unop||[]}).then(()=>done('unop')));
+ if(cat=='mainstream')jobs.push(api('/api/people/built?cat=mainstream').then(j=>{S.builtM=j.people},()=>{S.builtM=S.builtM||[]}).then(()=>done('built')));
+ else jobs.push(api('/api/people/built').then(j=>{S.built=j.people},()=>{S.built=S.built||[]}).then(()=>done('built')));
+ if(t=='unop'&&cat=='porn')jobs.push(api('/api/people/unopened').then(j=>{S.unop=j.people;S.unopJob=j.job},()=>{S.unop=S.unop||[]}).then(()=>done('unop')));
  if(t=='all')jobs.push(pfAllSearch().then(()=>done('all')));
  await Promise.allSettled(jobs)}
 async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim();if(!q){S.pfAll={q:'',people:[],total:0};return}
  try{const j=await api('/api/people/search?'+new URLSearchParams({q,limit:120}));if((($('pfQ')||{}).value||'').trim()===q)S.pfAll={q,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,people:[],total:0,error:true}}}
-function pfAllList(){const a=S.pfAll;
+function pfAllList(){const a0=S.pfAll,a=a0&&a0.q&&S.pfCat?{...a0,people:a0.people.filter(pfInCat)}:a0;if(a!==a0)a.total=a.people.length;
  if(!a||!a.q)return '<div id=pfAll><p class=muted>Type a name in the search box to find anyone credited in your library (films and scenes).</p></div>';
  if(!a.people.length)return `<div id=pfAll><p class=muted>Nobody in your library matches “${esc(a.q)}”.</p></div>`;
  return `<div id=pfAll><p class=muted style="margin:0 0 8px">${dN(a.total)} ${a.total==1?'person matches':'people match'}${a.total>a.people.length?`, showing ${dN(a.people.length)}`:''}.</p><div class=pcards>${a.people.map(p=>`<div class=pcard${p.pid?` data-pid="${p.pid}"`:''} onclick="${p.pid?`pfOpen(${p.pid})`:`pfOpenName('${jsq(p.name)}')`}" title="Show ${esc(p.name)}">
@@ -1283,13 +1296,13 @@ function pfCoHtml(id){const c=S.pfCo[id];if(!c||(!c.list&&c.busy))return '<p cla
  return l.length?`<div id=pfCostars class=pf-l>${l.map(z=>`<div>${z.pid?`<a href="#" onclick="pfOpen(${z.pid});return false">${esc(z.name)}</a>`:`<span>${esc(z.name)}</span>`}<b>${dN(z.n)}</b></div>`).join('')}</div>`:'<p class=muted id=pfCostars>None in your library yet.</p>'}
 function pfCoDraw(){const el=$('pfCoBox');if(el&&S.pfSum&&!S.pfSum.error)el.innerHTML=pfCoHtml(S.pfSum.id)}
 async function pfPrefetch(){/* Favorites on screen: warm their panel figures (summary, then co-stars) one at a time, in the background */
- if(S.pfPre)return;S.pfPre=true;try{const ids=(S.favs||[]).slice(0,24).map(p=>p.id);
+ if(S.pfPre)return;S.pfPre=true;try{const ids=(S.favs||[]).filter(pfInCat).slice(0,24).map(p=>p.id);
   for(const id of ids){if(S.page!='perf')break;if(!S.pfCache[id]){try{S.pfCache[id]=await api('/api/people/'+id+'/summary')}catch(e){}}}
   for(const id of ids){if(S.page!='perf')break;if(!S.pfCo[id]){await pfCoLoad(id)}}}finally{S.pfPre=false}}
 function pfClose(){S.pfSel=null;S.pfSum=null;clearTimeout(S.pfPollT);pfPanelDraw();pfMark()}
 async function pfFav(){const d=S.pfSum;if(!d||d.error)return;const want=!d.favorite;
  try{const r=await api('/api/people/'+d.id+'/favorite',{method:'POST',body:{favorite:want}});d.favorite=!!r.favorite}catch(e){return toast('Could not change Favorites')}
- (S.built||[]).forEach(p=>{if(p.id===d.id)p.fav=d.favorite});toast(d.favorite?'★ Added '+d.name+' to Favorites':'Removed '+d.name+' from Favorites');pfPanelDraw();
+ (S.built||[]).concat(S.builtM||[]).forEach(p=>{if(p.id===d.id)p.fav=d.favorite});toast(d.favorite?'★ Added '+d.name+' to Favorites':'Removed '+d.name+' from Favorites');pfPanelDraw();
  try{S.favs=(await api('/api/people/favorites')).people}catch(e){}const st=$('content').scrollTop;pfTabsDraw();pfDraw();$('content').scrollTop=st}
 function pfPanelDraw(){const el=$('pfPanel'),m=$('pfMain');if(!el)return;const id=S.pfSel;if(!id){el.style.display='none';el.innerHTML='';if(m)m.classList.remove('withp');return}
  el.style.display='';if(m)m.classList.add('withp');const d=S.pfSum;
