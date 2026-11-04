@@ -62,7 +62,20 @@ TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", 
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
              ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT")]
-EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links")
+EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender")
+# Gender values: ThePornDB's wording (what the library already holds) plus 'Unknown' (set by hand: checked, not known).
+GENDERS = ("Female", "Male", "Non Binary", "Transgender Female", "Transgender Male", "Unknown")
+TMDB_GENDER = {1: "Female", 2: "Male", 3: "Non Binary"}  # TMDB person.gender (0 = not set)
+def norm_gender(v):
+    """Any spelling (female, non-binary, Trans woman, ...) -> one of GENDERS, else None."""
+    k = re.sub(r"[^a-z]", "", str(v or "").lower())
+    if not k: return None
+    alias = {"f": "Female", "woman": "Female", "m": "Male", "man": "Male", "nonbinary": "Non Binary", "nb": "Non Binary",
+             "transwoman": "Transgender Female", "transfemale": "Transgender Female", "transgenderwoman": "Transgender Female",
+             "transman": "Transgender Male", "transmale": "Transgender Male", "transgenderman": "Transgender Male"}
+    for g in GENDERS:
+        if k == re.sub(r"[^a-z]", "", g.lower()): return g
+    return alias.get(k)
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
 RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
@@ -114,6 +127,7 @@ def clean_value(k, v):
             v = d
         v = {str(a): str(b) for a, b in (v or {}).items() if str(b).startswith("http")}
         return json.dumps(v) if v else None
+    if k == "gender": return norm_gender(v)
     return (str(v).strip() or None) if v is not None else None
 
 def adult_roots(c):
@@ -183,7 +197,7 @@ def tpdb_fields(p):
                 measurements=ex.get("measurements") or None, height=ex.get("height") or None, career=career,
                 aliases=json.dumps([a for a in (p.get("aliases") or []) if a]) if p.get("aliases") else None,
                 links_json=json.dumps(links) if links else None, image_url=p.get("image") or p.get("thumbnail") or None,
-                gender=ex.get("gender") or None)
+                gender=norm_gender(ex.get("gender")))
 
 def photo_locked(row):
     """A profile photo Kyle set by hand (upload, URL, crop in the Person Profile edit window) is a protected hand edit
@@ -203,6 +217,7 @@ def apply_tpdb(c, row, p, allow_image=True, fill_only=False):
     if not allow_image: f["image_url"] = None
     sets = {k: v for k, v in f.items() if k not in edited and not (k in PHOTO_AUTO and photo_locked(row))}
     if fill_only: sets = {k: v for k, v in sets.items() if v and (k == "image_url" or not row[k])}
+    if not sets.get("gender") or row["gender"]: sets.pop("gender", None)  # gender is add-only: never replaces a stored value
     if not sets.get("birthday"): sets.pop("birthday", None)  # ThePornDB has none: keep one found elsewhere (Wikidata, TMDB)
     elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"theporndb {p.get('id')}"
     if fill_only: sets.update(tpdb_performer_id=str(p.get("id")), tpdb_fetched_at=time.time())
@@ -531,6 +546,8 @@ def init(app, tmdb, posters_dir):
         elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"tmdb person {row['tmdb_person_id']}"
         sets = {k: v for k, v in sets.items() if k not in edited and not (k == "birth_date_source" and "birthday" in edited)
                 and not (k in PHOTO_AUTO and photo_locked(row))}  # a hand-set photo is never replaced by a refresh
+        g = TMDB_GENDER.get(p.get("gender"))
+        if g and not row["gender"] and "gender" not in edited: sets["gender"] = g  # add-only
         c.execute("UPDATE people SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?", list(sets.values()) + [row["id"]])
         c.commit()
 
@@ -704,7 +721,7 @@ def init(app, tmdb, posters_dir):
             id=pid, name=row["name"], aka=[n for n in names if n != row["name"]], tmdb_person_id=tp, manual=bool(row["tmdb_manual"]),
             source=source, classic=classic, adult=adult, tpdb_performer_id=tpid, tpdb_manual=bool(row["tpdb_manual"]),
             tpdb_url=tpid and f"https://theporndb.net/performers/{tpid}", aliases=json.loads(row["aliases"] or "[]"),
-            nationality=row["nationality"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
+            nationality=row["nationality"], gender=row["gender"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
@@ -1936,6 +1953,51 @@ def init(app, tmdb, posters_dir):
         out.sort(key=lambda p: (-p["n"], db.fold_key(p["name"])))
         counts = {k: sum(1 for p in out if k in p["missing"]) for k in ("birth", "photo", "gender", "link")}
         return jsonify(people=out, total=len(out), counts=counts, cat=cat)
+
+    # ---------- gender backfill: add-only, from TMDB (person.gender) or else ThePornDB (performer extras.gender) ----------
+    GJ = dict(running=False, done=0, total=0, filled=0, tmdb=0, tpdb=0, none=0, errors=0, started=None, finished=None, error=None)
+    def gender_job(wait=0, tmdb_gap=0.25, tpdb_gap=1.5):
+        def work():
+            time.sleep(wait)
+            import tpdb as tpdbmod
+            c = C()
+            try:
+                key = key_of(c); tok = db.get_setting(c, "tpdb_key", "") or ""
+                todo = [r for r in c.execute("SELECT * FROM people WHERE merged_into IS NULL AND COALESCE(gender,'')='' AND "
+                                             "(COALESCE(tmdb_person_id,0)>0 OR (tpdb_performer_id IS NOT NULL AND tpdb_performer_id<>?))", (TPDB_NONE,)).fetchall()
+                        if "gender" not in json.loads(r["edited_fields"] or "[]")]
+                GJ.update(total=len(todo), done=0, filled=0, tmdb=0, tpdb=0, none=0, errors=0, started=time.time())
+                for row in todo:
+                    GJ["done"] += 1; g = src = None
+                    try:
+                        if (row["tmdb_person_id"] or 0) > 0 and key:
+                            g = TMDB_GENDER.get(tmdb(f"person/{row['tmdb_person_id']}", key).get("gender")); src = "tmdb"; time.sleep(tmdb_gap)
+                        if not g and row["tpdb_performer_id"] not in (None, TPDB_NONE) and tok:
+                            p = tpdbmod.call_retry(f"/performers/{row['tpdb_performer_id']}", tok).get("data") or {}
+                            g = norm_gender((p.get("extras") or {}).get("gender")); src = "tpdb"; time.sleep(tpdb_gap)
+                    except Exception: GJ["errors"] += 1; time.sleep(5); continue
+                    if not g: GJ["none"] += 1; continue
+                    n = c.execute("UPDATE people SET gender=? WHERE id=? AND COALESCE(gender,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"gender\"%'", (g, row["id"])).rowcount
+                    c.commit()
+                    if n: GJ["filled"] += 1; GJ[src] += 1
+                db.set_setting(c, "gender_backfill_done", time.time()); c.commit()
+            except Exception as ex: GJ["error"] = str(ex)[:200]
+            finally:
+                GJ.update(running=False, finished=time.time()); c.close()
+        GJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
+    if "pytest" not in __import__("sys").modules:
+        _c = C()
+        if not db.get_setting(_c, "gender_backfill_done", None): gender_job(wait=90)  # one-off, after start-up settles
+
+    @app.get("/api/people/gender_job")
+    def gender_job_status():
+        c = C(); left = c.execute("SELECT COUNT(*) FROM people WHERE merged_into IS NULL AND COALESCE(gender,'')=''").fetchone()[0]
+        return jsonify(dict(GJ, no_gender=left))
+
+    @app.post("/api/people/gender_job")
+    def gender_job_start():
+        if not GJ.get("running"): gender_job()
+        return jsonify(GJ)
 
     # ---------- career-info job: lightweight ThePornDB performer lookup for adult people never looked up ----------
     # Same lookup the person page does on first open (tpdb_update: hand-edited fields kept, manual ids never replaced,
