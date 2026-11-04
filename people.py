@@ -67,9 +67,12 @@ ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
 RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
 
+# Favorites (star on the person page): favorite=1 and when it was starred. Only ever changed by the star toggle.
+FAV_COLS = [("favorite", "INTEGER DEFAULT 0"), ("favorite_at", "REAL")]
+
 def migrate(c):
     have = {r[1] for r in c.execute("PRAGMA table_info(people)")}
-    for col, typ in TPDB_COLS:
+    for col, typ in TPDB_COLS + FAV_COLS:  # nullable / default 0: existing rows untouched
         if col not in have: c.execute(f"ALTER TABLE people ADD COLUMN {col} {typ}")
     c.execute(REVIEW_SCHEMA)
     c.commit()
@@ -361,7 +364,7 @@ def init(app, tmdb, posters_dir):
             if r: seen_pid.add(r["id"])
             out.append(dict(name=best_name(e), key=k, pid=r["id"] if r else None, n=len(e["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT[role]),
-                            roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r)))
+                            roles={ro: len(s) for ro, s in e["roles"].items()}, photo=photo_url(r), fav=bool(r and r["favorite"])))
         return jsonify(people=out, total=len(hits), lib=lib or None, age_left_out=left_out if scoped else None)
 
     def lib_scope(c, data, lib, ctx=None):
@@ -683,7 +686,7 @@ def init(app, tmdb, posters_dir):
             edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"], birth_date_source=row["birth_date_source"],
-            deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"],
+            deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"], favorite=bool(row["favorite"] or c.execute("SELECT 1 FROM people WHERE merged_into=? AND favorite=1", (pid,)).fetchone()),
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
             birthday_lookup=bd_lookup, roles={ro: len(s) for ro, s in role_ids.items() if s}, library=lib, groups=groups, total=total, owned=owned, scenes=scenes,
             scenes_owned=sum(1 for z in (scenes or []) if z.get("film_id")),
@@ -883,6 +886,9 @@ def init(app, tmdb, posters_dir):
         if photo_locked(o) and o["photo_file"] and not photo_locked(row):  # the kept person takes over a hand-set photo instead of losing it
             edited.add("photo"); c.execute("UPDATE people SET photo_file=?, photo_orig=?, fetched_at=? WHERE id=?", (o["photo_file"], o["photo_orig"], time.time(), pid))
         c.execute("UPDATE people SET aliases=?, edited_fields=? WHERE id=?", (json.dumps(als), json.dumps(sorted(edited)), pid))
+        if o["favorite"]:  # a starred duplicate: the kept person keeps the star (earliest date)
+            c.execute("UPDATE people SET favorite=1, favorite_at=MIN(COALESCE(favorite_at, ?), ?) WHERE id=?", (o["favorite_at"] or time.time(), o["favorite_at"] or time.time(), pid))
+            c.execute("UPDATE people SET favorite=0, favorite_at=NULL WHERE id=?", (o["id"],))
         c.execute("UPDATE people SET merged_into=? WHERE id=?", (pid, o["id"]))
         c.execute("UPDATE people SET merged_into=? WHERE merged_into=?", (pid, o["id"]))  # people merged into the other move along
         c.commit()
@@ -1623,7 +1629,54 @@ def init(app, tmdb, posters_dir):
                 c.executemany("INSERT OR REPLACE INTO people_built_stats VALUES(?,?,?)", new); c.commit()
             hit = BUILT[(key, lib)] = (time.time(), out)
             if len(BUILT) > 16: BUILT.pop(next(iter(BUILT)))
-        return jsonify(people=hit[1], total=len(hit[1]))
+        favs = {r[0] for r in c.execute("SELECT id FROM people WHERE favorite=1")}
+        return jsonify(people=[dict(p, fav=p["id"] in favs) for p in hit[1]], total=len(hit[1]))
+
+    # ---------- favorites: starred people (Porn Scenes > People > Favorites) ----------
+    def fav_sort_key(name):
+        """First name, then last name (accent/case-insensitive), then the full name."""
+        w = db.fold_key(" ".join((name or "").split())).split()
+        return (w[0] if w else "", w[-1] if len(w) > 1 else "", " ".join(w))
+
+    @app.post("/api/people/<int:pid>/favorite")
+    def person_favorite(pid):
+        """{favorite: true|false}; no body = toggle. A person merged into someone else stars the person they were merged into.
+        Only the favorite columns change, so hand-edited fields, photos and tags are never touched."""
+        c = C(); row = c.execute("SELECT id, merged_into, favorite FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        hops = 0
+        while row["merged_into"] and hops < 5:
+            t = c.execute("SELECT id, merged_into, favorite FROM people WHERE id=?", (row["merged_into"],)).fetchone()
+            if not t: break
+            row = t; hops += 1
+        d = request.get_json(silent=True) or {}
+        v = d.get("favorite")
+        fav = (not row["favorite"]) if v is None else (v if isinstance(v, bool) else str(v).strip().lower() in ("1", "true", "yes", "on"))
+        if bool(row["favorite"]) != fav:
+            c.execute("UPDATE people SET favorite=?, favorite_at=? WHERE id=?", (1 if fav else 0, time.time() if fav else None, row["id"]))
+        if not fav:  # rows merged into this person never keep them listed
+            c.execute("UPDATE people SET favorite=0, favorite_at=NULL WHERE merged_into=? AND favorite=1", (row["id"],))
+        c.commit()
+        return jsonify(ok=True, id=row["id"], favorite=fav)
+
+    @app.get("/api/people/favorites")
+    def people_favorites():
+        """Starred people A-Z by first name, then last name: photo, library scene count (and other library titles)."""
+        c = C(); out = {}
+        scene_ids = {r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")}
+        for row in c.execute("SELECT * FROM people WHERE favorite=1").fetchall():
+            hops = 0
+            while row["merged_into"] and hops < 5:  # starred before a merge: list the kept person
+                t = c.execute("SELECT * FROM people WHERE id=?", (row["merged_into"],)).fetchone()
+                if not t: break
+                row = t; hops += 1
+            if row["id"] in out: continue
+            films = person_entry(c, row)["films"]
+            sc = len(films & scene_ids)
+            out[row["id"]] = dict(id=row["id"], name=row["name"], photo=photo_url(row), scenes=sc, titles=len(films) - sc,
+                                  added=row["favorite_at"])
+        ppl = sorted(out.values(), key=lambda p: fav_sort_key(p["name"]))
+        return jsonify(people=ppl, total=len(ppl))
 
     @app.get("/api/people/unopened")
     def people_unopened():
@@ -1636,7 +1689,7 @@ def init(app, tmdb, posters_dir):
             first, last = career_years(row)
             out.append(dict(id=row["id"], name=row["name"], career=row["career"], first=first, last=last,
                             years=(last - first + 1) if first and last else None, scenes=row["tpdb_scenes_total"],
-                            looked_up=row["tpdb_performer_id"] is not None, found=row["tpdb_performer_id"] not in (None, TPDB_NONE)))
+                            looked_up=row["tpdb_performer_id"] is not None, found=row["tpdb_performer_id"] not in (None, TPDB_NONE), fav=bool(row["favorite"])))
         return jsonify(people=out, total=len(out), job={k: v for k, v in CJ.items() if k != "thread"})
 
     # ---------- career-info job: lightweight ThePornDB performer lookup for adult people never looked up ----------
