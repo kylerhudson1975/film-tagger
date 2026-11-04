@@ -1638,8 +1638,13 @@ def init(app, tmdb, posters_dir):
                 c.executemany("INSERT OR REPLACE INTO people_built_stats VALUES(?,?,?)", new); c.commit()
             hit = BUILT[(key, lib)] = (time.time(), out)
             if len(BUILT) > 16: BUILT.pop(next(iter(BUILT)))
-        favs = {r[0] for r in c.execute("SELECT id FROM people WHERE favorite=1")}
-        return jsonify(people=[dict(p, fav=p["id"] in favs) for p in hit[1]], total=len(hit[1]))
+        # favorite star and photo are read fresh every time (not part of the cached figures): cheap columns only
+        extra = {r["id"]: r for r in c.execute("SELECT id, favorite, photo_file, image_url, profile_path, source, fetched_at FROM people WHERE "
+                                                "merged_into IS NULL AND (tpdb_scenes_json IS NOT NULL OR credits_json IS NOT NULL)")}
+        def more(p):
+            r = extra.get(p["id"])
+            return dict(p, fav=bool(r and r["favorite"]), photo=photo_url(r) if r else None)
+        return jsonify(people=[more(p) for p in hit[1]], total=len(hit[1]))
 
     # ---------- favorites: starred people (Porn Scenes > People > Favorites) ----------
     def fav_sort_key(name):
