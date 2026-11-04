@@ -1983,15 +1983,23 @@ def init(app, tmdb, posters_dir):
         return out
 
     # ---------- Happy Birthday! / In memoriam (Performers rows): people credited in the library ----------
+    ROWS_CACHE = {}
     def lib_people(c, cat, where):
-        """(row-lite, is_adult) for un-merged people credited on a library title, filtered by Mainstream / Porn."""
-        data = index(c); adult = adult_film_ids(c); out = []
+        """(row-lite, is_adult) for un-merged people credited on a library title, filtered by Mainstream / Porn.
+        Cached until the films index or any person's dates / merge change (keeps both rows well under 0.3 s)."""
+        data = index(c); adult = adult_film_ids(c)
+        mark = (IDX["key"], len(adult), tuple(c.execute("SELECT COUNT(*), TOTAL(CAST(REPLACE(birthday,'-','') AS INTEGER)), TOTAL(CAST(REPLACE(deathday,'-','') AS INTEGER)), TOTAL(merged_into), "
+                                                       "MAX(id) FROM people WHERE " + where).fetchone()))
+        ck = (cat, where); hit = ROWS_CACHE.get(ck)
+        if hit and hit[0] == mark: return hit[1]
+        out = []
         for r in c.execute("SELECT id, name, name_norm, birthday, deathday FROM people WHERE merged_into IS NULL AND " + where):
             e = data.get(r["name_norm"])
             if not e: continue
             a = bool(e["films"] & adult)
             if cat == "porn" and not a or cat == "mainstream" and a: continue
-            out.append((r, a))
+            out.append((dict(r), a))
+        ROWS_CACHE[ck] = (mark, out)
         return out
     def _ymd(s):
         m = re.match(r"(\d{4})-(\d{2})-(\d{2})$", (s or "")[:10])
@@ -2013,7 +2021,7 @@ def init(app, tmdb, posters_dir):
         c = C(); cat = request.args.get("cat") or ""; today = datetime.date.today(); hits = []
         for r, a in lib_people(c, cat, "COALESCE(birthday,'')<>'' AND COALESCE(deathday,'')=''"):
             b = _ymd(r["birthday"])
-            if not b or b.year < 1900: continue
+            if not b or b.year < 1900 or today.year - b.year > 105: continue  # no death date on file but surely not living
             d = _bday_in(b, today.year)
             if d < today: d = _bday_in(b, today.year + 1)
             n = (d - today).days
