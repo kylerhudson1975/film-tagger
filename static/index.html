@@ -228,15 +228,17 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .ppst{margin-bottom:12px}.ppst-h{display:flex;gap:10px;align-items:baseline;font-size:13px;margin-bottom:6px}.ppst-h b{font-size:14px}.ppst-k{margin-left:auto;color:var(--m);font-size:12px}
 .ppst-l{display:flex;flex-wrap:wrap;gap:6px}.ppst-l a{background:var(--p2);border:1px solid var(--b);border-radius:14px;padding:2px 10px;font-size:12.5px;color:var(--t);cursor:pointer}.ppst-l a:hover{border-color:var(--a)}.ppst-l a b{color:var(--m);font-weight:600;margin-left:3px}
 .bd-box{background:var(--p2);border:1px solid var(--b);border-radius:8px;padding:10px 12px;font-size:13px}
+.tsw{position:relative}.tsug{display:none;position:absolute;z-index:60;left:0;right:0;top:100%;background:var(--p);border:1px solid var(--b);border-radius:6px;max-height:280px;overflow:auto;box-shadow:0 6px 18px #0006}
+.tsug div{display:flex;justify-content:space-between;gap:8px;padding:3px 8px;cursor:pointer;font-size:12.5px}.tsug div.on,.tsug div:hover{background:var(--p2)}.tsug small{color:var(--m);white-space:nowrap}.tsug mark{background:none;color:var(--a);font-weight:600}
 </style></head><body>
 <div id="side">
  <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:8px"><img src="/static/logo-icon.png" alt="" style="height:30px;width:30px;border-radius:6px">Film Tagger<button id="hdrQuit" onclick="quitApp()" title="Quit Film Tagger (stops the app completely)" aria-label="Quit Film Tagger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>Quit</button></div>
  <div class="muted" id="stats"></div>
  <div class="muted" id="ver"></div>
  <h3>Tags (boolean)</h3>
- <label>Must have ALL (AND)</label><input id="f_all" list="taglist" placeholder="tag, tag">
- <label>Has ANY of (OR)</label><input id="f_any" list="taglist">
- <label>Must NOT have (NOT)</label><input id="f_none" list="taglist">
+ <label>Must have ALL (AND)</label><div class=tsw><input id="f_all" placeholder="tag, tag (part of a name works)" autocomplete="off"><div class=tsug id=sug_all></div></div>
+ <label>Has ANY of (OR)</label><div class=tsw><input id="f_any" autocomplete="off"><div class=tsug id=sug_any></div></div>
+ <label>Must NOT have (NOT)</label><div class=tsw><input id="f_none" autocomplete="off"><div class=tsug id=sug_none></div></div>
  <h3>Filters</h3>
  <label>Year</label><div class="row"><input id="f_year_min" type="number" placeholder="from"><input id="f_year_max" type="number" placeholder="to"></div>
  <label>Decade</label><input type=hidden id="f_decade"><div id="decadeChips"></div>
@@ -454,6 +456,27 @@ function renderTagCloud(){const sc=S.tagScope&&S.tagScopeLib===($('f_lib').value
  $('tagcloud').innerHTML=ctl+Object.entries(g).map(([c,ts])=>{const shut=col.has(c),vis=shut?ts.filter(t=>sel.has(t.name.toLowerCase())):ts;
   return `<div class="muted cathead" style="margin-top:6px;cursor:pointer;user-select:none" title="Click to ${shut?'expand':'collapse'}" onclick="toggleCat('${jsq(c)}')"><span style="display:inline-block;width:1em">${shut?'▸':'▾'}</span>${esc(c)} <span style="font-size:11px">(${sc?ts.filter(t=>tn(t)>0).length:ts.length})</span></div>`
   +vis.map(t=>`<span class=tag${sel.has(t.name.toLowerCase())?' style="outline:1px solid var(--a)'+(tn(t)?'':';opacity:.5')+'"':''}${sc?` title="${tn(t)} in this folder · ${t.n} in all libraries"`:''} onclick="addF(event,'${esc(t.name).replace(/'/g,"\\'")}')">${esc(t.name)} <span class=c>${tn(t)}</span></span>`).join('')}).join('')}
+/* Sidebar tag boxes: partial, case/accent-insensitive suggestions for the word being typed ('object' lists 'Object insertion').
+   Tags whose name starts with the text come first, then a word in the name starting with it, then any other substring. */
+const tsKey=s=>foldKey(s).replace(/[\s\-_]+/g,'');
+function tagMatches(term,max=30){const k=foldKey(term).trim(),kk=tsKey(term);if(!kk)return[];const seen=new Map();
+ (S.tags||[]).forEach(t=>{const n=foldKey(t.name);let r=n.startsWith(k)?0:n.split(/[^a-z0-9]+/).some(w=>w&&w.startsWith(k))?1:tsKey(t.name).includes(kk)?2:-1;if(r<0)return;
+  const id=n,o=seen.get(id);if(o){o.n+=t.n||0;o.r=Math.min(o.r,r)}else seen.set(id,{name:t.name,cat:t.category||'',n:t.n||0,r})});
+ return [...seen.values()].sort((a,b)=>a.r-b.r||b.n-a.n||a.name.localeCompare(b.name,undefined,{sensitivity:'base'})).slice(0,max)}
+const TS={k:null,l:[],i:-1};
+function tsLast(k){const v=$('f_'+k).value,parts=v.split(',');return parts[parts.length-1].trim()}
+function tsShow(k){const box=$('sug_'+k),term=tsLast(k);if(!term){box.style.display='none';TS.k=null;return}
+ const l=tagMatches(term);TS.k=k;TS.l=l;if(TS.i>=l.length)TS.i=-1;const fk=foldKey(term).trim();
+ const mk=n=>{const i=foldKey(n).indexOf(fk);return i<0||fk.length!=term.trim().length?esc(n):esc(n.slice(0,i))+'<mark>'+esc(n.slice(i,i+fk.length))+'</mark>'+esc(n.slice(i+fk.length))};
+ box.innerHTML=l.length?l.map((t,i)=>`<div class="${i==TS.i?'on':''}" title="${esc(t.cat)}" onmousedown="event.preventDefault();tsPick('${k}',${i})"><span>${mk(t.name)}</span><small>${dN(t.n)}</small></div>`).join(''):`<p class=muted style="margin:4px 8px;font-size:12px">No tag contains “${esc(term)}”.</p>`;
+ box.style.display=''}
+function tsPick(k,i){const t=TS.l[i];if(!t)return;const el=$('f_'+k),parts=el.value.split(',');parts[parts.length-1]=t.name;
+ el.value=parts.map(x=>x.trim()).filter(Boolean).join(', ');$('sug_'+k).style.display='none';TS.k=null;TS.i=-1;renderTagCloud();clearTimeout(lt);load()}
+['all','any','none'].forEach(k=>{const el=$('f_'+k);el.addEventListener('input',()=>{TS.i=-1;tsShow(k)});el.addEventListener('focus',()=>tsShow(k));
+ el.addEventListener('blur',()=>setTimeout(()=>{$('sug_'+k).style.display='none'},120));
+ el.addEventListener('keydown',e=>{if(TS.k!==k||$('sug_'+k).style.display=='none')return;
+  if(e.key=='ArrowDown'||e.key=='ArrowUp'){e.preventDefault();const n=TS.l.length;if(!n)return;TS.i=e.key=='ArrowDown'?(TS.i+1)%n:(TS.i<=0?n-1:TS.i-1);tsShow(k)}
+  else if(e.key=='Enter'&&TS.i>=0){e.preventDefault();tsPick(k,TS.i)}else if(e.key=='Escape'){$('sug_'+k).style.display='none'}})});
 function addF(e,name){const el=$(e.shiftKey?'f_none':'f_all'),ot=$(e.shiftKey?'f_all':'f_none'),lc=name.toLowerCase(),sp=v=>v.split(',').map(s=>s.trim()).filter(Boolean);let l=sp(el.value);const on=l.some(x=>x.toLowerCase()==lc);const o=sp(ot.value),inO=o.some(x=>x.toLowerCase()==lc);if(inO)ot.value=o.filter(x=>x.toLowerCase()!=lc).join(', ');if(on&&!inO)l=l.filter(x=>x.toLowerCase()!=lc);else if(!on)l.push(name);el.value=l.join(', ');renderTagCloud();load()}
 /* Home's reset: empty search, no filters, Search in: Everything, all libraries, title order (also used by Dashboard + startup) */
 function resetSearch(){closeM();$('libPop').classList.remove('open');$('ctx').style.display='none';

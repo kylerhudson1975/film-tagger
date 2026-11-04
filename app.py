@@ -74,14 +74,26 @@ def lib_clause(c, lib, col):
 
 def build_query(q):
     where, args = [], []
-    T = "SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND tag_norm(t.name)=tag_norm(?)"
+    # Sidebar tag boxes (ALL / ANY / NOT). A term that names a tag (spelling-tolerant, tag_norm) matches that tag exactly;
+    # a term that names no tag is a partial, case/accent-insensitive match: 'object' finds 'Object insertion'.
+    T = "SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND "
+    terms = {}
+    def tag_cond(name):
+        k = db.tag_norm(name)
+        if k not in terms:
+            c0 = C()
+            terms[k] = c0.execute("SELECT 1 FROM tags WHERE tag_norm(name)=? LIMIT 1", (k,)).fetchone() is not None
+            c0.close()
+        if terms[k]: return "tag_norm(t.name)=?", k
+        return "instr(tag_norm(t.name), ?)>0", k
     for name in split_list(q.get("all")):          # AND
-        where.append(f"f.id IN ({T})"); args.append(name)
+        cond, a = tag_cond(name); where.append(f"f.id IN ({T}{cond})"); args.append(a)
     anyl = split_list(q.get("any"))                 # OR
     if anyl:
-        where.append(f"f.id IN (SELECT ft.film_id FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.status='approved' AND tag_norm(t.name) IN ({','.join('tag_norm(?)' for _ in anyl)}))"); args += anyl
+        conds = [tag_cond(n) for n in anyl]
+        where.append(f"f.id IN ({T}(" + " OR ".join(cd for cd, _ in conds) + "))"); args += [a for _, a in conds]
     for name in split_list(q.get("none")):         # NOT
-        where.append(f"f.id NOT IN ({T})"); args.append(name)
+        cond, a = tag_cond(name); where.append(f"f.id NOT IN ({T}{cond})"); args.append(a)
     text = (q.get("q") or "").strip()
     if text:
         field = q.get("in") or "all"
