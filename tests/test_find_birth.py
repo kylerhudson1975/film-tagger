@@ -24,11 +24,14 @@ def fake(req, timeout=None):
     return R(json.dumps({"id": 55, "name": "Ann Old", "birthday": "1962-01-01"}).encode())
 urllib.request.urlopen = fake
 def wd(url, params=None, **k):
-    if params and params.get("action") == "wbsearchentities": return {"search": [{"id": "Q1"}]} if params["search"] == "Ann Old" else {"search": []}
+    if params and params.get("action") == "wbsearchentities": return {"search": [{"id": "Q1"}, {"id": "Q2"}]} if params["search"] == "Ann Old" else {"search": []}
     if params and params.get("action") == "wbgetentities":
         return {"entities": {"Q1": {"id": "Q1", "labels": {"en": {"value": "Ann Old"}}, "descriptions": {"en": {"value": "actress"}},
-                "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
-                           "P569": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"time": "+1959-00-00T00:00:00Z", "precision": 9}}}}]}}}}
+                "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}], "P106": [{"mainsnak": {"datavalue": {"value": {"id": "Q488111"}}}}],
+                           "P569": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"time": "+1959-00-00T00:00:00Z", "precision": 9}}}}]}},
+                "Q2": {"id": "Q2", "labels": {"en": {"value": "Ann Old"}}, "descriptions": {"en": {"value": "seismologist"}},  # namesake, not film: filtered
+                "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}], "P106": [{"mainsnak": {"datavalue": {"value": {"id": "Q901"}}}}],
+                           "P569": [{"rank": "normal", "mainsnak": {"datavalue": {"value": {"time": "+1944-11-29T00:00:00Z", "precision": 11}}}}]}}}}
     raise AssertionError("unexpected " + url)
 bd._get = wd
 before = c.execute("SELECT birthday, edited_fields FROM people WHERE id=?", (pid,)).fetchone()[:]
@@ -46,4 +49,15 @@ cl.post(f"/api/person/{pid}/edit", json={"birthday": "1960-03-01", "birth_date_n
 row = c.execute("SELECT birthday, birth_date_source, edited_fields FROM people WHERE id=?", (pid,)).fetchone()
 assert row[0] == "1960-03-01" and "ThePornDB" in row[1] and "birthday" in json.loads(row[2])
 assert cl.get(f"/api/people/{pid}/summary").json["birthday"] == "1960-03-01"
+# age rule: only adult titles count (a mainstream film at 15 is fine)
+c.execute("INSERT INTO films(id,title,cast_,release_date,year) VALUES(3,'Child Role','Ann Old','1975-06-01',1975)"); c.commit()
+r = cl.get(f"/api/people/{pid}/find_birth").json
+cs = {x["source"]: x for x in r["candidates"]}
+assert not cs["ThePornDB"]["impossible"] and cs["ThePornDB"]["first_title"] == "Early One" and r["titles"] == 3 and r["adult_titles"] == 2, r
+# time budget: a hanging source is reported, the others still answer
+import findbirth, time as _t
+findbirth.BUDGET = 0.5
+tpdb.call_retry = lambda path, tok, **k: (_t.sleep(3), {"data": {}})[1]
+t0 = _t.time(); r = cl.get(f"/api/people/{pid}/find_birth").json
+assert _t.time() - t0 < 2.5 and any("ThePornDB" in e for e in r["errors"]) and {x["source"] for x in r["candidates"]} == {"TMDB", "Wikidata"}, r
 print("ok")
