@@ -1454,7 +1454,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
  <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
  </div></div>`;
- h+=ppInsHtml(p.id)+ppYearChart(d);const PY=S.ppYear,yOk=y=>!PY||+String(y||'').slice(0,4)===PY;
+ h+=ppInsHtml(p.id)+ppYearChip(d);const PY=S.ppYear,yOk=y=>!PY||+String(y||'').slice(0,4)===PY;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
   <span>Sort: <button onclick="ppSort()" title="Toggle year order">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span>
@@ -1487,14 +1487,10 @@ function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
  S.ppPoll={pid,t:setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
   if((S.ppGen||0)!==gen){if(S.ppData)ppPollStart(S.ppData);return}
   if(!n.scenes_loading){ppInsReset(pid);delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}}
-/* Yearly graph on the person page: titles per year in the library (all their credits, d.library), inline SVG.
-   Click a bar to filter the in-library credits to that year; click it again or the chip's × to clear. No chart without dated credits. */
-function ppYearChart(d){const n={};(d.library||[]).forEach(f=>{const y=+f.year;if(y>1800)n[y]=(n[y]||0)+1});const ys=Object.keys(n).map(Number);if(!ys.length)return '';
- const y0=Math.min(...ys),y1=Math.max(...ys),N=y1-y0+1,mx=Math.max(...Object.values(n)),bw=Math.max(6,Math.min(22,Math.floor(640/N))),H=70,W=N*bw,sel=S.ppYear;
- let bars='';for(let y=y0;y<=y1;y++){const v=n[y]||0,h=v?Math.max(3,Math.round(H*v/mx)):0,x=(y-y0)*bw;
-  bars+=`<g class="ppyb${sel===y?' on':''}${v?'':' z'}" data-y=${y}${v?` onclick="ppYear(${y})" style="cursor:pointer"`:''}><title>${y}: ${v} title${v==1?'':'s'}${v?sel===y?' (click to clear)':' (click to show only this year)':''}</title><rect x=${x} y=0 width=${bw} height=${H} fill=transparent></rect><rect x=${x+1} y=${H-h} width=${bw-2} height=${h} rx=2 fill="${sel===y?'var(--a)':sel?'#4b5260':'#5b9cff'}"></rect></g>`}
- return `<div class=ppyc id=ppYears><h4 style="margin:10px 0 4px">Titles per year in your library ${sel?`<span class=ppychip id=ppYearChip>${sel} (${n[sel]||0}) <a href="#" title="Clear the year filter" onclick="ppYear(null);return false">×</a></span>`:''}</h4>
- <div style="overflow-x:auto"><svg width=${W} height=${H+14} viewBox="0 0 ${W} ${H+14}" style="display:block">${bars}<text x=0 y=${H+12} font-size=10 fill="currentColor" opacity=.6>${y0}</text>${N>1?`<text x=${W} y=${H+12} font-size=10 text-anchor=end fill="currentColor" opacity=.6>${y1}</text>`:''}</svg></div></div>`}
+/* Year filter on the person page: click a year's blue (in-library) bar in Insights > Career timeline to show only that
+   year's in-library credits below (chip 'YEAR (n) ×'); the same bar again or the × clears it; resets for each person. */
+function ppYearChip(d){const y=S.ppYear;if(!y)return '';const n=(d.library||[]).filter(f=>+f.year===y).length;
+ return `<div style="margin:8px 0"><span class=ppychip id=ppYearChip>${y} (${n}) <a href="#" title="Clear the year filter" onclick="ppYear(null);return false">×</a></span></div>`}
 function ppYear(y){S.ppYear=y==null||S.ppYear===y?null:y;const st=$('content').scrollTop;renderPerson();$('content').scrollTop=st}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
@@ -2068,8 +2064,8 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
  if(d.years.length){const y0=d.years[0].k,y1=d.years[d.years.length-1].k,line=localStorage.ppInsChart=='line';
   const rows=fill(d.years.map(x=>({k:x.k,films:x.lib,scenes:x.other})),y0,y1).map(x=>({...x,label:(y1-y0>12?"'"+String(x.k).slice(2):String(x.k))}));
   const tg=(v,l)=>`<button class="${(localStorage.ppInsChart||'bar')==v?'on':''}" onclick="ppInsSet(${pid},'ppInsChart','${v}')">${l}</button>`;
-  h+=card('dsh-w2','bars',`Career timeline<span class=dsh-tg>${tg('bar','Bar')}${tg('line','Line')}</span>`,dTime(rows,{line,c2:'#4b5260',title:x=>`${x.k}: ${x.films+x.scenes} credit${x.films+x.scenes==1?'':'s'} · ${x.films} in your library${x.scenes?`, ${x.scenes} not`:''}`,click:x=>x.films?go({year_min:x.k,year_max:x.k}):''})+
-   `<div class=dsh-legend><span><i style="background:#5b9cff"></i>In your library</span><span><i style="background:#4b5260"></i>Not in your library</span><span class=muted>${d.undated?`${dN(d.undated)} undated · `:''}click a bar for that year's titles</span></div>`,'credits per year')}
+  h+=card('dsh-w2','bars',`Career timeline<span class=dsh-tg>${tg('bar','Bar')}${tg('line','Line')}</span>`,dTime(rows,{line,c2:'#4b5260',title:x=>`${x.k}: ${x.films+x.scenes} credit${x.films+x.scenes==1?'':'s'} · ${x.films} in your library${x.scenes?`, ${x.scenes} not`:''}${x.films?S.ppYear===x.k?' (click to clear the year filter)':' (click to show only this year below)':''}`,click:x=>x.films?`ppYear(${x.k})`:''})+
+   `<div class=dsh-legend><span><i style="background:#5b9cff"></i>In your library</span><span><i style="background:#4b5260"></i>Not in your library</span><span class=muted>${d.undated?`${dN(d.undated)} undated · `:''}click a blue bar to show only that year below</span></div>`,'credits per year')}
  const wl=(l,lbl)=>l.map(x=>`<div class=co-al style="cursor:pointer" onclick="${dAct(()=>ppCo(pid,x.name,x.pid))}" title="Open Credited with: ${esc(d.name)} & ${esc(x.name)}"><span class=co-av>${initials(x.name)}</span><span style="min-width:0;flex:1"><b style="font-weight:500">${esc(x.name)}${ppIc(x.name)}</b><small>${esc(lbl||x.known_for||'')}</small></span><small class=ppins-n><b>${dN(x.n)}</b> in library · ${dN(x.total)} total</small></div>`).join('');
  if(d.costars.length||d.directors.length){const ws=localStorage.ppWwSort=='all'?'all':'lib',wtg=(v,l)=>`<button class="${ws==v?'on':''}" onclick="ppInsSet(${pid},'ppWwSort','${v}')">${l}</button>`;
   const wsort=(l,n)=>l.slice().sort(ws=='all'?(a,b)=>b.total-a.total||b.n-a.n:(a,b)=>b.n-a.n||b.total-a.total).slice(0,n||l.length),co2=wsort(d.costars,d.costars_n||8),di2=wsort(d.directors,d.directors_n||5);

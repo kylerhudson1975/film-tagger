@@ -1,6 +1,7 @@
-"""Headless check (playwright + Chrome; text only, images off; mainstream test data): the person page's yearly graph
-counts their library titles per year (gaps as empty slots, undated left out), a bar click filters the in-library
-credits to that year, clicking it again or the chip's × clears it; no chart without dated credits.
+"""Headless check (playwright + Chrome; text only, images off; mainstream test data): on the person page, clicking a
+year's blue (in-library) bar in Insights > Career timeline filters the in-library credits to that year (chip
+'YEAR (n) ×'); the same bar again or the × clears it; empty years aren't clickable; no separate per-year chart;
+the filter resets for the next person.
 python tests/ui/person_years.py"""
 import os, sys, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
@@ -24,20 +25,24 @@ with sync_playwright() as pw:
     pg = br.new_page(viewport={"width": 1400, "height": 900}); errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     pg.goto("http://127.0.0.1:5108/"); pg.wait_for_timeout(1500)
     titles = lambda: pg.evaluate("[...document.querySelectorAll('.pp .ppi .ppn')].map(x=>x.textContent)")
-    pg.evaluate(f"showPerson({ids['Max Main']})"); pg.wait_for_timeout(1500)
-    bars = pg.evaluate("[...document.querySelectorAll('#ppYears .ppyb')].map(g=>g.dataset.y+':'+g.querySelector('title').textContent.split(' ')[1])")
-    check(bars == ["2001:2", "2002:0", "2003:1"], f"bars {bars}"); check(sorted(titles()) == ["Alpha", "Beta", "Delta", "Gamma"], f"all titles {titles()}")
-    pg.click("#ppYears .ppyb[data-y='2001']"); pg.wait_for_timeout(400)
-    check(sorted(titles()) == ["Alpha", "Beta"] and "2001 (2)" in pg.inner_text("#ppYearChip"), f"2001 filter {titles()}")
-    check(pg.locator("#ppYears .ppyb.on").count() == 1, "selected bar marked")
-    pg.click("#ppYears .ppyb[data-y='2001']"); pg.wait_for_timeout(400)
-    check(len(titles()) == 4 and pg.locator("#ppYearChip").count() == 0, "click again clears")
-    pg.click("#ppYears .ppyb[data-y='2003']"); pg.wait_for_timeout(400); check(titles() == ["Gamma"], f"2003 filter {titles()}")
-    pg.click("#ppYearChip a"); pg.wait_for_timeout(400); check(len(titles()) == 4 and pg.locator("#ppYearChip").count() == 0, "chip × clears")
-    pg.click("#ppYears .ppyb[data-y='2002']", force=True); pg.wait_for_timeout(300); check(pg.locator("#ppYearChip").count() == 0, "empty year not clickable")
-    pg.click("#ppYears .ppyb[data-y='2003']"); pg.wait_for_timeout(300)
+    bar = lambda y: f"#ppIns g.dsh-bar:has(title:text-matches('^{y}:'))"
+    pg.evaluate("localStorage.ppInsOpen='1';localStorage.ppInsChart='bar'")
+    pg.evaluate(f"showPerson({ids['Max Main']})"); pg.wait_for_timeout(2500)
+    check(pg.locator("#ppYears").count() == 0 and "Titles per year" not in pg.inner_text("#content"), "no separate per-year chart")
+    tips = pg.evaluate("[...document.querySelectorAll('#ppIns svg g')].filter(g=>g.querySelector('title')).map(g=>g.getAttribute('class')+'|'+g.querySelector('title').textContent)")
+    check(any(t.startswith("dsh-bar|2001:") for t in tips) and any(t.startswith("dsh-nb|2002:") for t in tips), f"blue bars clickable, empty year not {tips}")
+    check(pg.evaluate("getComputedStyle(document.querySelector('#ppIns g.dsh-bar')).cursor") == "pointer", "pointer cursor on blue bars")
+    check(sorted(titles()) == ["Alpha", "Beta", "Delta", "Gamma"], f"all titles {titles()}")
+    pg.click(bar(2001)); pg.wait_for_timeout(500)
+    check(sorted(titles()) == ["Alpha", "Beta"] and pg.inner_text("#ppYearChip").startswith("2001 (2)"), f"2001 filter {titles()}")
+    check(pg.evaluate("String(S.page)").startswith("person:"), "stays on the person page")
+    pg.click(bar(2001)); pg.wait_for_timeout(500)
+    check(len(titles()) == 4 and pg.locator("#ppYearChip").count() == 0, "same bar again clears")
+    pg.click(bar(2003)); pg.wait_for_timeout(500); check(titles() == ["Gamma"], f"2003 filter {titles()}")
+    pg.click("#ppYearChip a"); pg.wait_for_timeout(500); check(len(titles()) == 4 and pg.locator("#ppYearChip").count() == 0, "chip × clears")
+    pg.click(bar(2003)); pg.wait_for_timeout(300)
     pg.evaluate(f"showPerson({ids['Una Dated']})"); pg.wait_for_timeout(1500)
-    check(pg.locator("#ppYears").count() == 0 and sorted(titles()) == ["Delta", "Eps"], f"no chart without dated credits; filter reset {titles()}")
+    check(pg.locator("#ppYearChip").count() == 0 and sorted(titles()) == ["Delta", "Eps"], f"filter reset for the next person {titles()}")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()
