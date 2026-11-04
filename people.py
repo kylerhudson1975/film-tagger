@@ -1930,6 +1930,41 @@ def init(app, tmdb, posters_dir):
                             looked_up=row["tpdb_performer_id"] is not None, found=row["tpdb_performer_id"] not in (None, TPDB_NONE), fav=bool(row["favorite"])))
         return jsonify(people=out, total=len(out), job={k: v for k, v in CJ.items() if k != "thread"})
 
+    # ---------- Recently added (Performers row): cast of the titles added to the library most recently ----------
+    @app.get("/api/people/recent")
+    def people_recent():
+        """Performers (cast) on the most recently added titles, newest first, one card per person with the date her latest
+        title was added. cat = porn | mainstream (same rule as the Mainstream / Porn buttons) or empty for everyone."""
+        c = C(); cat = request.args.get("cat") or ""; lim = max(1, min(int(request.args.get("limit", 16)), 40))
+        data = index(c); adult = adult_film_ids(c)
+        byname = {}; out = []; seen = set()
+        for f in c.execute("SELECT id, cast_, added_at FROM films WHERE added_at IS NOT NULL AND COALESCE(cast_,'')<>'' ORDER BY added_at DESC, id DESC LIMIT 400"):
+            for nm in (f["cast_"] or "").split(","):
+                nm = " ".join(nm.split())
+                if not nm: continue
+                k = fold(nm)
+                if k in seen: continue
+                seen.add(k)
+                e = data.get(k)
+                is_adult = bool(e and e["films"] & adult)
+                if cat == "porn" and not is_adult or cat == "mainstream" and is_adult: continue
+                byname[k] = (nm, f["added_at"], is_adult)
+                if len(byname) >= lim * 2: break
+            if len(byname) >= lim * 2: break
+        rows = {r["name_norm"]: r for r in c.execute("SELECT * FROM people WHERE name_norm IN (%s)" % ",".join("?" * len(byname)), list(byname))} if byname else {}
+        pids = set()
+        for k, (nm, at, is_adult) in byname.items():
+            r = rows.get(k)
+            hops = 0
+            while r is not None and r["merged_into"] and hops < 5:
+                r = c.execute("SELECT * FROM people WHERE id=?", (r["merged_into"],)).fetchone(); hops += 1
+            if r is None or r["id"] in pids: continue
+            pids.add(r["id"])
+            out.append(dict(id=r["id"], name=r["name"], photo=photo_url(r), fav=bool(r["favorite"]), adult=is_adult,
+                            added=time.strftime("%Y-%m-%d", time.localtime(at))))
+            if len(out) >= lim: break
+        return jsonify(people=out, cat=cat or None)
+
     # ---------- Needs attention (Performers tab): people missing key info ----------
     # Porn: everyone credited on an adult title, most scenes first (library scenes or ThePornDB total, whichever is larger).
     # Mainstream: only opened (built) profiles; the thousands of never-opened cast members would all lack everything.
