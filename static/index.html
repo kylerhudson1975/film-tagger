@@ -56,6 +56,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 #ctx{position:fixed;display:none;background:var(--p2);border:1px solid var(--b);border-radius:6px;z-index:20;min-width:220px;padding:4px}
 #ctx div{padding:6px 10px;cursor:pointer;border-radius:4px}#ctx div:hover{background:var(--a)}
 #stPrompt.st-ov{position:fixed;inset:0;background:#0008;display:flex;align-items:center;justify-content:center;z-index:25}.st-box{background:var(--p2);border:1px solid var(--a);border-radius:10px;padding:16px 18px;min-width:280px}.st-seg{display:flex;gap:6px}.st-seg button.on{outline:2px solid var(--a);font-weight:600}
+.ppychip{font-size:12px;font-weight:500;text-transform:none;letter-spacing:0;background:var(--p2);border:1px solid var(--a);border-radius:10px;padding:1px 8px;margin-left:8px}.ppychip a{margin-left:4px;text-decoration:none}
 #toast{position:fixed;bottom:16px;right:76px;background:var(--p2);border:1px solid var(--a);padding:10px 14px;border-radius:8px;display:none;z-index:30;max-width:400px}
 .muted{color:var(--m);font-size:12px}.ss{display:flex;justify-content:space-between;padding:3px 0}.ss a{color:var(--a);cursor:pointer}
 .pend{border:1px solid var(--ai);border-radius:8px;padding:8px;margin:8px 0}
@@ -1428,7 +1429,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;S.ppYear=null;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -1453,20 +1454,20 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
  <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
  </div></div>`;
- h+=ppInsHtml(p.id);
+ h+=ppInsHtml(p.id)+ppYearChart(d);const PY=S.ppYear,yOk=y=>!PY||+String(y||'').slice(0,4)===PY;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
   <span>Sort: <button onclick="ppSort()" title="Toggle year order">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span>
   <span class=muted>Jump to: ${d.groups.map((g,i)=>`<a href="#" onclick="document.getElementById('ppg${i}').scrollIntoView();return false">${esc(g.dept)}</a>`).join(' · ')}</span></div>`;
-  d.groups.forEach((g,i)=>{let l=g.credits.filter(x=>!S.ppOnly||x.film_id);if(S.ppDesc)l=[...l].reverse();const own=g.credits.filter(x=>x.film_id).length;
+  d.groups.forEach((g,i)=>{let l=g.credits.filter(x=>PY?x.film_id&&yOk(x.year):!S.ppOnly||x.film_id);if(PY&&!l.length)return;if(S.ppDesc)l=[...l].reverse();const own=g.credits.filter(x=>x.film_id).length;
    h+=`<h3 id=ppg${i} class=ppdept>${esc(g.dept)} <span class=muted>— you have ${own} of ${g.credits.length}</span></h3>`+(l.length?`<div class=pplist>${l.map(x=>{
     const img=x.film_id&&x.poster?x.poster:x.thumb,inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${x.year||'—'}</div><div class=ppn>${esc(x.title)}</div>${x.role?`<div class=muted>${esc(x.role)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
     return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title)}">${inner}</div>`:`<a class="ppi not" href="https://www.themoviedb.org/movie/${x.tmdb_id}" target=_blank rel=noopener title="Not in your library — open on TMDB">${inner}</a>`}).join('')}</div>`:'<p class=muted>None in your library.</p>')});
  }else{
-  let l=[...d.library];if(S.ppDesc)l.reverse();
+  let l=d.library.filter(f=>yOk(f.year));if(S.ppDesc)l.reverse();
   h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
- if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id),rest=S.ppScOnly?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
+ if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id&&yOk(x.date)),rest=S.ppScOnly||PY?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
   const lim=S.ppLim||200,shown=rest.slice(0,lim),ld=d.scenes_loading;
   const card=x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
    inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
@@ -1486,6 +1487,15 @@ function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
  S.ppPoll={pid,t:setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
   if((S.ppGen||0)!==gen){if(S.ppData)ppPollStart(S.ppData);return}
   if(!n.scenes_loading){ppInsReset(pid);delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}}
+/* Yearly graph on the person page: titles per year in the library (all their credits, d.library), inline SVG.
+   Click a bar to filter the in-library credits to that year; click it again or the chip's × to clear. No chart without dated credits. */
+function ppYearChart(d){const n={};(d.library||[]).forEach(f=>{const y=+f.year;if(y>1800)n[y]=(n[y]||0)+1});const ys=Object.keys(n).map(Number);if(!ys.length)return '';
+ const y0=Math.min(...ys),y1=Math.max(...ys),N=y1-y0+1,mx=Math.max(...Object.values(n)),bw=Math.max(6,Math.min(22,Math.floor(640/N))),H=70,W=N*bw,sel=S.ppYear;
+ let bars='';for(let y=y0;y<=y1;y++){const v=n[y]||0,h=v?Math.max(3,Math.round(H*v/mx)):0,x=(y-y0)*bw;
+  bars+=`<g class="ppyb${sel===y?' on':''}${v?'':' z'}" data-y=${y}${v?` onclick="ppYear(${y})" style="cursor:pointer"`:''}><title>${y}: ${v} title${v==1?'':'s'}${v?sel===y?' (click to clear)':' (click to show only this year)':''}</title><rect x=${x} y=0 width=${bw} height=${H} fill=transparent></rect><rect x=${x+1} y=${H-h} width=${bw-2} height=${h} rx=2 fill="${sel===y?'var(--a)':sel?'#4b5260':'#5b9cff'}"></rect></g>`}
+ return `<div class=ppyc id=ppYears><h4 style="margin:10px 0 4px">Titles per year in your library ${sel?`<span class=ppychip id=ppYearChip>${sel} (${n[sel]||0}) <a href="#" title="Clear the year filter" onclick="ppYear(null);return false">×</a></span>`:''}</h4>
+ <div style="overflow-x:auto"><svg width=${W} height=${H+14} viewBox="0 0 ${W} ${H+14}" style="display:block">${bars}<text x=0 y=${H+12} font-size=10 fill="currentColor" opacity=.6>${y0}</text>${N>1?`<text x=${W} y=${H+12} font-size=10 text-anchor=end fill="currentColor" opacity=.6>${y1}</text>`:''}</svg></div></div>`}
+function ppYear(y){S.ppYear=y==null||S.ppYear===y?null:y;const st=$('content').scrollTop;renderPerson();$('content').scrollTop=st}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
 async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData,gen=S.ppGen||0;b.disabled=true;b.textContent='⟳ Refreshing…';
