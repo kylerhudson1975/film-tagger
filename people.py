@@ -1933,9 +1933,18 @@ def init(app, tmdb, posters_dir):
     # ---------- Recently added (Performers row): cast of the titles added to the library most recently ----------
     @app.get("/api/people/recent")
     def people_recent():
+        if request.args.get("cat") == "mix":  # empty Performers screen: Mainstream and Porn taken in turn, so it never reads as one category
+            lim = max(1, min(int(request.args.get("limit", 16)), 40)); out = []
+            m, p = (recent_list(c2, lim) for c2 in ("mainstream", "porn"))
+            for i in range(lim):
+                for l in (m, p):
+                    if i < len(l) and len(out) < lim: out.append(l[i])
+            return jsonify(people=out, cat="mix")
+        return jsonify(people=recent_list(request.args.get("cat") or "", max(1, min(int(request.args.get("limit", 16)), 40))), cat=request.args.get("cat") or None)
+    def recent_list(cat, lim):
         """Performers (cast) on the most recently added titles, newest first, one card per person with the date her latest
         title was added. cat = porn | mainstream (same rule as the Mainstream / Porn buttons) or empty for everyone."""
-        c = C(); cat = request.args.get("cat") or ""; lim = max(1, min(int(request.args.get("limit", 16)), 40))
+        c = C()
         data = index(c); adult = adult_film_ids(c)
         byname = {}; out = []; seen = set()
         for f in c.execute("SELECT id, cast_, added_at FROM films WHERE added_at IS NOT NULL AND COALESCE(cast_,'')<>'' ORDER BY added_at DESC, id DESC LIMIT 400"):
@@ -1963,7 +1972,7 @@ def init(app, tmdb, posters_dir):
             out.append(dict(id=r["id"], name=r["name"], photo=photo_url(r), fav=bool(r["favorite"]), adult=is_adult,
                             added=time.strftime("%Y-%m-%d", time.localtime(at))))
             if len(out) >= lim: break
-        return jsonify(people=out, cat=cat or None)
+        return out
 
     # ---------- Needs attention (Performers tab): people missing key info ----------
     # Porn: everyone credited on an adult title, most scenes first (library scenes or ThePornDB total, whichever is larger).

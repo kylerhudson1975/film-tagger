@@ -64,7 +64,7 @@ with sync_playwright() as pw:
     check(pg.locator(".pf-cats button.on").count() == 0 and pg.locator("#pfEmpty").count() == 1 and pg.locator("#pfList .pcard").count() == 0
           and not pg.is_visible("#pfTabs"), "opens empty: no performers, no tabs")
     rc = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)")
-    check(rc[:3] == ["Cora Chase", "Mia Jay", "Max Main"] and pg.locator("#pfRecent .pf-rc .muted").first.inner_text().count("-") == 2, f"recently added row {rc}")
+    check(rc[:3] == ["Max Main", "Cora Chase", "Mia Jay"] and pg.locator("#pfRecent .pf-rc .muted").first.inner_text().count("-") == 2, f"recently added row {rc}")
     pg.click("#pfRecent .pf-rc[data-pid='%d']" % ids["Mia Jay"]); pg.wait_for_timeout(1000)
     check(pg.is_visible("#pfPanel") and pg.inner_text(".pf-name").startswith("Mia Jay"), "recent card opens the panel"); pg.click(".pf-x"); pg.wait_for_timeout(200)
     pg.fill("#pfQ", "ma"); pg.wait_for_timeout(1200)   # search from the empty default spans everyone

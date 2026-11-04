@@ -24,4 +24,6 @@ assert [p["adult"] for p in r] == [True, True, False, False]
 assert [p["name"] for p in cl.get("/api/people/recent?cat=porn").json["people"]] == ["Pia Porn", "Zoe Zest"]
 assert [p["name"] for p in cl.get("/api/people/recent?cat=mainstream").json["people"]] == ["Max Main", "Amy Real"]
 assert len(cl.get("/api/people/recent?limit=1").json["people"]) == 1
+mx = [p["name"] for p in cl.get("/api/people/recent?cat=mix").json["people"]]
+assert mx == ["Max Main", "Pia Porn", "Amy Real", "Zoe Zest"], mx   # Mainstream and Porn in turn
 print("ok")

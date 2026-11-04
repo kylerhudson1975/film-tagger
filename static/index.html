@@ -1239,8 +1239,8 @@ S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfC
 /* Recently added: a row of small cards for the cast of the titles added most recently (/api/people/recent), on the empty
    screen and at the top of a category (filtered to it); hidden while a search is active. */
 function pfRecentRow(){if(ppQ())return '';const l=S.recent[S.pfCat||'all'];if(!l||!l.length)return '';
- return `<div id=pfRecent class=pf-recent><h4>Recently added</h4><div class=pf-rrow>${l.map(p=>`<div class=pf-rc data-pid="${p.id}" onclick="pfOpen(${p.id})" title="${esc(p.name)}: latest title added ${p.added}"><div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.added}</div></div>`).join('')}</div></div>`}
-function pfRecentLoad(){const k=S.pfCat||'all';return api('/api/people/recent?limit=16'+(S.pfCat?'&cat='+S.pfCat:'')).then(j=>{S.recent[k]=j.people},()=>{S.recent[k]=S.recent[k]||[]}).then(()=>{if(S.page=='perf'&&(S.pfCat||'all')===k)pfDraw()})}S.need={};S.needF='';S.needMax=300;
+ return `<div id=pfRecent class=pf-recent><h4>Recently added</h4>${S.pfCat?'':'<div class=muted style="font-size:11.5px;margin:-4px 0 6px">Mainstream and Porn, in turn</div>'}<div class=pf-rrow>${l.map(p=>`<div class=pf-rc data-pid="${p.id}" onclick="pfOpen(${p.id})" title="${esc(p.name)}: latest title added ${p.added}"><div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.added}</div></div>`).join('')}</div></div>`}
+function pfRecentLoad(){const k=S.pfCat||'all';return api('/api/people/recent?limit=16&cat='+(S.pfCat||'mix')).then(j=>{S.recent[k]=j.people},()=>{S.recent[k]=S.recent[k]||[]}).then(()=>{if(S.page=='perf'&&(S.pfCat||'all')===k)pfDraw()})}S.need={};S.needF='';S.needMax=300;
 /* Needs attention: people missing a birth date, photo, gender or ThePornDB/TMDB link, badges on each card; Porn sorted by most
    scenes first; Mainstream = opened profiles only. Filter chips narrow to one missing field. */
 /* Find birth date: candidates from ThePornDB, TMDB, Wikidata and Wikipedia (/api/people/<id>/find_birth), checked against
@@ -1301,7 +1301,7 @@ function perfHome(){try{setAllCats(true)}catch(e){}resetSearch();renderTagCloud(
 async function showPerformers(opt={}){
  if(opt.tab&&PF_TABS.some(t=>t[0]==opt.tab)){S.pfTab=opt.tab;localStorage.pfTab=opt.tab}
  if('cat' in opt)S.pfCat=opt.cat||'';else if(!opt.keep)S.pfCat='';if(!pfTabsFor(S.pfCat).some(t=>t[0]==S.pfTab))S.pfTab='built';
- if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='perf'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'perf',ptab:S.pfTab,pcat:S.pfCat},'')}}
+ if(!S.restoring&&!opt.nohist){const cur=history.state;if(!(cur&&cur.page=='perf'&&!cur.film)){snap();history.pushState({...navState(),film:null,page:'perf',ptab:S.pfTab,pcat:S.pfCat},'')}else history.replaceState({...cur,ptab:S.pfTab,pcat:S.pfCat},'')}
  if(!opt.keep&&!S.restoring)closeM();
  S.page='perf';S.pageId=null;S.peopleLib='';S.sel.clear();$('personHdr').style.display='none';$('bulk').style.display='none';$('count').textContent='';$('selAllBtn').style.display='none';dashNav(false);$('perfBtn').classList.add('on');
  if(!opt.keep||!$('pfList')){const q=$('pfQ')?$('pfQ').value:(S.pfQv||'');
