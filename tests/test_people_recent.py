@@ -1,6 +1,7 @@
 """Performers > Recently added (/api/people/recent): cast of the most recently added titles, newest first, one card per
 person (deduped, merged people resolved) with the date her latest title was added; cat=porn / mainstream filters by the
-Mainstream / Porn rule. Run: python tests/test_people_recent.py"""
+Mainstream / Porn rule (the page asks only for these: the row shows after picking a category, not on the opening
+screen; cat=mix stays in the API). Run: python tests/test_people_recent.py"""
 import os, sys, time, tempfile
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

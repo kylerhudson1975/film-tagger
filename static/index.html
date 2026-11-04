@@ -1236,10 +1236,10 @@ function ppBuiltTable(){const B=bList(),mm=pfMain(),qq=ppQ(),grp=curGrp(),sorts=
    summary panel (/api/people/<id>/summary). Reuses the People lists above; their search box is #pfQ here. ---------- */
 const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['need','Needs attention'],['all','All people'],['studios','Studios']];
 S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfCat='';S.builtM=null;S.recent={};
-/* Recently added: a row of small cards for the cast of the titles added most recently (/api/people/recent), on the empty
-   screen and at the top of a category (filtered to it); hidden while a search is active. */
-function pfRecentRow(){if(ppQ())return '';const l=S.recent[S.pfCat||'all'];if(!l||!l.length)return '';
- return `<div id=pfRecent class=pf-recent><h4>Recently added</h4>${S.pfCat?'':'<div class=muted style="font-size:11.5px;margin:-4px 0 6px">Mainstream and Porn, in turn</div>'}<div class=pf-rrow>${l.map(p=>`<div class=pf-rc data-pid="${p.id}" onclick="pfOpen(${p.id})" title="${esc(p.name)}: latest title added ${p.added}"><div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.added}</div></div>`).join('')}</div></div>`}
+/* Recently added: a row of small cards for the cast of the titles added most recently (/api/people/recent), only at
+   the top of a category (Mainstream or Porn, filtered to it), not on the opening screen; hidden while a search is active. */
+function pfRecentRow(){if(ppQ()||!S.pfCat)return '';const l=S.recent[S.pfCat];if(!l||!l.length)return '';
+ return `<div id=pfRecent class=pf-recent><h4>Recently added</h4><div class=pf-rrow>${l.map(p=>`<div class=pf-rc data-pid="${p.id}" onclick="pfOpen(${p.id})" title="${esc(p.name)}: latest title added ${p.added}"><div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.added}</div></div>`).join('')}</div></div>`}
 /* Photos for cards without one: build the profile in the background (GET /api/person/<id>, the same path as Open full
    profile; hand-set photos stay protected), 3 at a time, then swap the image into every card for that person in place. */
 S.phQ=[];S.phBusy=0;S.phDone={};S.phUrl={};
@@ -1260,7 +1260,7 @@ function pfRipRow(){if(ppQ())return '';const d=S.rip[S.pfCat||'all'];if(!d||!d.p
  return `<div id=pfRip class=pf-recent><h4>🕯️ In memoriam</h4><div class=pf-rrow>${d.people.map(p=>pfCard(p,`${p.born?p.born+'–':'† '}${p.died}${p.age!=null?' · age '+p.age:''}`,`${p.name}: died ${p.deathday}`)).join('')}</div></div>`}
 function pfRowsLoad(){const k=S.pfCat||'all',q=S.pfCat?'?cat='+S.pfCat:'';const redraw=()=>{if(S.page=='perf'&&(S.pfCat||'all')===k)pfDraw()};
  api('/api/people/birthdays'+q).then(j=>{S.bday[k]=j},()=>{}).then(redraw);api('/api/people/memoriam'+q).then(j=>{S.rip[k]=j},()=>{}).then(redraw)}
-function pfRecentLoad(){const k=S.pfCat||'all';return api('/api/people/recent?limit=16&cat='+(S.pfCat||'mix')).then(j=>{S.recent[k]=j.people},()=>{S.recent[k]=S.recent[k]||[]}).then(()=>{if(S.page=='perf'&&(S.pfCat||'all')===k)pfDraw()})}S.need={};S.needF='';S.needMax=300;
+function pfRecentLoad(){const k=S.pfCat;if(!k)return Promise.resolve();return api('/api/people/recent?limit=16&cat='+k).then(j=>{S.recent[k]=(j.people||[]).map(p=>(!p.photo&&S.phUrl[p.id]?{...p,photo:S.phUrl[p.id]}:p))},()=>{S.recent[k]=S.recent[k]||[]}).then(()=>{if(S.page=='perf'&&S.pfCat===k)pfDraw()})}S.need={};S.needF='';S.needMax=300;
 /* Needs attention: people missing a birth date, photo, gender or ThePornDB/TMDB link, badges on each card; Porn sorted by most
    scenes first; Mainstream = opened profiles only. Filter chips narrow to one missing field. */
 /* Find birth date: candidates from ThePornDB, TMDB, Wikidata and Wikipedia (/api/people/<id>/find_birth), checked against
@@ -1335,7 +1335,7 @@ function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).l
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){if(S.pfTab!==k&&S.pfSel)pfClose();S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
- if(!S.pfCat){setTimeout(pfPhotoQueue,0);el.innerHTML=ppQ()?pfAllList():pfBdayRow()+pfRecentRow()+pfRipRow()+'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
+ if(!S.pfCat){setTimeout(pfPhotoQueue,0);el.innerHTML=ppQ()?pfAllList():pfBdayRow()+pfRipRow()+'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
  el.innerHTML=pfBdayRow()+pfRecentRow()+pfRipRow()+(t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList());pfMark();setTimeout(pfPhotoQueue,0)}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
 async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRowsLoad();if(!cat){if(ppQ())await pfAllSearch().then(()=>{if(S.page=='perf'&&!S.pfCat)pfDraw()});return}const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};

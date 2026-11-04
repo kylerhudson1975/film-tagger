@@ -63,10 +63,7 @@ with sync_playwright() as pw:
     check(pg.locator("#pfCatM").inner_text() == "Mainstream" and pg.locator("#pfCatP").inner_text() == "Porn", "category buttons")
     check(pg.locator(".pf-cats button.on").count() == 0 and pg.locator("#pfEmpty").count() == 1 and pg.locator("#pfList .pcard").count() == 0
           and not pg.is_visible("#pfTabs"), "opens empty: no performers, no tabs")
-    rc = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)")
-    check(rc[:3] == ["Max Main", "Cora Chase", "Mia Jay"] and pg.locator("#pfRecent .pf-rc .muted").first.inner_text().count("-") == 2, f"recently added row {rc}")
-    pg.click("#pfRecent .pf-rc[data-pid='%d']" % ids["Mia Jay"]); pg.wait_for_timeout(1000)
-    check(pg.is_visible("#pfPanel") and pg.inner_text(".pf-name").startswith("Mia Jay"), "recent card opens the panel"); pg.click(".pf-x"); pg.wait_for_timeout(200)
+    check(pg.locator("#pfRecent").count() == 0, "no Recently added row on the opening screen (only after picking Mainstream / Porn)")
     pg.fill("#pfQ", "ma"); pg.wait_for_timeout(1200)   # search from the empty default spans everyone
     check(pg.locator("#pfRecent").count() == 0, "row hidden while searching")
     hits = pg.evaluate("[...document.querySelectorAll('#pfAll .pcard b')].map(x=>x.textContent)")
@@ -75,6 +72,9 @@ with sync_playwright() as pw:
     pg.click("#pfCatM"); pg.wait_for_timeout(1200)
     check("on" in pg.get_attribute("#pfCatM", "class") and pg.get_attribute("#pfCatM", "aria-pressed") == "true", "Mainstream active")
     check(pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)") == ["Max Main"], "recent row filtered to Mainstream")
+    check(pg.locator("#pfRecent .pf-rc .muted").first.inner_text().count("-") == 2, "recent card shows the added date")
+    pg.click("#pfRecent .pf-rc[data-pid='%d']" % ids["Max Main"]); pg.wait_for_timeout(1000)
+    check(pg.is_visible("#pfPanel") and pg.inner_text(".pf-name").startswith("Max Main"), "recent card opens the panel"); pg.click(".pf-x"); pg.wait_for_timeout(200)
     mt = tabs(); names = pg.evaluate("[...document.querySelectorAll('#pfList .bcard .bname')].map(x=>x.childNodes[0].textContent.trim())")
     check(names == ["Max Main"] and pg.locator("#pfTabs button.on").get_attribute("data-tab") == "built", f"mainstream built {names}")
     check([x.split(" (")[0] for x in mt] == ["★ Favorites", "Built profiles", "Needs attention", "All people"] and not pg.is_visible("#ppBGroupSel"), f"mainstream tabs {mt}")

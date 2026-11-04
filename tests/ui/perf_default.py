@@ -1,5 +1,5 @@
 """Headless check (playwright + Chrome; text only, images off): the top-bar Performers button always opens the empty default
-(no category, Porn/Mainstream not highlighted, 'Recently added' row for everyone): from another section, after picking Porn,
+(no category, Porn/Mainstream not highlighted, no 'Recently added' row: it shows only after picking one): from another section, after picking Porn,
 and after a page reload; only browser Back restores a category.  python tests/ui/perf_default.py"""
 import os, sys, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
@@ -27,8 +27,8 @@ with sync_playwright() as pw:
     def empty(msg):
         check(pg.evaluate("S.page") == "perf" and pg.evaluate("S.pfCat") == "" and pg.locator(".pf-cats button.on").count() == 0
               and pg.locator("#pfEmpty").count() == 1 and not pg.is_visible("#pfTabs"), msg + f" (cat={pg.evaluate('S.pfCat')!r})")
-        rc = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)")
-        check(pg.locator("#pfRecent h4").inner_text().strip().lower() == "recently added" and rc == ["Max Main", "Pia Porn"], msg + f": recent row for everyone {rc}")
+        check(pg.locator("#pfRecent").count() == 0, msg + ": no Recently added row on the opening screen")
+        check(pg.locator("#pfBday").count() == 1 and pg.locator("#pfRip").count() == 1, msg + ": Birthday and In memoriam rows on the opening screen")
     pg.goto("http://127.0.0.1:5104/"); pg.wait_for_timeout(1500)
     pg.click("#dashBtn"); pg.wait_for_timeout(800); pg.click("#perfBtn"); pg.wait_for_timeout(1200); empty("from Dashboard")
     pg.click("#pfCatP"); pg.wait_for_timeout(1000); check(pg.evaluate("S.pfCat") == "porn", "Porn picked")
@@ -49,21 +49,27 @@ with sync_playwright() as pw:
         r.fulfill(status=200, content_type="application/json", body=_json.dumps({"person": {"id": pid, "photo": f"/api/person/{pid}/photo?v=9"}}))
     pg.route(_re.compile(r".*/api/person/\d+$"), person)
     pg.reload(); pg.wait_for_timeout(1500); pg.click("#perfBtn"); pg.wait_for_timeout(2500)
-    srcs = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc')].map(x=>(x.querySelector('img')||{}).getAttribute?x.querySelector('img').getAttribute('src'):null)")
-    check(len(srcs) == 2 and all(x and x.endswith("?v=9") for x in srcs) and sorted(set(built)) == sorted(built), f"photos swapped in place {srcs} {built}")
-    check(pg.locator("#pfRecent .pph span").count() == 0, "no initials placeholders left")
-    pg.click("#pfRecent .pf-rc >> nth=0"); pg.wait_for_timeout(1200)
-    check(pg.locator("#pfPanel .pf-ph img").count() == 1, "panel shows the photo")
     bd = pg.evaluate("[...document.querySelectorAll('#pfBday .pf-rc')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
     rip = pg.evaluate("[...document.querySelectorAll('#pfRip .pf-rc')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
     order = pg.evaluate("[...document.querySelectorAll('#pfList .pf-recent')].map(x=>x.id)")
     check(len(bd) == 1 and "Pia Porn" in bd[0] and "today" in bd[0] and pg.locator("#pfBday h4").inner_text().startswith("🎂"), f"birthday row {bd}")
     check(rip == ["Max Main 1943–2010 · age 67"], f"memoriam row {rip}")
-    check(order == ["pfBday", "pfRecent", "pfRip"], f"row order {order}")
+    check(order == ["pfBday", "pfRip"], f"opening screen row order {order}")
     pg.click("#pfRip .pf-rc"); pg.wait_for_timeout(1200)
     check(pg.locator("#pfPanel .rip").count() == 1, "RIP marker on the side panel")
+    pg.click("#pfCatM"); pg.wait_for_timeout(2500)
+    rc = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)")
+    check(pg.locator("#pfRecent h4").inner_text().strip().lower() == "recently added" and rc == ["Max Main"], f"Mainstream recent row {rc}")
+    check(pg.locator("#pfList").evaluate("e=>e.innerText").find("in turn") < 0, "no 'in turn' note")
+    srcs = pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc')].map(x=>(x.querySelector('img')||{}).getAttribute?x.querySelector('img').getAttribute('src'):null)")
+    check(len(srcs) == 1 and all(x and x.endswith("?v=9") for x in srcs) and sorted(set(built)) == sorted(built), f"photos swapped in place {srcs} {built}")
+    check(pg.locator("#pfRecent .pph span").count() == 0, "no initials placeholders left")
+    check(pg.locator("#pfList .pf-recent").evaluate_all("l=>l.map(x=>x.id)") == ["pfRecent", "pfRip"], "Mainstream rows: Recently added, In memoriam")
+    pg.click("#pfRecent .pf-rc >> nth=0"); pg.wait_for_timeout(1200)
+    check(pg.locator("#pfPanel .pf-ph img").count() == 1, "panel shows the photo")
     pg.click("#pfCatP"); pg.wait_for_timeout(1500)
     check(pg.locator("#pfBday .pf-rc").count() == 1 and pg.locator("#pfRip").count() == 0, "Porn filter on the rows")
+    check(pg.evaluate("[...document.querySelectorAll('#pfRecent .pf-rc b')].map(x=>x.textContent)") == ["Pia Porn"], "Porn recent row")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()
