@@ -64,6 +64,8 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .pp a{color:#8cf}.ppl{padding:10px 14px 0}.ppl h3{margin:4px 0 8px}.pcards{display:flex;flex-wrap:wrap;gap:8px}
 .ppfav{background:none;border:0;padding:0 4px;font-size:.9em;cursor:pointer;vertical-align:middle;line-height:1}.ppfav:hover{transform:scale(1.15)}.ppfav:hover .st-off{opacity:1}.pfs{font-size:.9em}
 .st-on{color:#ff00ff;text-shadow:0 0 3px #ff00ffaa,0 0 8px #ff00ff66;font-variant-emoji:text}.st-off{color:#f5c518;opacity:.7;font-variant-emoji:text}
+.bgrp{margin:0 0 8px;border:1px solid #8883;border-radius:8px;background:#ffffff05}.bgh{display:flex;gap:10px;align-items:baseline;padding:8px 10px;cursor:pointer;user-select:none}.bgh:hover{background:var(--p2)}.bgh b{color:var(--t);font-size:15px}.bgc{color:var(--m);width:12px}.bgrp .pcards{padding:0 10px 10px}
+.bhere{font-size:12.5px;color:var(--t);margin:0 0 5px}.bhere b{color:#7fd1ff}.bhere span{color:var(--m)}
 .bctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px}.bctl select,.bctl button{font-size:13px}
 .bcard{width:290px;align-items:flex-start}.bcard .pph{width:58px;height:58px}.bbody{min-width:0;flex:1}.bname{font-weight:600;color:var(--t);margin:2px 0 5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bst{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;font-size:12px;line-height:1.25}.bst span{display:block;color:var(--m);font-size:11px}.bst b{color:var(--t);font-weight:600;font-variant-numeric:tabular-nums}.bst small{color:var(--m);font-weight:400}.bst .on b{color:#7fd1ff}.bst .on span{color:#9fb8c8}
@@ -1157,7 +1159,7 @@ function ppFavList(){const qq=$('q').value.trim().toLowerCase();
  return `<div id=ppFav><div class=pcards>${l.map(p=>`<div class=pcard onclick="showPerson(${p.id})" title="Open ${esc(p.name)}'s page">
  <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div><b>${esc(p.name)}</b> <span class="pfs st-on">★</span><div class=muted>${dN(p.scenes)} scene${p.scenes==1?'':'s'} in library</div>${p.titles?`<div class=muted>+ ${dN(p.titles)} other title${p.titles==1?'':'s'}</div>`:''}</div></div>`).join('')}</div>
  <p class=muted style="font-size:.85em">Sorted by first name, then last name. Click the ${ST_ON} on a person's page to remove them.</p></div>`}
-function ppBuiltToggle(){S.ppBuilt=!S.ppBuilt;localStorage.ppBuilt=S.ppBuilt?'1':'0';load()}
+function ppBuiltToggle(){S.ppBuilt=!S.ppBuilt;S.bgrp=null;localStorage.ppBuilt=S.ppBuilt?'1':'0';load()}
 function ppUnopToggle(){S.ppUnop=!S.ppUnop;localStorage.ppUnop=S.ppUnop?'1':'0';load()}
 function ppUSort(k){const s=S.uSort;S.uSort=s.k==k?{k,d:-s.d}:{k,d:k=='name'?1:-1};localStorage.uSort=JSON.stringify(S.uSort);const el=$('ppUnop');if(el)el.outerHTML=ppUnopTable()}
 function ppUnopTable(){const qq=$('q').value.trim().toLowerCase(),s=S.uSort;
@@ -1171,26 +1173,47 @@ function ppUnopTable(){const qq=$('q').value.trim().toLowerCase(),s=S.uSort;
  if(!l.length)return `<div id=ppUnop>${note}<p class=muted>${S.unop.length?'Nobody matches the search.':'Every profile here has been opened.'}</p></div>`;
  return `<div id=ppUnop style="overflow:auto">${note}<table class=rp-t><thead><tr><th>#</th>${cols.map(th).join('')}</tr></thead><tbody>${l.map((p,i)=>`<tr onclick="showPerson(${p.id})" title="Open ${esc(p.name)}'s page (builds the profile)"><td class=muted>${i+1}</td><td><a href="#" onclick="event.stopPropagation();showPerson(${p.id});return false">${esc(p.name)}</a>${favStar(p)}</td><td class=n>${p.first||''}</td><td class=n>${p.last||''}</td><td class=n>${p.years||''}</td><td class=n>${p.scenes!=null?dN(p.scenes):p.looked_up&&!p.found?'<span class=muted>not on ThePornDB</span>':''}</td></tr>`).join('')}</tbody></table>
  <p class=muted style="font-size:.85em">Career years and scene totals as ThePornDB lists them; a ThePornDB 'present' career counts up to this year. Opening a person builds their profile and moves them to Built profiles.</p></div>`}
-/* Built profiles: photo cards (like Favorites) with each person's key figures; sort menu + ▲/▼ direction, search narrows */
+/* Built profiles: photo cards (like Favorites) with each person's key figures; sort menu + ▲/▼ direction, search narrows.
+   Group by Studio / label (or Site): collapsible sections from /api/people/built_groups, open/closed state remembered. */
 const BSORT=[['busiest_n','Scenes in busiest year'],['total','Total scenes'],['busiest_year','Busiest year'],['career','Years active (first year)'],['years','Years active (span)'],['avg','Avg / year'],['name','Name']];
+const BGROUP=[['','None'],['label','Studio / label'],['site','Site']];
+S.bGroup=BGROUP.some(o=>o[0]==localStorage.bGroup)?localStorage.bGroup:'';S.bgrp=null;S.bgOpen=JSON.parse(localStorage.bgOpen||'{}');
 function ppBSort(k){const s=S.bSort;S.bSort=s.k==k?{k,d:-s.d}:{k,d:k=='name'?1:-1};localStorage.bSort=JSON.stringify(S.bSort);ppBRedraw()}
 function ppBSortSet(k){S.bSort={k,d:k=='name'?1:-1};localStorage.bSort=JSON.stringify(S.bSort);ppBRedraw()}
 function ppBDir(){S.bSort={k:S.bSort.k,d:-S.bSort.d};localStorage.bSort=JSON.stringify(S.bSort);ppBRedraw()}
 function ppBRedraw(){const el=$('ppBuilt');if(el)el.outerHTML=ppBuiltTable()}
-function ppBuiltTable(){const qq=$('q').value.trim().toLowerCase(),s=S.bSort.k&&BSORT.some(o=>o[0]==S.bSort.k)?S.bSort:{k:'busiest_n',d:-1};
+function ppBGroupSet(v){S.bGroup=v;localStorage.bGroup=v;if(v&&S.bSort.k!='here')S.bSort={k:'here',d:-1};else if(!v&&S.bSort.k=='here')S.bSort={k:'busiest_n',d:-1};localStorage.bSort=JSON.stringify(S.bSort);ppBRedraw()}
+async function ppBgLoad(){const by=S.bGroup,lib=S.peopleLib||'',want=by+'|'+lib;if(S.bgBusy===want)return;S.bgBusy=want;
+ try{const j=await api('/api/people/built_groups?'+new URLSearchParams({by,...(lib?{lib}:{})}));if(S.bGroup===by&&(S.peopleLib||'')===lib)S.bgrp={...j,lib,nb:S.built?S.built.length:null}}catch(e){if(S.bGroup===by)S.bgrp={by,lib,groups:[],error:true}}
+ if(S.bgBusy===want)S.bgBusy=null;ppBRedraw()}
+function ppBgOpenKey(k){return S.bGroup+':'+k}
+function ppBgToggle(k,i){const ok=ppBgOpenKey(k),cur=S.bgOpen[ok]??(i<3);S.bgOpen[ok]=!cur;localStorage.bgOpen=JSON.stringify(S.bgOpen);ppBRedraw()}
+function ppBgAll(open){(S.bgrp&&S.bgrp.groups||[]).forEach(g=>S.bgOpen[ppBgOpenKey(g.key)]=open);localStorage.bgOpen=JSON.stringify(S.bgOpen);ppBRedraw()}
+function ppBuiltTable(){const qq=$('q').value.trim().toLowerCase(),grp=S.bGroup,sorts=grp?[['here','Scenes with this studio'],...BSORT]:BSORT,s=S.bSort.k&&sorts.some(o=>o[0]==S.bSort.k)?S.bSort:{k:grp?'here':'busiest_n',d:-1};
  if(S.built==null)return '<div id=ppBuilt class=muted>Loading built profiles…</div>';
- const l=S.built.filter(p=>!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w)));
- const v=(p,k)=>k=='career'?p.first:p[k];
- l.sort((a,b)=>{if(s.k=='name')return s.d*a.name.localeCompare(b.name,undefined,{sensitivity:'base'});const x=v(a,s.k),y=v(b,s.k);if(x==null&&y==null)return a.name.localeCompare(b.name);if(x==null)return 1;if(y==null)return -1;return s.d*(x-y)||a.name.localeCompare(b.name)});
- const ctl=`<div class=bctl><label class=muted>Sort by <select id=ppBSortSel onchange="ppBSortSet(this.value)">${BSORT.map(([k,t])=>`<option value="${k}"${s.k==k?' selected':''}>${t}</option>`).join('')}</select></label><button id=ppBDirBtn onclick="ppBDir()" title="${s.d<0?'Highest first. Click for lowest first':'Lowest first. Click for highest first'}">${s.k=='name'?(s.d<0?'Z–A':'A–Z'):(s.d<0?'▼ High to low':'▲ Low to high')}</button>${qq?`<span class=muted>${dN(l.length)} of ${dN(S.built.length)} match the search</span>`:''}</div>`;
+ const match=p=>!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w));
+ const l=S.built.filter(match);
+ const v=(p,k)=>k=='career'?p.first:k=='here'?p.here:p[k];
+ const cmp=(a,b)=>{if(s.k=='name')return s.d*a.name.localeCompare(b.name,undefined,{sensitivity:'base'});const x=v(a,s.k),y=v(b,s.k);if(x==null&&y==null)return a.name.localeCompare(b.name);if(x==null)return 1;if(y==null)return -1;return s.d*(x-y)||a.name.localeCompare(b.name)};
+ const ctl=`<div class=bctl><label class=muted>Group by <select id=ppBGroupSel onchange="ppBGroupSet(this.value)">${BGROUP.map(([k,t])=>`<option value="${k}"${grp==k?' selected':''}>${t}</option>`).join('')}</select></label><label class=muted>Sort by <select id=ppBSortSel onchange="ppBSortSet(this.value)">${sorts.map(([k,t])=>`<option value="${k}"${s.k==k?' selected':''}>${t}</option>`).join('')}</select></label><button id=ppBDirBtn onclick="ppBDir()" title="${s.d<0?'Highest first. Click for lowest first':'Lowest first. Click for highest first'}">${s.k=='name'?(s.d<0?'Z–A':'A–Z'):(s.d<0?'▼ High to low':'▲ Low to high')}</button>${grp?` <button id=ppBgExp onclick="ppBgAll(true)" title="Open every section">Expand all</button><button id=ppBgCol onclick="ppBgAll(false)" title="Close every section">Collapse all</button>`:''}${qq?`<span class=muted>${dN(l.length)} of ${dN(S.built.length)} match the search</span>`:''}</div>`;
  if(!l.length)return `<div id=ppBuilt>${S.built.length?ctl:''}<p class=muted>${S.built.length?'No built profile matches the search.':'No built profiles '+(S.peopleLib?'for people credited in this folder':'yet')+'. A profile is built the first time you open a ThePornDB performer\'s page.'}</p></div>`;
  const on=k=>s.k==k||(k=='years'&&s.k=='career')?' class=on':'';
- const card=p=>`<div class="pcard bcard" onclick="showPerson(${p.id})" title="Open ${esc(p.name)}'s page">
+ const card=(p,g)=>`<div class="pcard bcard" onclick="showPerson(${p.id})" title="Open ${esc(p.name)}'s page">
  <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div class=bbody><div class=bname>${esc(p.name)}${favStar(p)}</div>
+ ${g?`<div class="bhere${s.k=='here'?' on':''}"><b>${dN(p.here)}</b> scene${p.here==1?'':'s'} with ${esc(g.name)} <span>· ${dN(p.total)} total</span></div>`:''}
  <div class=bst><div${on('total')}><span>Total</span><b>${dN(p.total)}</b></div><div${on('busiest_n')||on('busiest_year')}><span>Busiest</span><b>${p.busiest_year?`${dN(p.busiest_n)} in ${p.busiest_year}`:'—'}</b></div>
  <div${on('years')}><span>Active</span><b>${p.first?(p.first==p.last?p.first:p.first+'–'+p.last)+` <small>(${p.years} yr${p.years==1?'':'s'})</small>`:'—'}</b></div><div${on('avg')}><span>Avg / yr</span><b>${p.avg??'—'}</b></div></div></div></div>`;
- return `<div id=ppBuilt>${ctl}<div class=pcards>${l.map(card).join('')}</div>
- <p class=muted style="font-size:.85em">Counts are the same as each person's page graph: their ThePornDB scenes plus your library titles, undated scenes left out of the yearly figures; Active = first to last year inclusive.</p></div>`}
+ const foot=`<p class=muted style="font-size:.85em">Counts are the same as each person's page graph: their ThePornDB scenes plus your library titles, undated scenes left out of the yearly figures; Active = first to last year inclusive.</p>`;
+ if(!grp){l.sort(cmp);return `<div id=ppBuilt>${ctl}<div class=pcards>${l.map(p=>card(p)).join('')}</div>${foot}</div>`}
+ const G=S.bgrp;
+ if(!G||G.by!==grp||(G.lib||'')!==(S.peopleLib||'')||(G.nb!=null&&G.nb!==S.built.length&&!qq)){setTimeout(ppBgLoad,0);return `<div id=ppBuilt>${ctl}<p class=muted>Grouping ${dN(S.built.length)} built profiles by ${grp=='site'?'site':'studio / label'}…</p></div>`}
+ if(G.error)return `<div id=ppBuilt>${ctl}<p class=muted>Could not group the built profiles. <a href="#" onclick="S.bgrp=null;ppBRedraw();return false">Try again</a></p></div>`;
+ const byId={};S.built.forEach(p=>byId[p.id]=p);
+ let shown=0;const secs=G.groups.map((g,i)=>{const ps=g.people.map(x=>byId[x.id]?{...byId[x.id],here:x.n}:null).filter(p=>p&&match(p));if(qq&&!ps.length)return '';shown++;
+  const open=qq?true:(S.bgOpen[ppBgOpenKey(g.key)]??(i<3));ps.sort(cmp);
+  return `<div class=bgrp data-g="${esc(g.key)}"><div class=bgh onclick="ppBgToggle('${jsq(g.key)}',${i})" title="${open?'Collapse':'Expand'} (remembered)"><span class=bgc>${open?'▾':'▸'}</span><b>${esc(g.name)}</b><span class=muted>${qq?`${dN(ps.length)} of ${dN(g.people.length)}`:dN(g.people.length)} performer${g.people.length==1?'':'s'} · ${dN(g.scenes)} scene${g.scenes==1?'':'s'}</span></div>${open?`<div class=pcards>${ps.map(p=>card(p,g)).join('')}</div>`:''}</div>`}).join('');
+ const note=`<p class=muted style="font-size:.85em">Sections are ordered by scenes (built performers only). A performer is listed under every ${grp=='site'?'site':'studio / label'} where she has at least ${G.min} scenes, and always under her top one.${grp=='label'?' Sites are grouped under their label: your own Studios “sub-label of” links first, then the parent network ThePornDB gives for the studio.':''}</p>`;
+ return `<div id=ppBuilt>${ctl}${note}${shown?secs:'<p class=muted>No built profile matches the search.</p>'}${foot}</div>`}
 function peopleSection(){const inF=S.peopleLib?'in this folder':'in library',inP=$('f_in').value=='people',bTg=inP?` <a href="#" onclick="ppBuiltToggle();return false" style="font-size:.8em;font-weight:normal" title="${S.ppBuilt?'Back to the name search':'List only people whose profile has been built (page opened, ThePornDB scenes loaded)'}">${S.ppBuilt?'✕ Built profiles':'Built profiles'}</a>`:'',fTg=inP?` <a href="#" id=ppFavTg onclick="ppFavToggle();return false" style="font-size:.8em;font-weight:normal" title="${S.ppFav?'Back to the people list':'Your favorite performers (starred on their page), A-Z by first name'}">${S.ppFav?'✕ Favorites':ST_ON+' Favorites'}</a>`:'';
  if(inP&&S.ppFav)return `<div class=ppl><h3>${ST_ON} Favorites <span class=muted>(${S.favs?dN(S.favs.length):'…'})</span>${fTg}</h3>${ppFavList()}</div>`;
  if(inP&&S.ppBuilt){const uTg=` <a href="#" onclick="ppUnopToggle();return false" style="font-size:.8em;font-weight:normal">${S.ppUnop?'Show built profiles':'Not opened yet'}</a>`;

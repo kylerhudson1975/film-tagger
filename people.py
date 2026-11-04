@@ -70,6 +70,17 @@ RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "produce
 # Favorites (star on the person page): favorite=1 and when it was starred. Only ever changed by the star toggle.
 FAV_COLS = [("favorite", "INTEGER DEFAULT 0"), ("favorite_at", "REAL")]
 
+def site_label(site):
+    """ThePornDB parent / network name of a scene's site (e.g. 'Taboo Heat' -> 'Cory Chase Network'), or None."""
+    if not isinstance(site, dict): return None
+    for k in ("parent", "network"):
+        v = site.get(k)
+        if isinstance(v, dict) and (v.get("name") or "").strip() and (v.get("name") or "").strip() != (site.get("name") or "").strip():
+            return v["name"].strip()
+    return None
+
+GROUP_MIN = 3  # Built profiles 'Group by': a performer is listed under a studio with at least this many of her scenes (her top studio always)
+
 def migrate(c):
     have = {r[1] for r in c.execute("PRAGMA table_info(people)")}
     for col, typ in TPDB_COLS + FAV_COLS:  # nullable / default 0: existing rows untouched
@@ -276,7 +287,7 @@ def init(app, tmdb, posters_dir):
                     final = not d or not new or (last and page >= int(last)) or (not last and len(d) < 100) or page >= TPDB_MAX_PAGES
                     if final or page % 5 == 0:
                         keep = [dict(id=str(x.get("id")), _id=str(x.get("_id") or ""), title=x.get("title"), date=(x.get("date") or "")[:10],
-                                     studio=(x.get("site") or {}).get("name"), slug=x.get("slug"),
+                                     studio=(x.get("site") or {}).get("name"), label=site_label(x.get("site")), slug=x.get("slug"),
                                      thumb=((x.get("posters") or {}).get("small") if isinstance(x.get("posters"), dict) else None) or x.get("poster") or x.get("image"))
                                 for x in allsc]
                         c2.execute("UPDATE people SET tpdb_scenes_json=?, tpdb_scenes_at=?, tpdb_scenes_total=? WHERE id=?",
@@ -1691,6 +1702,94 @@ def init(app, tmdb, posters_dir):
                                   added=row["favorite_at"])
         ppl = sorted(out.values(), key=lambda p: fav_sort_key(p["name"]))
         return jsonify(people=ppl, total=len(ppl))
+
+    # ---------- Built profiles grouped by studio / label (or by site) ----------
+    GRP = {}  # (by, lib, data version) -> result
+    def label_map(c):
+        """studio_key(site) -> its label: Kyle's own 'sub-label of' link first (Studios page), else the ThePornDB parent/network
+        stored for the studio (studio_info.tpdb_parent, filled when its studio page was looked up)."""
+        m = {}
+        try:
+            for k, par in c.execute("SELECT key, tpdb_parent FROM studio_info WHERE COALESCE(TRIM(tpdb_parent),'')<>''"): m[k] = par.strip()
+        except Exception: pass
+        for l in db.studio_links(c): m[db.studio_key(l["child"])] = l["parent"]
+        return m
+    def studio_group(name, saved_label, by, lm, am):
+        """(group key, display name) for a scene's studio. by='label': follow labels up (3 levels at most); by='site': the site."""
+        nm = " ".join((name or "").split())
+        if not nm: return None, None
+        nm = am.get(db.studio_key(nm), nm)  # hidden spellings -> main name
+        if by == "label":
+            hops, seen = 0, {db.studio_key(nm)}
+            up = lm.get(db.studio_key(nm)) or saved_label
+            while up and hops < 3:
+                up = am.get(db.studio_key(up), " ".join(up.split()))
+                if db.studio_key(up) in seen: break
+                nm = up; seen.add(db.studio_key(nm)); hops += 1
+                up = lm.get(db.studio_key(nm))
+        return db.studio_key(nm), nm
+
+    @app.get("/api/people/built_groups")
+    def people_built_groups():
+        """Built profiles grouped by studio/label (by=label, default) or ThePornDB site (by=site): every group with its number
+        of distinct scenes (built performers only, age rule applied like the card figures) and the performers with at least
+        GROUP_MIN scenes there (each performer's top group always). Cached until the people, films, studio links or aliases change."""
+        by = "site" if request.args.get("by") == "site" else "label"
+        c = C(); lib = (request.args.get("lib") or "").strip().rstrip("\\/")
+        ppl = [r for r, k in adult_people(c, lib) if is_built(r, k)]
+        lm = label_map(c) if by == "label" else {}
+        am = db.studio_alias_map(c)
+        ver = (by, lib, co_dkey(c), tuple((r["id"], r["tpdb_scenes_at"], len(r["tpdb_scenes_json"] or ""), r["birthday"]) for r in ppl),
+               hash(frozenset(lm.items())), hash(frozenset(am.items())))
+        hit = GRP.get(ver)
+        if hit: return jsonify(dict(hit, cached=True))
+        lib_tp = {str(r[0]): r[1] for r in c.execute("SELECT tpdb_id, id FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''")}
+        FS = {r["id"]: r for r in c.execute("SELECT id, studio, release_date, year FROM films WHERE kind='scene'")}
+        groups = {}  # key -> dict(names Counter, scenes set, people [(pid, n)])
+        for row in ppl:
+            bd = _bd(row["birthday"])
+            if not bd: continue  # no birth date: adult credits don't count (same as the card figures)
+            cnt = Counter_(); seen = set()
+            def add(sk, studio, label, date, year):
+                if sk in seen: return
+                seen.add(sk)
+                if not _adult_ok(bd, date, year): return
+                g, nm = studio_group(studio, label, by, lm, am)
+                if not g: return
+                e_ = groups.setdefault(g, dict(names=Counter_(), scenes=set(), people=[]))
+                e_["names"][nm] += 1; e_["scenes"].add(sk); cnt[g] += 1
+            for fid in sorted(person_entry(c, row)["films"]):
+                f = FS.get(fid)
+                if f: add("L%d" % fid, (f["studio"] or "").split(",")[0], None, f["release_date"], f["year"])
+            lists = [row["tpdb_scenes_json"]]
+            others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
+            if others:
+                lists += [r2[0] for r2 in c.execute(f"SELECT tpdb_scenes_json FROM people WHERE id<>? AND tpdb_scenes_json IS NOT NULL AND name_norm IN ({','.join('?' * len(others))})", [row["id"]] + others)]
+            for js in lists:
+                try: lst = json.loads(js or "[]")
+                except Exception: lst = []
+                for x in lst:
+                    ids = [str(x.get("id") or ""), str(x.get("_id") or "")]
+                    fid = next((lib_tp[i] for i in ids if i and i in lib_tp), None)
+                    if fid and fid in FS:
+                        f = FS[fid]; add("L%d" % fid, (f["studio"] or "").split(",")[0] or x.get("studio"), x.get("label"), f["release_date"] or x.get("date"), f["year"])
+                    else:
+                        d = (x.get("date") or "")[:10]
+                        add("P" + ids[0], x.get("studio"), x.get("label"), d, int(d[:4]) if d[:4].isdigit() else None)
+            if not cnt: continue
+            top = max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
+            for g, n in cnt.items():
+                if n >= GROUP_MIN or g == top: groups[g]["people"].append((row["id"], n))
+        out = []
+        for g, e_ in groups.items():
+            if not e_["people"]: continue
+            out.append(dict(key=g, name=e_["names"].most_common(1)[0][0], scenes=len(e_["scenes"]),
+                            people=[dict(id=i, n=n) for i, n in sorted(e_["people"], key=lambda t: -t[1])]))
+        out.sort(key=lambda x: (-x["scenes"], db.fold_key(x["name"])))
+        res = dict(by=by, min=GROUP_MIN, groups=out, total=len(out))
+        GRP[ver] = res
+        while len(GRP) > 4: GRP.pop(next(iter(GRP)))  # latest versions only (label / site, a folder or two)
+        return jsonify(dict(res, cached=False))
 
     @app.get("/api/people/unopened")
     def people_unopened():
