@@ -1884,7 +1884,7 @@ def init(app, tmdb, posters_dir):
                    first=min(yrs) if yrs else None, last=max(yrs) if yrs else None,
                    busiest=dict(year=busy[0], n=busy[1]) if busy else None,
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
-                   studios=studios, excluded=excluded,
+                   studios=studios, excluded=excluded, birthday=row["birthday"],
                    excluded_why=None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday"))
         if not loading:
             SUMC[ck] = res
