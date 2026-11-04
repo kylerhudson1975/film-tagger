@@ -227,9 +227,12 @@ def init(app, tmdb, posters_dir):
         c = db.connect(); c.executescript(PEOPLE_SCHEMA); migrate(c); return c
 
     # ---------- library people index (fold(name) -> names, roles, film ids) ----------
-    IDX = {"at": 0, "key": None, "data": {}}
+    IDX = {"at": 0, "key": None, "data": {}, "chk": 0}
     IDX_LOCK = threading.Lock()
     def index(c):
+        # inside db.batch_cache() (loops over many people) the films check runs once a minute instead of once per person
+        if db._BATCH[0] and IDX["key"] is not None and time.time() - IDX["chk"] < 60: return IDX["data"]
+        IDX["chk"] = time.time()
         key = tuple(c.execute("SELECT COUNT(*), MAX(updated_at), SUM(LENGTH(COALESCE(director,'')||COALESCE(cast_,'')||COALESCE(writers,'')||"
                               "COALESCE(producers,'')||COALESCE(cinematographer,'')||COALESCE(composer,''))) FROM films").fetchone())
         with IDX_LOCK:
@@ -1631,20 +1634,21 @@ def init(app, tmdb, posters_dir):
             c.execute("CREATE TABLE IF NOT EXISTS people_built_stats(person_id INTEGER PRIMARY KEY, k TEXT, data TEXT)")
             have = {r[0]: (r[1], r[2]) for r in c.execute("SELECT person_id, k, data FROM people_built_stats")}
             out, new = [], []
-            for row, _ in ppl:
-                pk = json.dumps([nf, row["tpdb_scenes_at"], row["fetched_at"], row["birthday"], len(row["credits_json"] or ""), len(row["tpdb_scenes_json"] or ""), row["name"]])
-                if row["id"] in have and have[row["id"]][0] == pk: out.append(json.loads(have[row["id"]][1])); continue
-                try: rows = person_rows(c, row, dk)[0]
-                except Exception: continue
-                yrs = Counter(r["year"] for r in rows if r["year"])
-                busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
-                first, last = (min(yrs), max(yrs)) if yrs else (None, None)
-                span = (last - first + 1) if yrs else 0
-                d = dict(id=row["id"], name=row["name"], total=len(rows), dated=sum(yrs.values()),
-                         busiest_year=busy[0] if busy else None, busiest_n=busy[1] if busy else 0, first=first, last=last,
-                         years=span, avg=round(sum(yrs.values()) / span, 1) if span else None)
-                out.append(d)
-                new.append((row["id"], pk, json.dumps(d)))
+            with db.batch_cache():  # alias / index checks once, not once per person
+                for row, _ in ppl:
+                    pk = json.dumps([nf, row["tpdb_scenes_at"], row["fetched_at"], row["birthday"], len(row["credits_json"] or ""), len(row["tpdb_scenes_json"] or ""), row["name"]])
+                    if row["id"] in have and have[row["id"]][0] == pk: out.append(json.loads(have[row["id"]][1])); continue
+                    try: rows = person_rows(c, row, dk)[0]
+                    except Exception: continue
+                    yrs = Counter(r["year"] for r in rows if r["year"])
+                    busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
+                    first, last = (min(yrs), max(yrs)) if yrs else (None, None)
+                    span = (last - first + 1) if yrs else 0
+                    d = dict(id=row["id"], name=row["name"], total=len(rows), dated=sum(yrs.values()),
+                             busiest_year=busy[0] if busy else None, busiest_n=busy[1] if busy else 0, first=first, last=last,
+                             years=span, avg=round(sum(yrs.values()) / span, 1) if span else None)
+                    out.append(d)
+                    new.append((row["id"], pk, json.dumps(d)))
             if new:  # one short write at the end: never hold the database write lock while computing
                 c.executemany("INSERT OR REPLACE INTO people_built_stats VALUES(?,?,?)", new); c.commit()
             hit = BUILT[(key, lib)] = (time.time(), out)
@@ -1729,6 +1733,23 @@ def init(app, tmdb, posters_dir):
                 up = lm.get(db.studio_key(nm))
         return db.studio_key(nm), nm
 
+    PT = {}  # person id -> (version, [(id, _id, studio, label, date)]): parsed ThePornDB scene lists (own + alias/merged rows)
+    def tp_scenes(c, row):
+        others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
+        orows = c.execute(f"SELECT id, tpdb_scenes_at, tpdb_scenes_json FROM people WHERE id<>? AND tpdb_scenes_json IS NOT NULL AND name_norm IN ({','.join('?' * len(others))})",
+                          [row["id"]] + others).fetchall() if others else []
+        ver = (row["tpdb_scenes_at"], len(row["tpdb_scenes_json"] or "")) + tuple((r[0], r[1], len(r[2])) for r in orows)
+        hit = PT.get(row["id"])
+        if hit and hit[0] == ver: return hit[1]
+        out = []
+        for js in [row["tpdb_scenes_json"]] + [r[2] for r in orows]:
+            try: lst = json.loads(js or "[]")
+            except Exception: lst = []
+            for x in lst:
+                out.append((str(x.get("id") or ""), str(x.get("_id") or ""), x.get("studio"), x.get("label"), (x.get("date") or "")[:10]))
+        PT[row["id"]] = (ver, out)
+        return out
+
     @app.get("/api/people/built_groups")
     def people_built_groups():
         """Built profiles grouped by studio/label (by=label, default) or ThePornDB site (by=site): every group with its number
@@ -1746,40 +1767,43 @@ def init(app, tmdb, posters_dir):
         lib_tp = {str(r[0]): r[1] for r in c.execute("SELECT tpdb_id, id FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''")}
         FS = {r["id"]: r for r in c.execute("SELECT id, studio, release_date, year FROM films WHERE kind='scene'")}
         groups = {}  # key -> dict(names Counter, scenes set, people [(pid, n)])
-        for row in ppl:
-            bd = _bd(row["birthday"])
-            if not bd: continue  # no birth date: adult credits don't count (same as the card figures)
-            cnt = Counter_(); seen = set()
-            def add(sk, studio, label, date, year):
-                if sk in seen: return
-                seen.add(sk)
-                if not _adult_ok(bd, date, year): return
-                g, nm = studio_group(studio, label, by, lm, am)
-                if not g: return
-                e_ = groups.setdefault(g, dict(names=Counter_(), scenes=set(), people=[]))
-                e_["names"][nm] += 1; e_["scenes"].add(sk); cnt[g] += 1
-            for fid in sorted(person_entry(c, row)["films"]):
-                f = FS.get(fid)
-                if f: add("L%d" % fid, (f["studio"] or "").split(",")[0], None, f["release_date"], f["year"])
-            lists = [row["tpdb_scenes_json"]]
-            others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
-            if others:
-                lists += [r2[0] for r2 in c.execute(f"SELECT tpdb_scenes_json FROM people WHERE id<>? AND tpdb_scenes_json IS NOT NULL AND name_norm IN ({','.join('?' * len(others))})", [row["id"]] + others)]
-            for js in lists:
-                try: lst = json.loads(js or "[]")
-                except Exception: lst = []
-                for x in lst:
-                    ids = [str(x.get("id") or ""), str(x.get("_id") or "")]
-                    fid = next((lib_tp[i] for i in ids if i and i in lib_tp), None)
+        memo = {}
+        def grp(studio, label):
+            k = (studio, label)
+            if k not in memo: memo[k] = studio_group(studio, label, by, lm, am)
+            return memo[k]
+        okc = {}
+        def ok(bd, date, year):
+            k = (bd, date, year)
+            if k not in okc: okc[k] = _adult_ok(bd, date, year)
+            return okc[k]
+        with db.batch_cache():  # alias / index checks once for the whole loop
+            for row in ppl:
+                bd = _bd(row["birthday"])
+                if not bd: continue  # no birth date: adult credits don't count (same as the card figures)
+                cnt = Counter_(); seen = set()
+                def add(sk, studio, label, date, year):
+                    if sk in seen: return
+                    seen.add(sk)
+                    if not ok(bd, date, year): return
+                    g, nm = grp(studio, label)
+                    if not g: return
+                    e_ = groups.get(g)
+                    if e_ is None: e_ = groups[g] = dict(names=Counter_(), scenes=set(), people=[])
+                    e_["names"][nm] += 1; e_["scenes"].add(sk); cnt[g] += 1
+                for fid in sorted(person_entry(c, row)["films"]):
+                    f = FS.get(fid)
+                    if f: add("L%d" % fid, (f["studio"] or "").split(",")[0], None, f["release_date"], f["year"])
+                for x in tp_scenes(c, row):  # (id, _id, studio, label, date)
+                    fid = lib_tp.get(x[0]) or (x[1] and lib_tp.get(x[1]))
                     if fid and fid in FS:
-                        f = FS[fid]; add("L%d" % fid, (f["studio"] or "").split(",")[0] or x.get("studio"), x.get("label"), f["release_date"] or x.get("date"), f["year"])
+                        f = FS[fid]; add("L%d" % fid, (f["studio"] or "").split(",")[0] or x[2], x[3], f["release_date"] or x[4], f["year"])
                     else:
-                        d = (x.get("date") or "")[:10]
-                        add("P" + ids[0], x.get("studio"), x.get("label"), d, int(d[:4]) if d[:4].isdigit() else None)
-            if not cnt: continue
-            top = max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
-            for g, n in cnt.items():
-                if n >= GROUP_MIN or g == top: groups[g]["people"].append((row["id"], n))
+                        add("P" + x[0], x[2], x[3], x[4], int(x[4][:4]) if x[4][:4].isdigit() else None)
+                if not cnt: continue
+                top = max(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
+                for g, n in cnt.items():
+                    if n >= GROUP_MIN or g == top: groups[g]["people"].append((row["id"], n))
         out = []
         for g, e_ in groups.items():
             if not e_["people"]: continue
