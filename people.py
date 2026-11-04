@@ -1913,6 +1913,30 @@ def init(app, tmdb, posters_dir):
                             looked_up=row["tpdb_performer_id"] is not None, found=row["tpdb_performer_id"] not in (None, TPDB_NONE), fav=bool(row["favorite"])))
         return jsonify(people=out, total=len(out), job={k: v for k, v in CJ.items() if k != "thread"})
 
+    # ---------- Needs attention (Performers tab): people missing key info ----------
+    # Porn: everyone credited on an adult title, most scenes first (library scenes or ThePornDB total, whichever is larger).
+    # Mainstream: only opened (built) profiles; the thousands of never-opened cast members would all lack everything.
+    @app.get("/api/people/needs_attention")
+    def people_needs_attention():
+        c = C(); cat = "mainstream" if request.args.get("cat") == "mainstream" else "porn"
+        data = index(c); adult = adult_film_ids(c); out = []
+        rows = mainstream_built(c) if cat == "mainstream" else adult_people(c)
+        for row, _ in rows:
+            miss = []
+            if not row["birthday"]: miss.append("birth")
+            if not (row["photo_file"] or photo_choice(row)): miss.append("photo")
+            if cat == "porn" and not row["gender"]: miss.append("gender")
+            if cat == "porn" and row["tpdb_performer_id"] in (None, TPDB_NONE) and not (row["tmdb_person_id"] or 0) > 0: miss.append("link")
+            if cat == "mainstream" and not (row["tmdb_person_id"] or 0) > 0: miss.append("link")
+            if not miss: continue
+            e = data.get(row["name_norm"]) or {"films": set()}
+            lib = len(e["films"] & adult) if cat == "porn" else len(e["films"])
+            out.append(dict(id=row["id"], name=row["name"], missing=miss, lib=lib, n=max(lib, row["tpdb_scenes_total"] or 0, len(json.loads(row["tpdb_scenes_json"])) if row["tpdb_scenes_json"] and not row["tpdb_scenes_total"] else 0) if cat == "porn" else lib,
+                            photo=photo_url(row), fav=bool(row["favorite"])))
+        out.sort(key=lambda p: (-p["n"], db.fold_key(p["name"])))
+        counts = {k: sum(1 for p in out if k in p["missing"]) for k in ("birth", "photo", "gender", "link")}
+        return jsonify(people=out, total=len(out), counts=counts, cat=cat)
+
     # ---------- career-info job: lightweight ThePornDB performer lookup for adult people never looked up ----------
     # Same lookup the person page does on first open (tpdb_update: hand-edited fields kept, manual ids never replaced,
     # Classic Porn people only get empty fields filled) plus the performer's scene count; no scene lists, no image download.

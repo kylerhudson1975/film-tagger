@@ -66,6 +66,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .st-on{color:#ff00ff;text-shadow:0 0 3px #ff00ffaa,0 0 8px #ff00ff66;font-variant-emoji:text}.st-off{color:#f5c518;opacity:.7;font-variant-emoji:text}
 .pf{padding:14px 14px 0}.pf-h{margin:0 0 10px;font-size:22px;letter-spacing:.04em}.pf-bar{display:flex;gap:10px;margin:0 0 10px}.pf-bar input{flex:1;max-width:560px;font-size:14px;padding:7px 10px}
 .pf-cats{display:flex;gap:6px}.pf-cats button{font-size:13.5px;padding:6px 14px}.pf-cats button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600;box-shadow:inset 0 0 0 1px var(--a)}
+.pf-need-f{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}.pf-need-f button{font-size:12.5px;padding:4px 10px}.pf-need-f button.on{border-color:var(--a);background:var(--p2);font-weight:600}.pf-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}.pf-badge{font-size:11px;padding:1px 6px;border-radius:9px;background:#5a2a2a;color:#ffd0d0}
 .pf-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}.pf-tabs button{font-size:13.5px;padding:6px 12px}.pf-tabs button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600}.pf-tabs button.pf-fav.on{color:#ff6bff;border-color:#ff00ff88}.pf-n{color:var(--m);font-weight:400}
 .pf-main{display:flex;gap:14px;align-items:flex-start}.pf-list{flex:1;min-width:0}.pf-panel{flex:0 0 340px;position:sticky;top:8px;max-height:calc(100vh - 140px);overflow:auto;background:var(--p);border:1px solid var(--b);border-radius:10px;padding:14px;font-size:13px}
 .pf-x{float:right;background:none;border:0;color:var(--m);font-size:16px;cursor:pointer}.pf-x:hover{color:var(--t)}.pf-ph-row{display:flex;gap:12px;align-items:flex-start}.pf-ph{width:96px;height:120px;flex:none;border-radius:8px;overflow:hidden;background:#555;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:bold}.pf-ph img{width:100%;height:100%;object-fit:cover}
@@ -1231,8 +1232,21 @@ function ppBuiltTable(){const B=bList(),mm=pfMain(),qq=ppQ(),grp=curGrp(),sorts=
  return `<div id=ppBuilt>${ctl}${note}${shown?secs:'<p class=muted>No built profile matches the search.</p>'}${foot}</div>`}
 /* ---------- Performers page (top bar): Favorites | Built profiles | Not opened yet | All people | Studios, with a side
    summary panel (/api/people/<id>/summary). Reuses the People lists above; their search box is #pfQ here. ---------- */
-const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['all','All people'],['studios','Studios']];
-S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfCat='';S.builtM=null;
+const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['need','Needs attention'],['all','All people'],['studios','Studios']];
+S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfCat='';S.builtM=null;S.need={};S.needF='';S.needMax=300;
+/* Needs attention: people missing a birth date, photo, gender or ThePornDB/TMDB link, badges on each card; Porn sorted by most
+   scenes first; Mainstream = opened profiles only. Filter chips narrow to one missing field. */
+const NEED_L={birth:'No birth date',photo:'No photo',gender:'No gender',link:'No ThePornDB / TMDB link'};
+function pfNeedF(k){S.needF=S.needF==k?'':k;S.needMax=300;pfTabsDraw();pfDraw()}
+function pfNeedList(){const d=S.need[S.pfCat],qq=ppQ();if(!d)return '<div id=pfNeed class=muted>Loading…</div>';
+ const ks=Object.keys(NEED_L).filter(k=>S.pfCat=='porn'||k=='birth'||k=='photo'||k=='link');
+ const chips=`<div class=pf-need-f>${ks.map(k=>`<button data-f="${k}" class="${S.needF==k?'on':''}" onclick="pfNeedF('${k}')">${NEED_L[k]} <span class=pf-n>(${dN(d.counts[k]||0)})</span></button>`).join('')}</div>`;
+ const l=d.people.filter(p=>(!S.needF||p.missing.includes(S.needF))&&(!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w))));
+ if(!l.length)return `<div id=pfNeed>${chips}<p class=muted>${d.people.length?'Nobody matches.':'Everyone here has their key info. Nice.'}</p></div>`;
+ const u=S.pfCat=='porn'?['scene','scenes']:['title','titles'];
+ return `<div id=pfNeed>${chips}<p class=muted style="margin:0 0 8px">${dN(l.length)} ${l.length==1?'person needs':'people need'} attention${S.pfCat=='porn'?', most scenes first':''}${S.pfCat=='mainstream'?' (opened profiles only)':''}. Open the full profile from the side panel to fix them.</p><div class=pcards>${l.slice(0,S.needMax).map(p=>`<div class=pcard data-pid="${p.id}" onclick="pfOpen(${p.id})" title="Show ${esc(p.name)}">
+ <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${dN(p.n)} ${p.n==1?u[0]:u[1]}</div><div class=pf-badges>${p.missing.map(k=>`<span class=pf-badge data-m="${k}">${NEED_L[k].replace('No ','No ')}</span>`).join('')}</div></div></div>`).join('')}</div>
+ ${l.length>S.needMax?`<p><button id=pfNeedMore onclick="S.needMax+=300;pfDraw()">Show more (${dN(l.length-S.needMax)} left)</button></p>`:''}</div>`}
 /* Mainstream / Porn buttons: nothing is listed until one is picked (search works across everyone meanwhile). Porn = credited
    on an adult title (a scene, or a file under an adult library), the same rule as Built profiles / the person page; Mainstream =
    everyone else. Mainstream hides the ThePornDB-only tabs (Not opened yet, Studios). */
@@ -1259,17 +1273,18 @@ async function showPerformers(opt={}){
  pfCatDraw();pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
  if(S.pfSel&&!opt.keep)pfOpen(S.pfSel,true);
  await pfFetch();if(opt.scroll)$('content').scrollTop=opt.scroll}
-function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&S.pfAll.q?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
+function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&S.need[S.pfCat].total):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&S.pfAll.q?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
  if(!S.pfCat){el.innerHTML=ppQ()?pfAllList():'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
- el.innerHTML=t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():pfAllList();pfMark()}
+ el.innerHTML=t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList();pfMark()}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
 async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];if(!cat){if(ppQ())await pfAllSearch().then(()=>{if(S.page=='perf'&&!S.pfCat)pfDraw()});return}const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
  jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>{done('fav');setTimeout(pfPrefetch,400)}));
  if(cat=='mainstream')jobs.push(api('/api/people/built?cat=mainstream').then(j=>{S.builtM=j.people},()=>{S.builtM=S.builtM||[]}).then(()=>done('built')));
  else jobs.push(api('/api/people/built').then(j=>{S.built=j.people},()=>{S.built=S.built||[]}).then(()=>done('built')));
+ if(t=='need')jobs.push(api('/api/people/needs_attention?cat='+cat).then(j=>{S.need[cat]=j},()=>{S.need[cat]=S.need[cat]||{people:[],total:0,counts:{}}}).then(()=>done('need')));
  if(t=='unop'&&cat=='porn')jobs.push(api('/api/people/unopened').then(j=>{S.unop=j.people;S.unopJob=j.job},()=>{S.unop=S.unop||[]}).then(()=>done('unop')));
  if(t=='all')jobs.push(pfAllSearch().then(()=>done('all')));
  await Promise.allSettled(jobs)}
