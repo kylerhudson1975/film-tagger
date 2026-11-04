@@ -1,7 +1,8 @@
 """Headless check (needs playwright + Chrome; not part of the plain test run): Built profiles 'Group by: Studio / label'
 shows collapsible sections (name, performers, scenes; most scenes first), cards with the scene count for that studio plus
 the total, open/closed state and the Group by choice remembered across reloads, search narrowing sections and cards, and
-Group by: None back to the plain grid. Temp library, text only, images off.
+Order groups (Most scenes, A–Z ignoring case/accents/leading "The", Z–A, Most performers; remembered,
+only shown when grouped), and Group by: None back to the plain grid. Temp library, text only, images off.
   python tests/ui/built_groups.py"""
 import os, sys, json, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
@@ -12,7 +13,8 @@ from playwright.sync_api import sync_playwright
 c = db.connect(); db.set_setting(c, "scene_roots", [r"D:\S"])
 spec = {"Cora Chase": [("Taboo Heat", 6), ("Jerky Wives", 4), ("Solo Site", 3)],
         "Mia Jay": [("Jerky Wives", 5), ("Solo Site", 1)],
-        "Amy Cam": [("Amiees Fetish House", 3), ("Taboo Heat", 3)]}
+        "Amy Cam": [("Amiees Fetish House", 3), ("Taboo Heat", 3)],
+        "Ela Elan": [("Élan Films", 3), ("The Zebra Co", 4)]}
 for i, n in enumerate(spec, 1):
     c.execute("INSERT INTO films(id,title,kind,cast_,studio,release_date,year) VALUES(?,?,?,?,?,?,?)", (i, f"L{i}", "scene", n, "Lib Studio", "2022-01-01", 2022))
     c.execute("INSERT INTO files(film_id,path) VALUES(?,?)", (i, f"D:\\S\\L{i}.mp4"))
@@ -35,7 +37,8 @@ with sync_playwright() as pw:
     pg.goto("http://127.0.0.1:5100/"); pg.wait_for_timeout(1500)
     show = "setIn('people');S.ppFav=false;S.ppUnop=false;S.ppBuilt=true;load()"
     pg.evaluate("localStorage.removeItem('bGroup');localStorage.removeItem('bgOpen');localStorage.removeItem('bSort');S.bGroup='';S.bgOpen={};S.bSort={k:'busiest_n',d:-1};" + show); pg.wait_for_timeout(1200)
-    check(pg.locator("#ppBuilt .bgrp").count() == 0 and pg.locator("#ppBuilt .bcard").count() == 3, "starts ungrouped")
+    check(pg.locator("#ppBuilt .bgrp").count() == 0 and pg.locator("#ppBuilt .bcard").count() == 4, "starts ungrouped")
+    check(pg.locator("#ppBgOrd").count() == 0, "Order groups only shown when grouped")
     pg.select_option("#ppBGroupSel", "label"); pg.wait_for_timeout(1200)
     heads = pg.evaluate("[...document.querySelectorAll('#ppBuilt .bgh')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
     check(heads[:1] == ["▾ Cory Chase Network 3 performers · 18 scenes"], f"first section {heads}")   # Cora 10, Mia 5, Amy 3
@@ -55,8 +58,20 @@ with sync_playwright() as pw:
     pg.fill("#q", ""); pg.evaluate("load()"); pg.wait_for_timeout(1000)
     pg.click("#ppBgExp"); pg.wait_for_timeout(300)
     check(pg.locator("#ppBuilt .bgrp .pcards").count() == pg.locator("#ppBuilt .bgrp").count(), f"expand all {pg.locator('#ppBuilt .bgrp .pcards').count()} {pg.locator('#ppBuilt .bgrp').count()} {pg.evaluate("JSON.stringify(S.bgOpen)")}")
+    gnames = lambda: pg.evaluate("[...document.querySelectorAll('#ppBuilt .bgh b')].map(x=>x.textContent)")
+    check(pg.input_value("#ppBgOrd") == "scenes" and gnames()[:3] == ["Cory Chase Network", "Solo Site", "The Zebra Co"], f"most scenes {gnames()}")
+    check("ordered by most scenes" in pg.inner_text("#ppBgNote"), "note names the order")
+    pg.select_option("#ppBgOrd", "az"); pg.wait_for_timeout(300)
+    check(gnames() == ["Amiees Fetish House", "Cory Chase Network", "Élan Films", "Solo Site", "The Zebra Co"], f"A-Z {gnames()}")
+    check("ordered A–Z" in pg.inner_text("#ppBgNote"), "note says A-Z")
+    pg.select_option("#ppBgOrd", "za"); pg.wait_for_timeout(300)
+    check(gnames() == ["The Zebra Co", "Solo Site", "Élan Films", "Cory Chase Network", "Amiees Fetish House"], f"Z-A {gnames()}")
+    pg.select_option("#ppBgOrd", "people"); pg.wait_for_timeout(300)
+    check(gnames() == ["Cory Chase Network", "Solo Site", "The Zebra Co", "Amiees Fetish House", "Élan Films"], f"most performers {gnames()}")
+    pg.select_option("#ppBgOrd", "az"); pg.reload(); pg.wait_for_timeout(1500); pg.evaluate(show); pg.wait_for_timeout(1500)
+    check(pg.input_value("#ppBgOrd") == "az" and gnames()[0] == "Amiees Fetish House", "order remembered")
     pg.select_option("#ppBGroupSel", ""); pg.wait_for_timeout(500)
-    check(pg.locator("#ppBuilt .bgrp").count() == 0 and pg.locator("#ppBuilt .bcard").count() == 3 and pg.input_value("#ppBSortSel") == "busiest_n", "Group by None: plain grid again")
+    check(pg.locator("#ppBuilt .bgrp").count() == 0 and pg.locator("#ppBuilt .bcard").count() == 4 and pg.input_value("#ppBSortSel") == "busiest_n", "Group by None: plain grid again")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()
