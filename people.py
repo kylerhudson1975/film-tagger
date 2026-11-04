@@ -1316,11 +1316,18 @@ def init(app, tmdb, posters_dir):
     def co_dkey(c):
         return (tuple(c.execute("SELECT COUNT(*), MAX(updated_at), SUM(COALESCE(rating,0)), SUM(COALESCE(watched,0)) FROM films").fetchone()),
                 tuple(c.execute("SELECT COUNT(*), MAX(COALESCE(fetched_at,0)), MAX(COALESCE(tpdb_scenes_at,0)), SUM(LENGTH(COALESCE(birthday,''))), MAX(id) FROM people").fetchone()))
+    def psig(row):
+        """This person's own data version: a ThePornDB scene list saved part-way (every 5 pages, tpdb_scenes_at=0) leaves the
+        global data key unchanged, so caches built from a person's credits also key on these."""
+        return (row["tpdb_scenes_at"], len(row["tpdb_scenes_json"] or ""), row["fetched_at"], len(row["credits_json"] or ""))
+    def scenes_loading_now(pid):
+        st = SCN.get(pid)
+        return bool(st and st.get("running"))
     def person_rows(c, row, dk=None):
         """One person's credits (library + cached TMDB/ThePornDB filmography) as rows. Adult titles where they performed
         only count with a known birth date and 18+ at release (same rule as Reports / Credited with)."""
         dk = dk or co_dkey(c); e = person_entry(c, row)
-        ik = (row["id"], dk[0], dk[1]); its = CO_ITEMS.get(ik)
+        ik = (row["id"], dk[0], dk[1], psig(row)); its = CO_ITEMS.get(ik)
         if its is None:
             lib_tp = {str(r[1]): r[0] for r in c.execute("SELECT id, tpdb_id FROM films WHERE tpdb_id IS NOT NULL AND tpdb_id<>''")}
             its = CO_ITEMS[ik] = co_items(c, row, e, lib_tp)
@@ -1526,9 +1533,10 @@ def init(app, tmdb, posters_dir):
         and for directors the Stable (4 films) / Muses (5-7) / Harem (8+) of performers they directed. Cached."""
         c = C(); row = co_canon(c, pid)
         if not row: return jsonify(error="Unknown person"), 404
-        dk = co_dkey(c); ck = (row["id"], dk)
+        dk = co_dkey(c); ck = (row["id"], dk, psig(row))
+        loading = scenes_loading_now(row["id"])  # ThePornDB scene list still loading: figures are partial, the page asks again
         hit = INS.get(ck)
-        if hit and time.time() - hit[0] < 600 and not request.args.get("force"): return jsonify(dict(hit[1], cached=True))
+        if hit and time.time() - hit[0] < 600 and not request.args.get("force"): return jsonify(dict(hit[1], cached=True, loading=loading))
         rows, excluded, e, F, xrows = person_rows(c, row, dk)
         from collections import Counter
         lib = [r for r in rows if r["in_library"]]
@@ -1567,9 +1575,10 @@ def init(app, tmdb, posters_dir):
                    top_genre=top(gen, 1)[0] if gen else None, top_role=top(rol, 1)[0] if rol else None, roles=top(rol, 8),
                    rating=dict(avg=round(sum(rated) / len(rated), 2), n=len(rated)) if rated else None,
                    genres=top(gen), studios=top(stu), countries=top(cty), costars=costars, directors=directors, costars_n=8, directors_n=5, stable=stable)
-        INS[ck] = (time.time(), res)
-        if len(INS) > 128: INS.pop(next(iter(INS)))
-        return jsonify(dict(res, cached=False))
+        if not loading:  # never cache figures from a part-loaded scene list
+            INS[ck] = (time.time(), res)
+            if len(INS) > 128: INS.pop(next(iter(INS)))
+        return jsonify(dict(res, cached=False, loading=loading))
 
     # ---------- built / not-yet-opened profiles (people credited on adult titles: Porn Scenes + Classic Porn) ----------
     # Built = the person page has its career data: a ThePornDB scene list (scene performers, loaded when the page is first

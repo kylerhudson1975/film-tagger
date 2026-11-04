@@ -1195,7 +1195,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;if(!opt.nohist||opt.refresh)delete PI.d[pid]}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -1247,11 +1247,12 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  const oe=$('ppEdit'),keepE=oe&&oe.style.display=='block'&&+oe.dataset.pid===d.person.id?oe:null;
  c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppPollStart(d)}
 /* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
-function ppPollStart(d){const ld=d.scenes_loading;if(!ld||S.ppPoll)return;const pid=d.person.id;
+function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
+ if(S.ppPoll){if(S.ppPoll.pid===pid)return;clearTimeout(S.ppPoll.t);S.ppPoll=null}  // one poll per person: an old person's timer never blocks this one
  if(!(d.scenes&&(d.scenes.length||ld))){const x=$('content').querySelector('.pp');if(x&&!$('ppLoad'))x.insertAdjacentHTML('afterbegin',`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''}</p>`)}
- S.ppPoll=setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
+ S.ppPoll={pid,t:setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
   if((S.ppGen||0)!==gen){if(S.ppData)ppPollStart(S.ppData);return}
-  if(!n.scenes_loading){delete PI.d[pid];delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}
+  if(!n.scenes_loading){ppInsReset(pid);delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}}
 function ppOnly(v){S.ppOnly=!!v;localStorage.ppOnly=v?'1':'0';renderPerson()}
 function ppSort(){S.ppDesc=!S.ppDesc;localStorage.ppDesc=S.ppDesc?'1':'0';renderPerson()}
 async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const prev=S.ppData,gen=S.ppGen||0;b.disabled=true;b.textContent='⟳ Refreshing…';
@@ -1782,19 +1783,29 @@ function renderCo(){const d=CO.d,P=d.people,c=$('content');DSH.acts=[];
  c.innerHTML=h+'</div>'}
 function coSort(k){if(CO.sk==k)CO.sd=-CO.sd;else{CO.sk=k;CO.sd=1}coSet('sk',CO.sk)}
 /* ---------- Person page insights: Dashboard-style summary above the filmography (collapsible, remembered) ---------- */
-const PI={d:{},busy:null,all:{}};
+const PI={d:{},busy:null,all:{},gen:{},fly:{},tm:{}};
 async function ppAllLoad(pid){if(PI.allBusy==pid)return;PI.allBusy=pid;try{for(let i=0;i<900;i++){let r;try{r=await api('/api/people/'+pid+'/stable_all')}catch(e){PI.all[pid]={status:'ok',stable:{directed:[],all:[],films:{directed:0,all:0}},error:'Could not load the filmography.'};break}PI.all[pid]=r;if(S.pageId==pid&&localStorage.ppInsScope=='all')ppInsDraw(pid);if(r.status!='loading')break;await new Promise(f=>setTimeout(f,1500))}}finally{PI.allBusy=null}if(S.pageId==pid)ppInsDraw(pid)}
 function ppInsHtml(pid){return `<div id=ppIns class="dsh ppins">${ppInsInner(pid)}</div>`}
 function ppInsToggle(pid){localStorage.ppInsOpen=localStorage.ppInsOpen==='0'?'1':'0';ppInsDraw(pid)}
 function ppInsSet(pid,k,v){localStorage[k]=v;ppInsDraw(pid)}
-async function ppInsLoad(pid,force){if(PI.busy===pid)return;PI.busy=pid;try{PI.d[pid]=await api('/api/people/'+pid+'/insights'+(force?'?force=1':''))}catch(e){PI.d[pid]={error:true}}PI.busy=null;ppInsDraw(pid)}
+/* Insights load: each reset (page opened, scene list finished) bumps PI.gen[pid]; an answer asked before the latest reset is
+   thrown away and asked again, so a slow, part-loaded answer can never overwrite the full one. While the server says the
+   ThePornDB scene list is still loading (loading:true), the figures are re-read every 3 s until it finishes. */
+function ppInsReset(pid){delete PI.d[pid];PI.gen[pid]=(PI.gen[pid]||0)+1}
+async function ppInsLoad(pid,force){const g=PI.gen[pid]||0;if(PI.fly[pid]===g)return;PI.fly[pid]=g;PI.busy=pid;let r;
+ try{r=await api('/api/people/'+pid+'/insights'+(force?'?force=1':''))}catch(e){r={error:true}}
+ if(PI.fly[pid]===g)delete PI.fly[pid];if(PI.busy===pid)PI.busy=null;
+ if((PI.gen[pid]||0)!==g){if(S.page==='person:'+pid)ppInsLoad(pid);return}
+ PI.d[pid]=r;ppInsDraw(pid);if(r&&r.loading)ppInsLater(pid)}
+function ppInsLater(pid){if(PI.tm[pid])return;PI.tm[pid]=setTimeout(()=>{delete PI.tm[pid];if(S.page==='person:'+pid&&PI.fly[pid]!==(PI.gen[pid]||0))ppInsLoad(pid)},3000)}
 function ppInsDraw(pid){const el=$('ppIns');if(el&&S.page==='person:'+pid)el.innerHTML=ppInsInner(pid)}
 function ppGo(pid,add={}){dshGo({pin:String(pid),...add})}
 async function ppCo(pid,name,opid){const id=await coPid({name,pid:opid});showCo([pid,id])}
 function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
  const head=`<div class=ppins-h onclick="ppInsToggle(${pid})" title="${open?'Hide':'Show'} the insights (remembered)">${dIc('bars',16)}<b>Insights</b><span class=muted>${d&&!d.error?`${dN(d.in_library)} in your library · ${dN(d.total)} total credits${d.excluded?` · <b style="color:var(--warn,#f5a524)">${dN(d.excluded)} hidden: ${d.excluded_why=='no_birthday'?'no birth date':'age rule'}</b>`:''}`:''}</span><span class=ppins-c>${open?'▾ hide':'▸ show'}</span></div>`;
  if(!open)return head;
- if(!d){if(PI.busy!==pid)setTimeout(()=>ppInsLoad(pid),0);return head+'<p class=muted style="margin:6px 2px">Crunching their career…</p>'}
+ if(!d){if(PI.fly[pid]!==(PI.gen[pid]||0))setTimeout(()=>ppInsLoad(pid),0);return head+'<p class=muted style="margin:6px 2px">Crunching their career…</p>'}
+ if(d.loading)ppInsLater(pid);
  if(d.error)return head+'<p class=muted>Could not load insights.</p>';
  DSH.acts=DSH.acts&&DSH.acts.length>400?[]:(DSH.acts||[]);
  const card=(cls,ic,t,body,sub='')=>`<section class="dsh-card ${cls}"><div class=dsh-ch>${dIc(ic,16)}<h3>${t}</h3>${sub?`<span class=dsh-sub>${sub}</span>`:''}</div>${body}</section>`;
@@ -1807,7 +1818,9 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
   stat('ppl',d.top_role?esc(d.top_role.name):'—','Top role',d.top_role?`${dN(d.top_role.n)} credit${d.top_role.n==1?'':'s'}${d.roles.length>1?' · then '+esc(d.roles[1].name.toLowerCase()):''}`:'',''),
   ...(d.rating?[stat('heart',(+d.rating.avg).toFixed(1),'Your average rating',`${dN(d.rating.n)} rated`,'ok')]:[])];
  const xn=d.excluded?`<div class=co-note style="margin:6px 0 8px">${dIc('info',15)}<div><b>${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} hidden by the age rule</b>${d.excluded_lib?` (${dN(d.excluded_lib)} of them in your library)`:''}: ${d.excluded_why=='no_birthday'?`there is no known birth date, so adult titles can't be checked as 18+ at release. Everything below counts only the ${dN(d.total)} credit${d.total==1?'':'s'} that pass. Add the birth date (Edit on this page, or pick a match under Dashboard → People without a birth date) and they'll be counted.`:'they were released before this person turned 18.'}</div></div>`:'';
- let h=head+xn+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
+ const ldn=d.loading?`<p class=muted id=ppInsLd style="margin:4px 2px 8px">⟳ ThePornDB scenes are still loading: these figures update on their own when the list is complete.</p>`:'';
+ let h=head+xn+ldn+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
+ if(!d.years.length&&d.loading)h+=card('dsh-w2','bars','Career timeline','<p class=muted>Waiting for the scene list to finish loading…</p>','credits per year');
  if(d.years.length){const y0=d.years[0].k,y1=d.years[d.years.length-1].k,line=localStorage.ppInsChart=='line';
   const rows=fill(d.years.map(x=>({k:x.k,films:x.lib,scenes:x.other})),y0,y1).map(x=>({...x,label:(y1-y0>12?"'"+String(x.k).slice(2):String(x.k))}));
   const tg=(v,l)=>`<button class="${(localStorage.ppInsChart||'bar')==v?'on':''}" onclick="ppInsSet(${pid},'ppInsChart','${v}')">${l}</button>`;
