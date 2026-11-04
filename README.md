@@ -7,7 +7,30 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.3.2
+A new **Performers** section, smarter people lists and a batch of fixes.
+
+### 👥 Performers
+- **Performers section** in the top bar: search, tabs and a side summary panel with stats, busiest year, career timeline, top studios and co-stars. Clicking a card opens the panel without leaving the list.
+- **Fast panel:** it opens at once, loads co-stars separately, and has **Open full profile** right under the photo.
+- **Mainstream / Porn split:** Performers opens with just the search box. Pick **Mainstream** or **Porn** to see that group's Built profiles, and click the button again to clear it. Search covers everyone.
+- **Needs attention:** lists people missing a birth date, photo, gender or ThePornDB/TMDB link, with a badge for each missing item, filter buttons with counts, and the most scenes first.
+- **Built profiles cards:** photo cards with total scenes, busiest year, years active and average per year.
+- **Group by and Order groups:** group Built profiles by studio / label or by site, in collapsible sections ordered by most scenes, A–Z, Z–A or most performers.
+- **Favorites and star colors:** star people on their page (hollow yellow ☆ / filled fuchsia ★) and find them under Favorites.
+
+### 🏷️ Library
+- **Partial tag search:** sidebar tag boxes match part of a tag name ('object' finds 'Object insertion').
+- **Sidebar collapse:** Home and Dashboard collapse the Tags sidebar and scroll it back to the top.
+- **Save & scan toast:** the scene report shows as a non-blocking toast instead of a pop-up.
+- **Sharp Make stills:** saves only sharp frames and skips motion blur, fades and black frames.
+
+### 🛠️ Fixes
+- **Timeline fix:** a person's career timeline always fills in after a background ThePornDB load.
+- **Protected person photos:** a hand-set photo is never replaced by a refresh or profile build.
+- **Person edit window fix:** it stays open until you click Close or Save.
 
 ## What's new in v1.3.1
 - **Built profiles list:** a sortable table of everyone whose profile you've built (total scenes, busiest year, years active, average per year).
