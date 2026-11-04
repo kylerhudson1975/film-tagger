@@ -1815,6 +1815,48 @@ def init(app, tmdb, posters_dir):
         while len(GRP) > 4: GRP.pop(next(iter(GRP)))  # latest versions only (label / site, a folder or two)
         return jsonify(dict(res, cached=False))
 
+    # ---------- Performers page: lightweight summary for the side panel ----------
+    SUMC = {}  # (person id, data key, person version) -> result (never from a part-loaded scene list)
+    @app.get("/api/people/<int:pid>/summary")
+    def person_summary(pid):
+        """Side-panel summary: photo, star, total credits and years active, busiest year, credits per year (library vs not),
+        top studios and top co-stars. Cached data only (no ThePornDB/TMDB calls), the same age rule as the person page.
+        built=False means the profile was never opened: the panel can open the person page in the background to build it."""
+        c = C(); row = co_canon(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        dk = co_dkey(c); ck = (row["id"], dk, psig(row), row["favorite"], row["photo_file"], row["image_url"])
+        loading = scenes_loading_now(row["id"])
+        hit = SUMC.get(ck)
+        if hit and not request.args.get("force"): return jsonify(dict(hit, cached=True, loading=loading))
+        e = person_entry(c, row)
+        adult = bool(e["films"] & adult_film_ids(c)); classic = bool(e["films"] & classic_film_ids(c))
+        with db.batch_cache():
+            rows, excluded, _e, F, xrows = person_rows(c, row, dk)
+        yrs, yl = Counter_(), Counter_()
+        for r in rows:
+            if r["year"]: yrs[r["year"]] += 1; yl[r["year"]] += r["in_library"]
+        busy = max(yrs.items(), key=lambda kv: (kv[1], -kv[0])) if yrs else None
+        am = db.studio_alias_map(c); st = Counter_(); names = {}
+        for r in rows:
+            for x in (r["studio"] or "").split(",")[:1]:
+                x = " ".join(x.split())
+                if not x: continue
+                nm = am.get(db.studio_key(x), x); k = db.studio_key(nm); names.setdefault(k, nm); st[k] += 1
+        studios = [dict(name=names[k], n=n) for k, n in sorted(st.items(), key=lambda kv: (-kv[1], kv[0]))[:5]]
+        try: costars = [dict(name=x["name"], pid=x["pid"], n=x["total"]) for x in co_suggest(c, row, "", 5, extra=0, roles_of="others")][:5]
+        except Exception: costars = []
+        res = dict(id=row["id"], name=row["name"], photo=photo_url(row), favorite=bool(row["favorite"]),
+                   built=is_built(row, classic), adult=adult, total=len(rows), in_library=sum(1 for r in rows if r["in_library"]),
+                   first=min(yrs) if yrs else None, last=max(yrs) if yrs else None,
+                   busiest=dict(year=busy[0], n=busy[1]) if busy else None,
+                   years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
+                   studios=studios, costars=costars, excluded=excluded,
+                   excluded_why=None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday"))
+        if not loading:
+            SUMC[ck] = res
+            while len(SUMC) > 256: SUMC.pop(next(iter(SUMC)))
+        return jsonify(dict(res, cached=False, loading=loading))
+
     @app.get("/api/people/unopened")
     def people_unopened():
         """People on adult titles whose profile is not built yet, with the career years / scene total ThePornDB gave the
