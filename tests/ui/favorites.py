@@ -1,6 +1,6 @@
-"""Headless check (needs playwright + Chrome; not part of the plain test run): the ☆/⭐ star on a person page adds and
-removes a Favorite, People → ⭐ Favorites lists them A-Z by first name then last name with library scene counts, the
-empty state explains how to add one, and starred people get a small ⭐ in the People cards. Temp library, text only, no images.
+"""Headless check (needs playwright + Chrome; not part of the plain test run): the star on a person page (hollow yellow ☆ / filled fuchsia ★) adds and
+removes a Favorite, People → ★ Favorites lists them A-Z by first name then last name with library scene counts, the
+empty state explains how to add one, and starred people get a small fuchsia ★ in the People cards. Temp library, text only, no images.
   python tests/ui/favorites.py"""
 import os, sys, tempfile, threading
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
@@ -27,19 +27,23 @@ with sync_playwright() as pw:
     pg.goto("http://127.0.0.1:5097/"); pg.wait_for_timeout(1500)
     pg.evaluate("setIn('people');localStorage.ppFav='1';S.ppFav=true;load()"); pg.wait_for_timeout(900)
     txt = lambda: pg.inner_text("#content")
-    check("No favorites yet" in txt() and "☆ star" in txt(), f"empty state: {txt()[:200]!r}")
+    check("No favorites yet" in txt() and "☆ star" in txt() and "${" not in txt(), f"empty state: {txt()[:200]!r}")
     for n in ("Zoe Adams", "Anna Zed", "Anna Baker"):  # star each one from their page
         pg.evaluate(f"showPerson({ids[n]})"); pg.wait_for_timeout(900)
         check(pg.inner_text("#ppFavBtn") == "☆", f"{n}: star before {pg.inner_text('#ppFavBtn')!r}")
+        check(pg.evaluate("getComputedStyle(document.querySelector('#ppFavBtn .st-off')).color") == "rgb(245, 197, 24)", f"{n}: unfavorited star is yellow")
         pg.click("#ppFavBtn"); pg.wait_for_timeout(500)
-        check(pg.inner_text("#ppFavBtn") == "⭐", f"{n}: star after {pg.inner_text('#ppFavBtn')!r}")
+        check(pg.inner_text("#ppFavBtn") == "★", f"{n}: star after {pg.inner_text('#ppFavBtn')!r}")
+        check(pg.evaluate("getComputedStyle(document.querySelector('#ppFavBtn .st-on')).color") == "rgb(255, 0, 255)", f"{n}: favorite star is fuchsia")
     pg.evaluate(f"showPerson({ids['Anna Zed']})"); pg.wait_for_timeout(900)
-    check(pg.inner_text("#ppFavBtn") == "⭐", "star kept after reopening")
+    check(pg.inner_text("#ppFavBtn") == "★", "star kept after reopening")
     pg.evaluate("S.page=null;setIn('people');S.ppFav=true;load()"); pg.wait_for_timeout(900)
     names = pg.evaluate("[...document.querySelectorAll('#ppFav .pcard b')].map(x=>x.textContent)")
     check(names == ["Anna Baker", "Anna Zed", "Zoe Adams"], f"favorites order {names}")
     check("2 scenes in library" in txt() and "1 scene in library" in txt(), f"counts: {txt()[:300]!r}")
-    check("⭐ Favorites" in txt() and "(3)" in txt(), "header")
+    check("★ Favorites" in txt() and "(3)" in txt(), "header")
+    check(pg.evaluate("[...document.querySelectorAll('#ppFav .pfs')].every(x=>x.textContent=='★'&&getComputedStyle(x).color=='rgb(255, 0, 255)')"), "card stars fuchsia")
+    check("⭐" not in pg.content(), "no emoji star left")
     pg.click("#ppFav .pcard >> text=Zoe Adams"); pg.wait_for_timeout(900)
     check(pg.evaluate("S.page") == f"person:{ids['Zoe Adams']}", f"click opens profile: {pg.evaluate('S.page')}")
     pg.click("#ppFavBtn"); pg.wait_for_timeout(500)   # un-star Zoe
@@ -49,10 +53,10 @@ with sync_playwright() as pw:
     check(names == ["Anna Baker", "Anna Zed"], f"after un-star {names}")
     # People search: small star next to starred names only
     pg.evaluate("S.ppFav=false;localStorage.ppFav='0';S.ppBuilt=false;localStorage.ppBuilt='0'"); pg.fill("#q", "anna"); pg.evaluate("load()"); pg.wait_for_timeout(900)
-    cards = pg.evaluate("[...document.querySelectorAll('.pcard')].map(x=>x.querySelector('b').textContent+(x.querySelector('.pfs')?' *':''))")
+    cards = pg.evaluate("[...document.querySelectorAll('.pcard')].map(x=>x.querySelector('b').textContent+(x.querySelector('.pfs.st-on')?' *':''))")
     check(sorted(cards) == ["Anna Baker *", "Anna Zed *"], f"people cards {cards}")
     pg.fill("#q", "zoe"); pg.evaluate("load()"); pg.wait_for_timeout(900)
-    cards = pg.evaluate("[...document.querySelectorAll('.pcard')].map(x=>x.querySelector('b').textContent+(x.querySelector('.pfs')?' *':''))")
+    cards = pg.evaluate("[...document.querySelectorAll('.pcard')].map(x=>x.querySelector('b').textContent+(x.querySelector('.pfs.st-on')?' *':''))")
     check(cards == ["Zoe Adams"], f"zoe card {cards}")
     check(pg.locator("#ppFavTg").count() == 1, "Favorites link in the People header")
     check(not errs, f"page errors {errs}")
