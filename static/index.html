@@ -68,7 +68,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .pf-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}.pf-tabs button{font-size:13.5px;padding:6px 12px}.pf-tabs button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600}.pf-tabs button.pf-fav.on{color:#ff6bff;border-color:#ff00ff88}.pf-n{color:var(--m);font-weight:400}
 .pf-main{display:flex;gap:14px;align-items:flex-start}.pf-list{flex:1;min-width:0}.pf-panel{flex:0 0 340px;position:sticky;top:8px;max-height:calc(100vh - 140px);overflow:auto;background:var(--p);border:1px solid var(--b);border-radius:10px;padding:14px;font-size:13px}
 .pf-x{float:right;background:none;border:0;color:var(--m);font-size:16px;cursor:pointer}.pf-x:hover{color:var(--t)}.pf-ph-row{display:flex;gap:12px;align-items:flex-start}.pf-ph{width:96px;height:120px;flex:none;border-radius:8px;overflow:hidden;background:#555;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:bold}.pf-ph img{width:100%;height:100%;object-fit:cover}
-.pf-name{margin:0 0 4px;font-size:18px;color:var(--t)}.pf-panel h4{margin:14px 0 6px;color:var(--t)}.pf-l div{display:flex;justify-content:space-between;gap:8px;padding:2px 0}.pf-l b{color:#7fd1ff;font-variant-numeric:tabular-nums}.pf-l a{color:#8cf}.pf-open{margin-top:14px;width:100%}.pf-build{color:#f5c518;font-size:12.5px}
+.pf-name{margin:0 0 4px;font-size:18px;color:var(--t)}.pf-panel h4{margin:14px 0 6px;color:var(--t)}.pf-l div{display:flex;justify-content:space-between;gap:8px;padding:2px 0}.pf-l b{color:#7fd1ff;font-variant-numeric:tabular-nums}.pf-l a{color:#8cf}.pf-open{margin:10px 0 2px;width:100%}.pf-build{color:#f5c518;font-size:12.5px}
 #pfList .pcard.sel,#pfList tr.sel td{border-color:#ff00ff;box-shadow:0 0 0 1px #ff00ff66}
 .bgrp{margin:0 0 8px;border:1px solid #8883;border-radius:8px;background:#ffffff05}.bgh{display:flex;gap:10px;align-items:baseline;padding:8px 10px;cursor:pointer;user-select:none}.bgh:hover{background:var(--p2)}.bgh b{color:var(--t);font-size:15px}.bgc{color:var(--m);width:12px}.bgrp .pcards{padding:0 10px 10px}
 .bhere{font-size:12.5px;color:var(--t);margin:0 0 5px}.bhere b{color:#7fd1ff}.bhere span{color:var(--m)}
@@ -1231,7 +1231,7 @@ function ppBuiltTable(){const qq=ppQ(),grp=curGrp(),sorts=grp?[['here','Scenes w
 /* ---------- Performers page (top bar): Favorites | Built profiles | Not opened yet | All people | Studios, with a side
    summary panel (/api/people/<id>/summary). Reuses the People lists above; their search box is #pfQ here. ---------- */
 const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['all','All people'],['studios','Studios']];
-S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfSGroup=localStorage.pfSGroup=='site'?'site':'label';S.pfAll=null;S.pfSel=null;S.pfSum=null;S.pfKick={};
+S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfSGroup=localStorage.pfSGroup=='site'?'site':'label';S.pfAll=null;S.pfSel=null;S.pfSum=null;S.pfKick={};S.pfCache={};S.pfCo={};
 function ppQ(){return (S.page=='perf'&&$('pfQ')?$('pfQ').value:$('q').value).trim().toLowerCase()}
 function curGrp(){return S.page=='perf'?(S.pfTab=='studios'?S.pfSGroup:S.pfTab=='built'?S.bGroup:''):S.bGroup}
 function ppOpen(id){if(S.page=='perf')return pfOpen(id);showPerson(id)}
@@ -1255,7 +1255,7 @@ function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.p
  el.innerHTML=t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():pfAllList();pfMark()}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
 async function pfFetch(){const t=S.pfTab,jobs=[];const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
- jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>done('fav')));
+ jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>{done('fav');setTimeout(pfPrefetch,400)}));
  jobs.push(api('/api/people/built').then(j=>{S.built=j.people},()=>{S.built=S.built||[]}).then(()=>done('built')));
  if(t=='unop')jobs.push(api('/api/people/unopened').then(j=>{S.unop=j.people;S.unopJob=j.job},()=>{S.unop=S.unop||[]}).then(()=>done('unop')));
  if(t=='all')jobs.push(pfAllSearch().then(()=>done('all')));
@@ -1268,14 +1268,24 @@ function pfAllList(){const a=S.pfAll;
  return `<div id=pfAll><p class=muted style="margin:0 0 8px">${dN(a.total)} ${a.total==1?'person matches':'people match'}${a.total>a.people.length?`, showing ${dN(a.people.length)}`:''}.</p><div class=pcards>${a.people.map(p=>`<div class=pcard${p.pid?` data-pid="${p.pid}"`:''} onclick="${p.pid?`pfOpen(${p.pid})`:`pfOpenName('${jsq(p.name)}')`}" title="Show ${esc(p.name)}">
  <div class=pph>${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div><b>${esc(p.name)}</b>${favStar(p)}<div class=muted>${esc(p.known_for||RLBL[p.role]||'')}</div><div class=muted>${dN(p.n)} title${p.n==1?'':'s'} in library</div></div></div>`).join('')}</div></div>`}
 async function pfOpenName(name){try{const r=await api('/api/person/lookup?'+new URLSearchParams({name}));pfOpen(r.id)}catch(e){toast('Could not open '+name)}}
-async function pfOpen(id,quiet){if(S.page!='perf')return showPerson(id);S.pfSel=id;if(!quiet||!S.pfSum||S.pfSumFor!==id){S.pfSum=null;S.pfSumFor=id}pfPanelDraw();pfMark();
- let d;try{d=await api('/api/people/'+id+'/summary')}catch(e){if(S.pfSel===id){S.pfSum={error:true};pfPanelDraw()}return}
- if(S.pfSel!==id)return;S.pfSum=d;S.pfSumFor=id;pfPanelDraw();
+async function pfOpen(id,quiet){if(S.page!='perf')return showPerson(id);S.pfSel=id;if(!quiet||!S.pfSum||S.pfSumFor!==id){S.pfSum=S.pfCache[id]||null;S.pfSumFor=id}pfPanelDraw();pfMark();
+ let d;try{d=await api('/api/people/'+id+'/summary')}catch(e){if(S.pfSel===id&&!S.pfSum){S.pfSum={error:true};pfPanelDraw()}return}
+ S.pfCache[id]=d;if(S.pfSel!==id)return;S.pfSum=d;S.pfSumFor=id;pfPanelDraw();pfCoLoad(id);
  if(!d.built&&!S.pfKick[id]){S.pfKick[id]='running';pfPanelDraw();  // never opened: open the person page in the background (the normal profile build)
   api('/api/person/'+id).catch(()=>{}).then(()=>{S.pfKick[id]='done';if(S.pfSel===id)pfPoll(id,true)})}
  else if(d.loading)pfPoll(id)}
 function pfPoll(id,now){clearTimeout(S.pfPollT);S.pfPollT=setTimeout(async()=>{if(S.page!='perf'||S.pfSel!==id)return;let d;try{d=await api('/api/people/'+id+'/summary')}catch(e){return pfPoll(id)}
- if(S.pfSel!==id)return;S.pfSum=d;pfPanelDraw();if(d.loading)pfPoll(id);else if(d.built)pfFetch()},now?300:3000)}
+ if(S.pfSel!==id)return;S.pfSum=d;S.pfCache[id]=d;pfPanelDraw();if(d.loading)pfPoll(id);else{pfCoLoad(id,true);if(d.built)pfFetch()}},now?300:3000)}
+async function pfCoLoad(id,force){const c=S.pfCo[id];if(c&&!force&&(c.busy||c.list))return;S.pfCo[id]={busy:true,list:c&&c.list};
+ try{const j=await api('/api/people/'+id+'/costars');S.pfCo[id]={list:j.costars,loading:j.loading}}catch(e){S.pfCo[id]={list:c&&c.list||[],error:true}}
+ if(S.pfSel===id)pfCoDraw()}
+function pfCoHtml(id){const c=S.pfCo[id];if(!c||(!c.list&&c.busy))return '<p class=muted id=pfCostars>Loading co-stars…</p>';const l=c.list||[];
+ return l.length?`<div id=pfCostars class=pf-l>${l.map(z=>`<div>${z.pid?`<a href="#" onclick="pfOpen(${z.pid});return false">${esc(z.name)}</a>`:`<span>${esc(z.name)}</span>`}<b>${dN(z.n)}</b></div>`).join('')}</div>`:'<p class=muted id=pfCostars>None in your library yet.</p>'}
+function pfCoDraw(){const el=$('pfCoBox');if(el&&S.pfSum&&!S.pfSum.error)el.innerHTML=pfCoHtml(S.pfSum.id)}
+async function pfPrefetch(){/* Favorites on screen: warm their panel figures (summary, then co-stars) one at a time, in the background */
+ if(S.pfPre)return;S.pfPre=true;try{const ids=(S.favs||[]).slice(0,24).map(p=>p.id);
+  for(const id of ids){if(S.page!='perf')break;if(!S.pfCache[id]){try{S.pfCache[id]=await api('/api/people/'+id+'/summary')}catch(e){}}}
+  for(const id of ids){if(S.page!='perf')break;if(!S.pfCo[id]){await pfCoLoad(id)}}}finally{S.pfPre=false}}
 function pfClose(){S.pfSel=null;S.pfSum=null;clearTimeout(S.pfPollT);pfPanelDraw();pfMark()}
 async function pfFav(){const d=S.pfSum;if(!d||d.error)return;const want=!d.favorite;
  try{const r=await api('/api/people/'+d.id+'/favorite',{method:'POST',body:{favorite:want}});d.favorite=!!r.favorite}catch(e){return toast('Could not change Favorites')}
@@ -1295,12 +1305,12 @@ function pfPanelDraw(){const el=$('pfPanel'),m=$('pfMain');if(!el)return;const i
  <h2 class=pf-name>${esc(d.name)} <button class=ppfav id=pfFavBtn onclick="pfFav()" title="${d.favorite?'Favorite. Click to remove from Favorites':'Add to Favorites'}" aria-pressed="${d.favorite?'true':'false'}">${d.favorite?ST_ON:ST_OFF}</button></h2>
  <div id=pfStats>${dN(d.total)} ${d.total==1?U[0]:U[1]}${d.first?` · ${d.first==d.last?d.first:d.first+'–'+d.last}`:''}</div>
  <div class=muted id=pfBusy>${d.busiest?`Busiest: ${d.busiest.year} (${dN(d.busiest.n)})`:''}</div></div></div>
+ <button class="pri pf-open" id=pfOpenBtn onclick="showPerson(${d.id})">Open full profile</button>
  ${building?`<p class=pf-build id=pfBuild>⟳ Building ${esc(d.name)}'s profile… these figures update on their own when it finishes.</p>`:''}
  ${d.excluded?`<p class=muted style="font-size:12px">${dN(d.excluded)} ${d.excluded==1?U[0]:U[1]} not counted by the age rule (${d.excluded_why=='no_birthday'?'no known birth date':'under 18 at release'}).</p>`:''}
  ${tl}
  <h4>Top studios</h4>${d.studios&&d.studios.length?`<div id=pfStudios class=pf-l>${d.studios.map(z=>`<div><span>${esc(z.name)}</span><b>${dN(z.n)}</b></div>`).join('')}</div>`:'<p class=muted>None yet.</p>'}
- <h4>Top co-stars</h4>${d.costars&&d.costars.length?`<div id=pfCostars class=pf-l>${d.costars.map(z=>`<div>${z.pid?`<a href="#" onclick="pfOpen(${z.pid});return false">${esc(z.name)}</a>`:`<span>${esc(z.name)}</span>`}<b>${dN(z.n)}</b></div>`).join('')}</div>`:'<p class=muted>None in your library yet.</p>'}
- <button class="pri pf-open" id=pfOpenBtn onclick="showPerson(${d.id})">Open full profile</button>`}
+ <h4>Top co-stars</h4><div id=pfCoBox>${pfCoHtml(d.id)}</div>`}
 document.addEventListener('keydown',e=>{if(e.key=='Escape'&&S.page=='perf'&&S.pfSel&&$('modal').style.display!='flex')pfClose()},true);
 function peopleSection(){const inF=S.peopleLib?'in this folder':'in library',inP=$('f_in').value=='people',bTg=inP?` <a href="#" onclick="ppBuiltToggle();return false" style="font-size:.8em;font-weight:normal" title="${S.ppBuilt?'Back to the name search':'List only people whose profile has been built (page opened, ThePornDB scenes loaded)'}">${S.ppBuilt?'✕ Built profiles':'Built profiles'}</a>`:'',fTg=inP?` <a href="#" id=ppFavTg onclick="ppFavToggle();return false" style="font-size:.8em;font-weight:normal" title="${S.ppFav?'Back to the people list':'Your favorite performers (starred on their page), A-Z by first name'}">${S.ppFav?'✕ Favorites':ST_ON+' Favorites'}</a>`:'';
  if(inP&&S.ppFav)return `<div class=ppl><h3>${ST_ON} Favorites <span class=muted>(${S.favs?dN(S.favs.length):'…'})</span>${fTg}</h3>${ppFavList()}</div>`;

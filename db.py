@@ -77,13 +77,14 @@ def _alias_ok(a):
     """Aliases used to link credits: at least two words (single first names like 'Anna' would match strangers)."""
     return isinstance(a, str) and len(a.split()) >= 2
 
+BATCH_GEN = [0]  # bumped at the start of every outer batch: per-batch memos (people.adult_film_ids) key on it
 _BATCH = [0]  # > 0 inside batch_cache(): cached alias groups / known performers are reused without re-checking the tables
 
 class batch_cache:
     """with db.batch_cache(): ... - read-only loops over many films (birth-date queue, export-queue) check the alias /
     known-performer caches once instead of once per name (each check scans the people table)."""
     def __enter__(self):
-        if not _BATCH[0]: _AG["batch_ok"] = False; _KP["batch_ok"] = False  # checked once more at the start of every batch
+        if not _BATCH[0]: _AG["batch_ok"] = False; _KP["batch_ok"] = False; BATCH_GEN[0] += 1  # checked once more at the start of every batch
         _BATCH[0] += 1; return self
     def __exit__(self, *a): _BATCH[0] -= 1
 

@@ -122,7 +122,14 @@ def adult_roots(c):
     if extra is None: extra = [r for r in (db.get_setting(c, "roots", []) or []) if r and ADULT_HINT.search(os.path.basename(r.rstrip("\\/")) or r)]
     return [r.rstrip("\\/") for r in list(db.scene_roots(c)) + list(extra or []) if r]
 
+_AFI = {"gen": None, "ids": None}
 def adult_film_ids(c):
+    """Ids of adult titles (scenes + files under adult roots). Inside db.batch_cache() computed once per batch."""
+    if db._BATCH[0] and _AFI["gen"] == db.BATCH_GEN[0]: return _AFI["ids"]
+    ids = _adult_film_ids(c)
+    if db._BATCH[0]: _AFI.update(gen=db.BATCH_GEN[0], ids=ids)
+    return ids
+def _adult_film_ids(c):
     roots = adult_roots(c)
     ids = {r[0] for r in c.execute("SELECT id FROM films WHERE kind='scene'")}
     if roots:
@@ -1820,7 +1827,7 @@ def init(app, tmdb, posters_dir):
     @app.get("/api/people/<int:pid>/summary")
     def person_summary(pid):
         """Side-panel summary: photo, star, total credits and years active, busiest year, credits per year (library vs not),
-        top studios and top co-stars. Cached data only (no ThePornDB/TMDB calls), the same age rule as the person page.
+        top studios (co-stars: /costars, a second request). Cached data only (no ThePornDB/TMDB calls), the same age rule as the person page.
         built=False means the profile was never opened: the panel can open the person page in the background to build it."""
         c = C(); row = co_canon(c, pid)
         if not row: return jsonify(error="Unknown person"), 404
@@ -1843,19 +1850,42 @@ def init(app, tmdb, posters_dir):
                 if not x: continue
                 nm = am.get(db.studio_key(x), x); k = db.studio_key(nm); names.setdefault(k, nm); st[k] += 1
         studios = [dict(name=names[k], n=n) for k, n in sorted(st.items(), key=lambda kv: (-kv[1], kv[0]))[:5]]
-        try: costars = [dict(name=x["name"], pid=x["pid"], n=x["total"]) for x in co_suggest(c, row, "", 5, extra=0, roles_of="others")][:5]
-        except Exception: costars = []
         res = dict(id=row["id"], name=row["name"], photo=photo_url(row), favorite=bool(row["favorite"]),
                    built=is_built(row, classic), adult=adult, total=len(rows), in_library=sum(1 for r in rows if r["in_library"]),
                    first=min(yrs) if yrs else None, last=max(yrs) if yrs else None,
                    busiest=dict(year=busy[0], n=busy[1]) if busy else None,
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
-                   studios=studios, costars=costars, excluded=excluded,
+                   studios=studios, excluded=excluded,
                    excluded_why=None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday"))
         if not loading:
             SUMC[ck] = res
             while len(SUMC) > 256: SUMC.pop(next(iter(SUMC)))
         return jsonify(dict(res, cached=False, loading=loading))
+
+    COSC = {}  # (person id, data key, person version) -> top co-stars
+    def top_costars(c, row, dk):
+        """Top 5 co-stars (exact shared counts, library + cached filmographies, age rule). Reuses the person page's
+        insights answer when it is already cached; otherwise co_suggest inside one batch (alias tables checked once)."""
+        ck = (row["id"], dk, psig(row))
+        if ck in COSC: return COSC[ck], True
+        ins = INS.get(ck)
+        if ins and ins[1].get("costars") is not None:
+            out = [dict(name=x["name"], pid=x["pid"], n=x["total"]) for x in sorted(ins[1]["costars"], key=lambda x: (-x["total"], -x["n"]))[:5]]
+        else:
+            with db.batch_cache():
+                out = [dict(name=x["name"], pid=x["pid"], n=x["total"]) for x in co_suggest(c, row, "", 5, extra=0, roles_of="others")][:5]
+        if not scenes_loading_now(row["id"]):
+            COSC[ck] = out
+            while len(COSC) > 256: COSC.pop(next(iter(COSC)))
+        return out, False
+    @app.get("/api/people/<int:pid>/costars")
+    def person_costars(pid):
+        """Second request of the Performers side panel (the slow part, kept out of /summary so the panel opens at once)."""
+        c = C(); row = co_canon(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        try: out, hit = top_costars(c, row, co_dkey(c))
+        except Exception: out, hit = [], False
+        return jsonify(id=row["id"], costars=out, cached=hit, loading=scenes_loading_now(row["id"]))
 
     @app.get("/api/people/unopened")
     def people_unopened():

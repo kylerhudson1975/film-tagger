@@ -72,6 +72,8 @@ with sync_playwright() as pw:
     st = pg.evaluate("[...document.querySelectorAll('#pfStudios div')].map(x=>x.innerText.replace(/\\s+/g,' ').trim())")
     check(st[0] == "Taboo Heat 7" and len(st) == 3, f"top studios {st}")
     check("Mia Jay" in pg.inner_text("#pfCostars"), f"co-stars {pg.inner_text('#pfCostars')}")
+    order = pg.evaluate("[...document.querySelector('#pfPanel').children].map(x=>x.id||x.className)")
+    check(order[1:3] == ["pf-ph-row", "pfOpenBtn"], f"Open full profile right under the photo {order}")
     check("sel" in pg.get_attribute("#pfList .bcard[data-pid='%d']" % ids["Cora Chase"], "class"), "selected card marked")
     check(pg.get_attribute("#pfFavBtn", "aria-pressed") == "false" and pg.locator("#pfFavBtn .st-off").count() == 1, "hollow star")
     pg.click("#pfFavBtn"); pg.wait_for_timeout(800)
@@ -106,6 +108,8 @@ with sync_playwright() as pw:
     if ids["Tess New"] in rows:
         pg.click("#ppUnop tr[data-pid='%d']" % ids["Tess New"]); pg.wait_for_timeout(2500)
         check(pg.is_visible("#pfBuild"), "building state shown")
+        order = pg.evaluate("[...document.querySelector('#pfPanel').children].map(x=>x.id||x.className)")
+        check(order.index("pfOpenBtn") < order.index("pfBuild"), f"button above the notes {order}")
         gate.set(); pg.wait_for_timeout(5000)
         check(pg.locator("#pfBuild").count() == 0 and pg.inner_text("#pfStats").startswith("151 scenes"), f"panel updated {pg.inner_text('#pfStats')}")
         check(pg.evaluate("S.page") == "perf", "still on Performers")
@@ -128,6 +132,9 @@ with sync_playwright() as pw:
     check(pg.evaluate("S.page") is None and "on" not in (pg.get_attribute("#perfBtn", "class") or ""), "Home: library")
     pg.click("#perfBtn"); pg.wait_for_timeout(1200)
     check(pg.locator("#pfTabs button.on").get_attribute("data-tab") == "all", "last tab remembered")
+    pg.wait_for_timeout(2500)   # after a reload: the favorite's panel figures are fetched in the background, nothing opened
+    pf = pg.evaluate("Object.keys(S.pfCache).map(Number)"); co = pg.evaluate("Object.keys(S.pfCo).filter(k=>S.pfCo[k].list).map(Number)")
+    check(pf == [ids["Cora Chase"]] and co == [ids["Cora Chase"]] and not pg.is_visible("#pfPanel"), f"favorite prefetched {pf} {co}")
     pg.click("#dashBtn"); pg.wait_for_timeout(1200)
     check(pg.evaluate("S.page") == "dash" and pg.evaluate("[...document.querySelectorAll('#navRow button.on')].map(b=>b.id)") == ["dashBtn"], "Dashboard unchanged")
     # old People section in Porn Scenes still works

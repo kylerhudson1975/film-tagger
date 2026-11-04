@@ -1,4 +1,4 @@
-"""Performers page side panel (/api/people/<id>/summary): total and years active, busiest year, credits per year (library vs
+"""Performers page side panel (/api/people/<id>/summary, co-stars in /costars): total and years active, busiest year, credits per year (library vs
 not), top studios (hidden spellings merged), top co-stars, the age rule, the star; cached until the person's data changes;
 never calls ThePornDB/TMDB itself (an unbuilt person stays unbuilt until the person page is opened), says loading:true and
 is never cached while the scene list is still loading, and reports the full figures once the build finishes.
@@ -37,8 +37,17 @@ assert s["busiest"] == {"year": 2019, "n": 4}, s["busiest"]   # 3 ThePornDB + Li
 assert {y["k"]: (y["lib"], y["other"]) for y in s["years"]} == {2017: (0, 1), 2018: (0, 2), 2019: (1, 3), 2020: (1, 0), 2021: (1, 0)}, s["years"]
 assert s["studios"][0] == {"name": "Taboo Heat", "n": 5}, s["studios"]   # 'taboo-heat' merged into Taboo Heat
 assert [x["name"] for x in s["studios"]] == ["Taboo Heat", "Jerky Wives", "Kinky Cory", "Other"]
-co = {x["name"]: x["n"] for x in s["costars"]}
-assert co.get("Mia Jay") == 2 and "Nob Day" not in co, s["costars"]   # Nob Day has no birth date: no counted adult scenes
+assert "costars" not in s   # the slow part is a second request
+k = cl.get(f"/api/people/{ids['Cora Chase']}/costars").json
+co = {x["name"]: x["n"] for x in k["costars"]}
+assert co.get("Mia Jay") == 2 and "Nob Day" not in co, k   # Nob Day has no birth date: no counted adult scenes
+assert k["cached"] is False and cl.get(f"/api/people/{ids['Cora Chase']}/costars").json["cached"] is True
+# the person page's cached insights answer is reused (same people, same counts)
+ins = cl.get(f"/api/people/{ids['Mia Jay']}/insights").json
+mk = cl.get(f"/api/people/{ids['Mia Jay']}/costars").json
+assert mk["cached"] is False and [x["name"] for x in mk["costars"]] == [x["name"] for x in sorted(ins["costars"], key=lambda x: (-x["total"], -x["n"]))[:5]]
+assert {x["name"]: x["n"] for x in mk["costars"]}.get("Cora Chase") == 2
+assert cl.get("/api/people/999999/costars").status_code == 404
 assert s["cached"] is False and cl.get(f"/api/people/{ids['Cora Chase']}/summary").json["cached"] is True
 # the star shows and a change is seen at once
 cl.post(f"/api/people/{ids['Cora Chase']}/favorite", json={"favorite": True})
@@ -49,6 +58,7 @@ lst.append(dict(id="c99", _id="", title="New", date="2022-01-01", studio="Jerky 
 c.execute("UPDATE people SET tpdb_scenes_json=? WHERE id=?", (json.dumps(lst), ids["Cora Chase"])); c.commit()
 s3 = cl.get(f"/api/people/{ids['Cora Chase']}/summary").json
 assert s3["cached"] is False and s3["total"] == 10 and s3["last"] == 2022
+assert cl.get(f"/api/people/{ids['Cora Chase']}/costars").json["cached"] is False   # co-stars follow the person's data too
 # age rule: no birth date -> nothing adult counts, and the panel says why
 n = cl.get(f"/api/people/{ids['Nob Day']}/summary").json
 assert n["total"] == 0 and n["excluded"] == 1 and n["excluded_why"] == "no_birthday" and n["built"] is False, n
@@ -78,6 +88,7 @@ for _ in range(200):
     time.sleep(0.05)
 assert a["loading"] is True and a["cached"] is False
 assert cl.get(f"/api/people/{ids['Tess New']}/summary").json["cached"] is False   # never cached while loading
+cl.get(f"/api/people/{ids['Tess New']}/costars"); assert cl.get(f"/api/people/{ids['Tess New']}/costars").json["cached"] is False
 gate.set()
 for _ in range(400):
     f = cl.get(f"/api/people/{ids['Tess New']}/summary").json
@@ -87,5 +98,11 @@ f = cl.get(f"/api/people/{ids['Tess New']}/summary").json
 assert f["built"] is True and f["loading"] is False and f["total"] == N + 1, (f["total"], f["built"])
 assert (f["first"], f["last"]) == (2012, 2017) and len(f["studios"]) >= 3
 assert cl.get(f"/api/people/{ids['Tess New']}/summary").json["cached"] is True
+assert cl.get(f"/api/people/{ids['Tess New']}/costars").json["loading"] is False
+# adult_film_ids is computed once per batch and fresh outside one
+import people as PP
+with db.batch_cache():
+    a1 = PP.adult_film_ids(c); a2 = PP.adult_film_ids(c); assert a1 is a2
+assert PP.adult_film_ids(c) is not a1 and PP.adult_film_ids(c) == a1
 tpdb.call_retry = real
 print("ok")
