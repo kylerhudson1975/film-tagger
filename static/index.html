@@ -1270,12 +1270,12 @@ async function showPerformers(opt={}){
   $('content').innerHTML=`<div class=pf><h1 class=pf-h>PERFORMERS</h1><div class=pf-bar><input id=pfQ type=search placeholder="Search performers…" autocomplete=off value="${esc(q)}"><div class=pf-cats><button id=pfCatM onclick="pfCatSet('mainstream')">Mainstream</button><button id=pfCatP onclick="pfCatSet('porn')">Porn</button></div></div><div id=pfTabs class=pf-tabs></div><div id=pfMain class=pf-main><div id=pfList class=pf-list></div><aside id=pfPanel class=pf-panel style="display:none"></aside></div></div>`;
   let t;$('pfQ').addEventListener('input',()=>{S.pfQv=$('pfQ').value;clearTimeout(t);t=setTimeout(()=>{if(S.pfTab=='all'||!S.pfCat)pfAllSearch().then(()=>{pfTabsDraw();pfDraw()});else pfDraw()},150)});
   if(!opt.keep)$('content').scrollTop=0}
+ if(!opt.keep){S.pfSel=null;S.pfSum=null;clearTimeout(S.pfPollT)}  // opening / resetting Performers never keeps an old side panel
  pfCatDraw();pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
- if(S.pfSel&&!opt.keep)pfOpen(S.pfSel,true);
  await pfFetch();if(opt.scroll)$('content').scrollTop=opt.scroll}
 function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&S.need[S.pfCat].total):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&S.pfAll.q?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
-function pfTab(k){S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
+function pfTab(k){if(S.pfTab!==k&&S.pfSel)pfClose();S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
  if(!S.pfCat){el.innerHTML=ppQ()?pfAllList():'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
  el.innerHTML=t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList();pfMark()}
