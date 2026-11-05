@@ -9,7 +9,7 @@ import focus as focusmod
 import gallery as gallerymod
 import mkvtag
 
-APP_VERSION = "1.3.3"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.3.4"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -758,11 +758,11 @@ def posteredit_save(fid):
 def get_film(fid):
     c = C(); r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not r: return jsonify(error="not found"), 404
-    if request.method == "GET" and request.endpoint == "get_film":  # galleries added by hand show up without a scan
-        try:
-            scene_gallery(c, fid)  # cheap folder check; stores gallery_path/count only (updated_at untouched)
-            r = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
-        except Exception: pass
+    # Gallery detection hits the video/gallery folders on disk. On a busy or waking drive that can stall
+    # for ~20-30s and pin the browser's few connections to localhost, so every UI click feels hung.
+    # Serve the cached gallery_path/count immediately; refresh one film in the background.
+    if request.method == "GET" and request.endpoint == "get_film":
+        kick_gallery(fid)
     return jsonify(attach(c, [dict(r)])[0])
 
 def parse_tmdb_id(v):
@@ -2993,6 +2993,21 @@ def scenes_rename_apply():
 
 # ---------- scene photo galleries (gallery.py): listing, cached thumbnails, full images, use as poster ----------
 GALLERY_THUMBS = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "gallery_thumbs")
+
+_GAL_BG, _GAL_BG_LOCK = set(), threading.Lock()
+
+def kick_gallery(fid):
+    """Refresh one film's gallery_path/count off the request thread (deduped while in flight)."""
+    fid = int(fid)
+    with _GAL_BG_LOCK:
+        if fid in _GAL_BG: return
+        _GAL_BG.add(fid)
+    def work():
+        try: scene_gallery(C(), fid)
+        except Exception: pass
+        finally:
+            with _GAL_BG_LOCK: _GAL_BG.discard(fid)
+    threading.Thread(target=work, daemon=True).start()
 
 def scene_gallery(c, fid):
     """-> (kind, folder) for a scene's first file with a gallery; updates films.gallery_path/count if they changed."""
