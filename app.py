@@ -438,6 +438,23 @@ def _set_custom_poster(c, fid, val):
     else: ed.discard("custom_poster")
     c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", (val or None, json.dumps(sorted(ed)), time.time(), fid))
 
+def _art_export(c, fid):
+    """Copy the film's current local custom poster into its video folder(s) (artexport.py); never fails the request."""
+    try:
+        import artexport
+        v = (c.execute("SELECT custom_poster FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or ""
+        if not v.startswith("/posters/") or v.startswith("/posters/backup/"): return [dict(status="no local poster")]
+        return artexport.export_poster(c, fid, os.path.join(POSTERS_DIR, os.path.basename(v)))
+    except Exception as e:
+        return [dict(status=f"error: {type(e).__name__}")]
+
+@app.post("/api/films/<int:fid>/artwork/export")
+def art_export_film(fid):
+    """Explicit Export: copy the current custom poster into the video folder(s) (never overwrites other files)."""
+    c = C()
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    return jsonify(art_export=_art_export(c, fid))
+
 @app.get("/posters/<path:name>")
 def poster_file(name):
     return send_from_directory(POSTERS_DIR, os.path.basename(name), max_age=86400)
@@ -474,7 +491,7 @@ def set_poster(fid):
             pass
         if val is None: _drop_local_poster(c, fid); val = url
     _set_custom_poster(c, fid, val); c.commit(); kick_focus()
-    return jsonify(dict(get_film(fid).json, poster_note=note))
+    return jsonify(dict(get_film(fid).json, poster_note=note, art_export=_art_export(c, fid)))
 
 @app.delete("/api/films/<int:fid>/poster")
 def remove_poster(fid):
@@ -597,7 +614,7 @@ def findposters_set(fid):
     ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")); ed.add("custom_poster")
     c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", (val, json.dumps(sorted(ed)), time.time(), fid))
     c.commit(); kick_focus()
-    return jsonify(dict(get_film(fid).json, poster_note="set from TMDB (previous poster backed up)", can_restore=True))
+    return jsonify(dict(get_film(fid).json, poster_note="set from TMDB (previous poster backed up)", can_restore=True, art_export=_art_export(c, fid)))
 
 @app.post("/api/films/<int:fid>/findposters/restore")
 def findposters_restore(fid):
@@ -611,7 +628,7 @@ def findposters_restore(fid):
     _fp_backup_current(c, fid)  # the poster being replaced is kept in posters/backup too
     c.execute("DELETE FROM settings WHERE key=?", (_fp_prev_key(fid),))
     _set_custom_poster(c, fid, val); c.commit(); kick_focus()
-    return jsonify(dict(get_film(fid).json, poster_note="previous poster restored", can_restore=False))
+    return jsonify(dict(get_film(fid).json, poster_note="previous poster restored", can_restore=False, art_export=_art_export(c, fid)))
 
 # ---------- Poster editor: crop / rotate / flip the current poster (done on the full-size original with OpenCV) ----------
 PE_Q = 95             # JPEG quality of an edited poster
@@ -752,7 +769,7 @@ def posteredit_save(fid):
     ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")); ed.add("custom_poster")
     c.execute("UPDATE films SET custom_poster=?, edited_fields=?, updated_at=? WHERE id=?", ("/posters/" + name, json.dumps(sorted(ed)), time.time(), fid))
     c.commit(); kick_focus()
-    return jsonify(dict(get_film(fid).json, poster_note="edited (previous poster backed up)", can_restore=True))
+    return jsonify(dict(get_film(fid).json, poster_note="edited (previous poster backed up)", can_restore=True, art_export=_art_export(c, fid)))
 
 @app.get("/api/films/<int:fid>")
 def get_film(fid):
@@ -3091,7 +3108,7 @@ def gallery_poster(fid):
         if data is None: return jsonify(error=ext), 413
     val = _save_poster(c, fid, data, ext)
     _set_custom_poster(c, fid, val); c.commit(); kick_focus()
-    return jsonify(dict(get_film(fid).json, poster_note="from gallery"))
+    return jsonify(dict(get_film(fid).json, poster_note="from gallery", art_export=_art_export(c, fid)))
 
 # ---------- Find Gallery: guest ViperGirls search + gallery-dl download (findgallery.py) ----------
 import findgallery as fgmod

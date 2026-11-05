@@ -834,14 +834,31 @@ def init(app, tmdb, posters_dir):
                 c.execute(f"UPDATE people SET {col}=? WHERE id=?", (clean_value(f, d[f]), r["id"])); edited.add(col)
         c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), r["id"])); c.commit()
         err = photo_from_request(c, r["id"])
-        return jsonify(ok=True, id=r["id"], name=r["name"], existed=bool(r["source"] != "manual" or r["fetched_at"] is None), warning=err)
+        return jsonify(ok=True, id=r["id"], name=r["name"], existed=bool(r["source"] != "manual" or r["fetched_at"] is None), warning=err,
+                       art_export=art_export_person(c, r["id"]) if not err and (request.files.get("photo") or (request.form.get("photo_url") if request.form else None) or (request.get_json(silent=True) or {}).get("photo_url")) else None)
+
+    def art_export_person(c, pid):
+        """Copy the person's current photo into one video folder (artexport.py); never fails the request."""
+        try:
+            import artexport
+            r = c.execute("SELECT name, photo_file FROM people WHERE id=?", (pid,)).fetchone()
+            if not r or not r["photo_file"]: return dict(status="no local photo")
+            return artexport.export_person(c, r["name"], os.path.join(PHOTO_DIR, r["photo_file"]))
+        except Exception as e:
+            return dict(status=f"error: {type(e).__name__}")
+
+    @app.post("/api/person/<int:pid>/artwork/export")
+    def person_art_export(pid):
+        c = C()
+        if not c.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone(): return jsonify(error="Unknown person"), 404
+        return jsonify(art_export=art_export_person(c, pid))
 
     @app.post("/api/person/<int:pid>/photo/upload")
     def person_photo_upload(pid):
         c = C()
         if not c.execute("SELECT 1 FROM people WHERE id=?", (pid,)).fetchone(): return jsonify(error="Unknown person"), 404
         err = photo_from_request(c, pid)
-        return (jsonify(error=err), 502) if err else jsonify(ok=True)
+        return (jsonify(error=err), 502) if err else jsonify(ok=True, art_export=art_export_person(c, pid))
 
     # ---------- profile photo crop: always cut from the full original (kept as <name>.orig.<ext>), Reset crop restores it ----------
     def photo_source(row):
@@ -896,7 +913,7 @@ def init(app, tmdb, posters_dir):
         ed = set(json.loads(row["edited_fields"] or "[]")) | {"photo"}
         c.execute("UPDATE people SET photo_file=?, photo_orig=?, edited_fields=?, fetched_at=? WHERE id=?", (name, orig, json.dumps(sorted(ed)), time.time(), pid)); c.commit()
         if old and old not in (name, orig) and ".crop-" in old: backup_photo(old)  # moved to backup/, never deleted
-        return jsonify(ok=True, width=cw, height=ch, orig_width=w, orig_height=h, photo=f"/api/person/{pid}/photo?v={int(time.time())}")
+        return jsonify(ok=True, width=cw, height=ch, orig_width=w, orig_height=h, photo=f"/api/person/{pid}/photo?v={int(time.time())}", art_export=art_export_person(c, pid))
 
     @app.post("/api/person/<int:pid>/photo/reset_crop")
     def person_photo_reset_crop(pid):
@@ -906,7 +923,7 @@ def init(app, tmdb, posters_dir):
         old = row["photo_file"]
         c.execute("UPDATE people SET photo_file=?, photo_orig=NULL, fetched_at=? WHERE id=?", (row["photo_orig"], time.time(), pid)); c.commit()
         if old and ".crop-" in old: backup_photo(old)  # moved to backup/, never deleted
-        return jsonify(ok=True)
+        return jsonify(ok=True, art_export=art_export_person(c, pid))
 
     @app.post("/api/person/<int:pid>/merge")
     def person_merge(pid):
