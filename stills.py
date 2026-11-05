@@ -86,9 +86,11 @@ def candidates(ff, video, t0, win, n, fps, sw, sh):
     return [(sharpness(np.frombuffer(a[k * sz:(k + 1) * sz], np.uint8).reshape(sh, sw)), k * step) for k in range(len(a) // sz)]
 
 def save_frame(ff, video, t0, idx, out):
-    """Full-resolution JPG of frame `idx` after the same seek used for scoring (so it is the very frame scored)."""
+    """Full-resolution JPG of frame `idx` after the same seek used for scoring (so it is the very frame scored).
+    Anamorphic video (non-square pixels, e.g. 2160x2160 stored with SAR 16:9) is stretched to square pixels so the JPG
+    keeps the display aspect ratio (3840x2160), never the storage shape."""
     subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t0:.3f}", "-i", video, "-an", "-sn",
-                    "-vf", f"select='eq(n\\,{idx})'", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "2", out],
+                    "-vf", f"select='eq(n\\,{idx})',scale='trunc(iw*sar/2)*2':ih:flags=lanczos,setsar=1", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "2", out],
                    capture_output=True, creationflags=NOWIN, timeout=300)
     return os.path.isfile(out) and os.path.getsize(out) > 0
 
