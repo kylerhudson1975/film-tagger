@@ -1,12 +1,14 @@
-"""MKV container titles for hard-matched scenes (optional; needs MKVToolNix's mkvpropedit).
+"""MKV container titles (optional; needs MKVToolNix's mkvpropedit).
 
-After a scene is matched on ThePornDB and its file is renamed to the standard name, an .mkv file also gets its container
-metadata written in place with mkvpropedit (header edit only, no re-encode):
-  segment title  '<Studio> - <Title> (YYYY-MM-DD)'  (what VLC shows in its window/playlist and Explorer in its Title column)
-  global tags    TITLE, DATE_RELEASED, ACTOR (one per performer), ARTIST (performers, comma separated), PRODUCTION_STUDIO
-The values come from the library entry, so a title Kyle edited by hand is the one written. Never fatal: every failure is
-logged to mkv_titles.log next to the database and returned as a note. Files in use by another program are skipped.
-The file's modified time is kept; its size/fingerprint are refreshed in the files table afterwards.
+Hard-matched scenes: after ThePornDB match + rename, writes segment title
+  '<Studio> - <Title> (YYYY-MM-DD)'
+and global tags TITLE, DATE_RELEASED, ACTOR, ARTIST, PRODUCTION_STUDIO.
+
+Regular (non-adult) movies: writes segment title 'Title (Year)' (and TITLE / DATE_RELEASED tags) for .mkv files.
+Skipped when the container title already matches. Never renames or moves files.
+
+Header edit only (no re-encode). Values come from the library entry. Never fatal: failures go to mkv_titles.log next
+to the database. Files in use are skipped. File mtime is kept; size/fingerprint refreshed afterwards.
 MKVToolNix is found on PATH or in its default install folder; without it the feature is simply off."""
 import os, sys, json, time, shutil, hashlib, logging, tempfile, subprocess
 from xml.sax.saxutils import escape
@@ -39,6 +41,19 @@ def scene_title(f):
     title = (f["title"] or "").strip(); studio = (f["studio"] or "").strip(); date = (f["release_date"] or "").strip()
     s = f"{studio} - {title}" if studio and title else (title or studio)
     return f"{s} ({date})" if date and s else s
+
+
+def movie_title(f):
+    """'Title (Year)'; year left out when missing."""
+    t = (f["title"] or "").strip(); y = f["year"] if "year" in f.keys() else None
+    return f"{t} ({y})" if t and y not in (None, "") else t
+
+def desired_movie(f):
+    """-> dict(title, tags=...) for a regular movie row (title, year)."""
+    t = movie_title(f); tags = [("TITLE", (f["title"] or "").strip())]
+    y = f["year"] if "year" in f.keys() else None
+    if y not in (None, ""): tags.append(("DATE_RELEASED", str(y)))
+    return dict(title=t, tags=[x for x in tags if x[1]])
 
 def desired(f):
     """-> dict(title, tags=[(name, value), ...]) for a scene row (title, studio, release_date, cast_)."""

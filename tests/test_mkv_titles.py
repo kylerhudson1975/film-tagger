@@ -141,4 +141,50 @@ class Real(unittest.TestCase):
         j = json.loads(subprocess.run(["mkvmerge", "-J", p], capture_output=True).stdout)
         self.assertGreaterEqual(j.get("global_tags", [{}])[0].get("num_entries", 0), 6)
 
-if __name__ == "__main__": unittest.main()
+
+class MovieTitles(unittest.TestCase):
+    def test_movie_title_format(self):
+        self.assertEqual(mkvtag.movie_title(dict(title="Heat", year=1995)), "Heat (1995)")
+        self.assertEqual(mkvtag.movie_title(dict(title="Heat", year=None)), "Heat")
+    def test_desired_movie(self):
+        d = mkvtag.desired_movie(dict(title="Heat", year=1995))
+        self.assertEqual(d["title"], "Heat (1995)")
+        self.assertEqual(d["tags"], [("TITLE", "Heat"), ("DATE_RELEASED", "1995")])
+
+class MovieHooks(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(); c = db.connect(); db.set_setting(c, "roots", [self.root])
+        c.execute("DELETE FROM films"); mkvtag.ensure_table(c); c.execute("DELETE FROM mkv_meta"); c.commit(); self.c = c
+        mkvtag._TOOL.clear(); mkvtag._TOOL.update(mkvpropedit="/fake/mkvpropedit", mkvmerge="/fake/mkvmerge")
+        self.fake = FakeRun(title_out="Old"); self.p = mock.patch("mkvtag.subprocess.run", self.fake); self.p.start()
+    def tearDown(self): self.p.stop()
+    def _mk(self, name="Heat.mkv"):
+        path = os.path.join(self.root, name); open(path, "wb").write(b"x" * 20); return path
+    def test_plan_and_write_movie(self):
+        path = self._mk(); self.c.execute("INSERT INTO films(id,title,year) VALUES(1,'Heat',1995)")
+        self.c.execute("INSERT INTO files(id,film_id,path) VALUES(1,1,?)", (path,)); self.c.commit()
+        plan = A.movie_mkv_plan(self.c, 1); self.assertEqual(plan[0]["status"], "update")
+        self.assertEqual(plan[0]["d"]["title"], "Heat (1995)")
+        st, msg = A.mkv_write_one(self.c, plan[0]); self.assertEqual(st, "updated")
+        plan2 = A.movie_mkv_plan(self.c, 1); self.assertEqual(plan2[0]["status"], "done")
+    def test_skips_hardcore_and_scene(self):
+        p1 = self._mk("A.mkv"); p2 = self._mk("B.mkv")
+        self.c.execute("INSERT INTO films(id,title,year,primary_genre) VALUES(1,'X',2000,'Hardcore')")
+        self.c.execute("INSERT INTO files(id,film_id,path) VALUES(1,1,?)", (p1,))
+        self.c.execute("INSERT INTO films(id,title,year,kind) VALUES(2,'Sc',NULL,'scene')")
+        self.c.execute("INSERT INTO files(id,film_id,path) VALUES(2,2,?)", (p2,)); self.c.commit()
+        self.assertEqual(A.movie_mkv_plan(self.c), [])
+    def test_skip_when_title_already_matches(self):
+        path = self._mk(); self.fake.title_out = "Heat (1995)"
+        self.c.execute("INSERT INTO films(id,title,year) VALUES(1,'Heat',1995)")
+        self.c.execute("INSERT INTO files(id,film_id,path) VALUES(1,1,?)", (path,)); self.c.commit()
+        plan = A.movie_mkv_plan(self.c, 1); self.assertEqual(plan[0]["status"], "done")
+    def test_api_preview(self):
+        path = self._mk(); self.c.execute("INSERT INTO films(id,title,year) VALUES(1,'Heat',1995)")
+        self.c.execute("INSERT INTO files(id,film_id,path) VALUES(1,1,?)", (path,)); self.c.commit()
+        self.fake.title_out = "Other"
+        r = A.app.test_client().get("/api/mkv/movie-titles/preview").json
+        self.assertTrue(r["available"]); self.assertEqual(r["would_update"], 1)
+
+if __name__ == "__main__":
+    unittest.main()

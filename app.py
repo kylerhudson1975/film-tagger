@@ -869,6 +869,8 @@ def update_film(fid):
     if old["kind"] == "scene" and changed & set(SCENE_NAME_FIELDS):  # Rename on Save (an .mkv also gets the edited title)
         try: _, rename_note, mkv = rename_scene_file(c, fid)
         except OSError as e: rename_note = f"Saved, but the file could not be renamed: {e}"
+    elif old["kind"] != "scene" and changed & {"title", "year"}:
+        mkv = movie_mkv_after(c, fid)
     if mkv and mkv["status"] != "updated" and not rename_note: rename_note = mkv["note"]
     if rename_note and not new_tid:
         j = get_film(fid).get_json(); j["rename_note"] = rename_note; return jsonify(j)
@@ -2282,7 +2284,7 @@ def fetch_and_apply(c, fid, tid, keep=(), genres=True):
         return f"TMDB has no movie with id {tid}" if e.code == 404 else "TMDB rejected the API key (401)" if e.code == 401 else f"TMDB error {e.code}"
     except Exception as e: return f"Could not reach TMDB: {e}"
     apply_movie(c, fid, m, respect_edits=True, genres=genres, keep=[k for k in keep if k in FILM_FIELDS])
-    c.commit(); return None
+    c.commit(); movie_mkv_after(c, fid); return None
 
 @app.post("/api/films/<int:fid>/tmdb")
 def tmdb_apply(fid):
@@ -2309,7 +2311,7 @@ def tmdb_apply(fid):
     except Exception as e: return jsonify(error=f"Could not reach TMDB: {e}"), 502
     keep = [k for k in d.get("keep", []) if k in FILM_FIELDS]  # fields the user changed in this edit win
     apply_movie(c, fid, m, respect_edits=True, genres=d.get("genres", True), keep=keep)
-    c.commit(); return get_film(fid)
+    c.commit(); movie_mkv_after(c, fid); return get_film(fid)
 
 # ---------- backup ----------
 TABLES = ["films", "files", "categories", "tags", "film_tags", "smart_queue", "aznude_queue", "saved_searches", "settings"]
@@ -2688,9 +2690,12 @@ def rename_scene_file(c, fid):
         mkv = mkv_after_rename(c, fid)
     return n, note, mkv
 
-# ---------- MKV container titles (mkvtag.py, optional MKVToolNix): hard-matched scenes only ----------
+# ---------- MKV container titles (mkvtag.py, optional MKVToolNix): hard-matched scenes + regular movie .mkv ----------
 MKV_SQL = ("SELECT x.id file_id, x.path, f.id, f.title, f.studio, f.release_date, f.cast_, COALESCE(f.notes,'') notes, "
            "COALESCE(f.tpdb_id,'') tid FROM files x JOIN films f ON f.id=x.film_id WHERE f.kind='scene' AND LOWER(x.path) LIKE '%.mkv'")
+MOVIE_MKV_SQL = ("SELECT x.id file_id, x.path, f.id, f.title, f.year, COALESCE(f.kind,'') kind, COALESCE(f.primary_genre,'') pg "
+                 "FROM files x JOIN films f ON f.id=x.film_id WHERE COALESCE(f.kind,'')<>'scene' AND LOWER(x.path) LIKE '%.mkv' "
+                 "AND COALESCE(f.primary_genre,'') NOT IN ('Hardcore','Softcore')")
 
 def mkv_plan(c, fid=None):
     """Hard-matched scene MKVs -> [dict(row, status, why, d, sig)]. status: 'update' | 'done' | 'skip'.
@@ -2723,11 +2728,15 @@ def mkv_plan(c, fid=None):
 def mkv_write_one(c, e):
     """Write one planned entry. -> ('updated'|'skipped'|'failed', message). Never raises."""
     try:
-        if e.get("known") and e.get("last_title") is not None:  # title changed by hand outside Film Tagger since our last write: keep it
-            cur = mkvtag.read_title(e["path"])
-            if cur is not None and cur != e["last_title"]:
-                mkvtag.note(f"skipped (title edited by hand in the file) film {e['film_id']} file {e['file_id']}")
-                return "skipped", "MKV title was edited by hand; left as is"
+        cur = mkvtag.read_title(e["path"])
+        if e.get("known") and e.get("last_title") is not None and cur is not None and cur != e["last_title"]:
+            mkvtag.note(f"skipped (title edited by hand in the file) film {e['film_id']} file {e['file_id']}")
+            return "skipped", "MKV title was edited by hand; left as is"
+        if cur is not None and e.get("d") and cur == e["d"]["title"]:
+            size = os.path.getsize(e["path"])
+            c.execute("INSERT OR REPLACE INTO mkv_meta(file_id, path, sig, size, written_at, title) VALUES(?,?,?,?,?,?)",
+                      (e["file_id"], e["path"], e["sig"], size, time.time(), e["d"]["title"])); c.commit()
+            return "skipped", "MKV title already matches"
         ok_, msg = mkvtag.write(e["path"], e["d"])
         if not ok_:
             mkvtag.note(f"{'skipped' if 'in use' in msg else 'failed'}: film {e['film_id']} file {e['file_id']}: {msg}")
@@ -2758,6 +2767,69 @@ def mkv_after_rename(c, fid):
         try: mkvtag.note(f"failed after rename: film {fid}: {type(ex).__name__}: {ex}")
         except Exception: pass
         return dict(status="failed", note=f"MKV title not written: {type(ex).__name__}")
+
+
+def movie_mkv_ok(c, fid):
+    """True if this film is a regular (non-adult) movie eligible for MKV title writing."""
+    r = c.execute("SELECT COALESCE(kind,'') kind, COALESCE(primary_genre,'') pg FROM films WHERE id=?", (fid,)).fetchone()
+    if not r or r["kind"] == "scene" or r["pg"] in ("Hardcore", "Softcore"): return False
+    try:
+        import people as pm
+        if fid in pm.adult_film_ids(c): return False
+    except Exception: pass
+    return True
+
+def movie_mkv_plan(c, fid=None):
+    """Regular-movie .mkv files -> [dict(...)] status 'update'|'done'|'skip'. Skip adult / missing; done when title already matches."""
+    mkvtag.ensure_table(c)
+    rows = c.execute(MOVIE_MKV_SQL + (" AND f.id=?" if fid else "") + " ORDER BY x.id", ((fid,) if fid else ())).fetchall()
+    if not rows: return []
+    try:
+        import people as pm
+        adult = pm.adult_film_ids(c)
+    except Exception: adult = set()
+    done = {r[0]: r for r in c.execute("SELECT file_id, path, sig, size, title FROM mkv_meta")}
+    out = []
+    for r in rows:
+        e = dict(file_id=r["file_id"], path=r["path"], film_id=r["id"], status="skip", why=None, d=None, sig=None, kind="movie")
+        if r["id"] in adult: e["why"] = "adult"
+        elif not (r["title"] or "").strip(): e["why"] = "no_title"
+        elif not os.path.isfile(r["path"]): e["why"] = "missing"
+        else:
+            e["d"] = mkvtag.desired_movie(r); e["sig"] = mkvtag.signature(e["d"])
+            m = done.get(r["file_id"])
+            try: size = os.path.getsize(r["path"])
+            except OSError: size = None
+            same = m and m["sig"] == e["sig"] and os.path.normcase(m["path"] or "") == os.path.normcase(r["path"]) and m["size"] == size
+            if not same:
+                cur = mkvtag.read_title(r["path"])
+                if cur is not None and cur == e["d"]["title"]: same = True  # already matches; write path will record it
+            e["status"] = "done" if same else "update"; e["last_title"] = m["title"] if m else None
+            e["known"] = bool(m) and os.path.normcase(m["path"] or "") == os.path.normcase(r["path"])
+        out.append(e)
+    return out
+
+def movie_mkv_after(c, fid):
+    """Write MKV titles for a movie after title/year save or TMDB fetch. -> None or dict(status, note). Never raises."""
+    try:
+        if not mkvtag.available() or not movie_mkv_ok(c, fid): return None
+        plan = [e for e in movie_mkv_plan(c, fid) if e["status"] == "update"]
+        res = [mkv_write_one(c, e) for e in plan]
+        if not res: return None
+        bad = [m for s, m in res if s != "updated"]
+        return dict(status="failed" if any(s == "failed" for s, _ in res) else ("skipped" if bad else "updated"),
+                    note=("MKV title not written: " + bad[0]) if bad else "MKV title updated")
+    except Exception as ex:
+        try: mkvtag.note(f"failed movie mkv film {fid}: {type(ex).__name__}: {ex}")
+        except Exception: pass
+        return dict(status="failed", note=f"MKV title not written: {type(ex).__name__}")
+
+def movie_mkv_counts(plan):
+    k = {}
+    for e in plan: k[e["why"] or e["status"]] = k.get(e["why"] or e["status"], 0) + 1
+    elig = sum(1 for e in plan if e["status"] in ("update", "done"))
+    return dict(available=mkvtag.available(), eligible=elig, would_update=k.get("update", 0), already=k.get("done", 0),
+                skipped=dict(adult=k.get("adult", 0), no_title=k.get("no_title", 0), missing=k.get("missing", 0)), movie_mkvs=len(plan))
 
 def mkv_counts(plan):
     k = {}
@@ -2807,6 +2879,70 @@ def mkv_titles_start():
 @app.get("/api/mkv/titles/status")
 def mkv_titles_status():
     return jsonify({k: v for k, v in MKVJOB.items() if k != "cancel"})
+
+@app.get("/api/mkv/movie-titles/preview")
+def movie_mkv_titles_preview():
+    """Dry run of Write MKV titles for movies: counts only."""
+    c = C()
+    try: return jsonify(dict(movie_mkv_counts(movie_mkv_plan(c)), tool=bool(mkvtag.find_tool("mkvpropedit"))))
+    finally: c.close()
+
+MOVIE_MKVJOB = {"running": False}
+MOVIE_MKV_LOCK = threading.Lock()
+
+def run_movie_mkv_job(force=False, ids=None):
+    c = C()
+    try:
+        plan = [e for e in movie_mkv_plan(c) if (e["status"] == "update" or (force and e["status"] == "done")) and (not ids or e["film_id"] in ids)]
+        MOVIE_MKVJOB.update(total=len(plan))
+        for e in plan:
+            if MOVIE_MKVJOB.get("cancel"): break
+            s, m = mkv_write_one(c, e); MOVIE_MKVJOB[s] = MOVIE_MKVJOB.get(s, 0) + 1
+            if s == "failed": MOVIE_MKVJOB["last_error"] = m
+            MOVIE_MKVJOB["done"] = MOVIE_MKVJOB.get("done", 0) + 1
+    except Exception as ex: MOVIE_MKVJOB["error"] = f"{type(ex).__name__}: {ex}"
+    finally:
+        MOVIE_MKVJOB.update(running=False, finished_at=time.time()); c.close()
+        mkvtag.note(f"Write MKV titles for movies finished: {json.dumps({k: MOVIE_MKVJOB.get(k, 0) for k in ('total', 'updated', 'skipped', 'failed')})}")
+
+@app.post("/api/mkv/movie-titles/start")
+def movie_mkv_titles_start():
+    """Write MKV titles for regular movies (background). {force?, film_ids?}."""
+    if not mkvtag.available(): return jsonify(error="MKVToolNix (mkvpropedit) is not installed: get it from mkvtoolnix.download"), 400
+    d = request.get_json(silent=True) or {}
+    with MOVIE_MKV_LOCK:
+        if MOVIE_MKVJOB.get("running"): return jsonify(error="Write MKV titles for movies is already running"), 409
+        MOVIE_MKVJOB.clear(); MOVIE_MKVJOB.update(running=True, done=0, total=0, updated=0, skipped=0, failed=0, started_at=time.time(), cancel=False)
+    ids = {int(x) for x in d.get("film_ids") or []}
+    threading.Thread(target=run_movie_mkv_job, kwargs=dict(force=bool(d.get("force")), ids=ids or None), daemon=True).start()
+    return jsonify(ok=True)
+
+@app.get("/api/mkv/movie-titles/status")
+def movie_mkv_titles_status():
+    return jsonify({k: v for k, v in MOVIE_MKVJOB.items() if k != "cancel"})
+
+@app.post("/api/films/<int:fid>/mkv/title")
+def film_mkv_title(fid):
+    """Write the MKV container title for one regular movie (or hard-matched scene)."""
+    c = C()
+    if not mkvtag.available(): return jsonify(error="MKVToolNix (mkvpropedit) is not installed: get it from mkvtoolnix.download"), 400
+    f = c.execute("SELECT id, kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return jsonify(error="not found"), 404
+    if f["kind"] == "scene":
+        plan = [e for e in mkv_plan(c, fid) if e["status"] in ("update", "done")]
+        if not plan: return jsonify(error="No eligible hard-matched .mkv for this scene"), 400
+        if all(e["status"] == "done" for e in plan): return jsonify(ok=True, status="done", note="MKV title already matches")
+        res = [mkv_write_one(c, e) for e in plan if e["status"] == "update"]
+    else:
+        if not movie_mkv_ok(c, fid): return jsonify(error="Only regular (non-adult) movies get an MKV title this way"), 400
+        plan = [e for e in movie_mkv_plan(c, fid) if e["status"] in ("update", "done")]
+        if not plan: return jsonify(error="No .mkv file for this movie"), 400
+        if all(e["status"] == "done" for e in plan): return jsonify(ok=True, status="done", note="MKV title already matches")
+        res = [mkv_write_one(c, e) for e in plan if e["status"] == "update"]
+    bad = [m for st, m in res if st != "updated"]
+    st = "failed" if any(x == "failed" for x, _ in res) else ("skipped" if bad else "updated")
+    return jsonify(ok=st == "updated", status=st, note=("MKV title not written: " + bad[0]) if bad else "MKV title updated"), (200 if st != "failed" else 500)
+
 
 def rename_waiting(c, fid):
     """Planned moves for a scene that is waiting for a by-hand rename, or [] (held, review, missing fields, already standard)."""
