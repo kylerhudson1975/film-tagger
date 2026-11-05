@@ -823,6 +823,9 @@ def create_film():
     f["added_at"] = f["updated_at"] = time.time()
     cur = c.execute(f"INSERT INTO films({','.join(f)}) VALUES({','.join('?'*len(f))})", list(f.values()))
     for p in split_list(d.get("paths")): c.execute("INSERT OR IGNORE INTO files(film_id,path) VALUES(?,?)", (cur.lastrowid, p))
+    if "mpaa" in f:  # Classic Porn standing rule needs file paths first
+        f["mpaa"] = db.classic_porn_mpaa(c, cur.lastrowid, f.get("mpaa"))
+        c.execute("UPDATE films SET mpaa=? WHERE id=?", (f["mpaa"], cur.lastrowid))
     c.commit()
     if split_list(d.get("paths")): start_res_job([cur.lastrowid])
     if f.get("tmdb_id"): fetch_and_apply(c, cur.lastrowid, f["tmdb_id"], keep=[k for k, v in f.items() if v not in (None, "") and k != "title"])
@@ -838,6 +841,8 @@ def update_film(fid):
     ed = set(json.loads(old["edited_fields"] or "[]"))
     if f.get("primary_genre"):  # hand-typed primary genre: reuse the existing spelling, remember new names for the list
         f["primary_genre"] = db.remember_primary_genre(c, f["primary_genre"])
+    if "mpaa" in f:  # Classic Porn standing rule: NC-17 -> X
+        f["mpaa"] = db.classic_porn_mpaa(c, fid, f.get("mpaa"))
     if "release_date" in f and not f["release_date"] and "year" not in d: f.pop("year", None)  # clearing the date keeps the year
     changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}
     if changed & {"year", "release_date"}: changed |= {"year", "release_date"}  # date and year are protected together
@@ -1112,13 +1117,14 @@ def bulk_mpaa():
     try: ids = [int(i) for i in d.get("film_ids", [])]
     except (TypeError, ValueError): return jsonify(error="bad film_ids"), 400
     v = (d.get("mpaa") or "").strip() or None
+    # Classic Porn standing rule applied per-film below (NC-17 -> X)
     c = C(); now = time.time(); n = 0
     try:
         for fid in ids:
             r = c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()
             if not r: continue
             ed = set(json.loads(r[0] or "[]")); ed.add("mpaa")
-            c.execute("UPDATE films SET mpaa=?, edited_fields=?, updated_at=? WHERE id=?", (v, json.dumps(sorted(ed)), now, fid)); n += 1
+            vv = db.classic_porn_mpaa(c, fid, v); c.execute("UPDATE films SET mpaa=?, edited_fields=?, updated_at=? WHERE id=?", (vv, json.dumps(sorted(ed)), now, fid)); n += 1
         c.commit()
     except Exception as e:
         c.rollback(); return jsonify(error=str(e)), 500
@@ -1694,7 +1700,7 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
                cinematographer=jobs("Director of Photography"),
                composer=jobs("Original Music Composer", "Music", "Composer"),
                poster=m.get("poster_path") and "https://image.tmdb.org/t/p/w342" + m["poster_path"],
-               mpaa=us_cert(m))
+               mpaa=db.classic_porn_mpaa(c, fid, us_cert(m)))
     ot = (m.get("original_title") or "").strip()
     if ot and ot != (m.get("title") or "").strip(): upd["original_title"] = ot
     if "alternative_titles" in m: upd["alt_titles"] = alt_titles_of(m)
@@ -1804,7 +1810,7 @@ def run_mpaa_job(key, ids):
             if JOB["cancel"]: break
             try:
                 rl.wait(); m = tmdb(f"movie/{tid}/release_dates", key)
-                cert = us_cert({"release_dates": m})
+                cert = db.classic_porn_mpaa(c, fid, us_cert({"release_dates": m}))
                 ed = json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")
                 if cert and "mpaa" not in ed:
                     c.execute("UPDATE films SET mpaa=?, mpaa_checked=1 WHERE id=? AND (mpaa IS NULL OR mpaa='')", (cert, fid)); JOB["matched"] += 1

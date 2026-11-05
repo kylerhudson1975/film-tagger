@@ -834,6 +834,16 @@ def is_classic_porn(c, fid):
     """True if any of the film's files lives under a 'Classic Porn' folder (e.g. D:\\Classic Porn\\)."""
     return c.execute("SELECT 1 FROM files WHERE film_id=? AND " + CLASSIC_PORN_SQL + " LIMIT 1", (fid,)).fetchone() is not None
 
+def is_nc17(cert):
+    """True for NC-17 in any common casing/spacing/dash variant (NC-17, nc17, NC 17, NC_17...)."""
+    return bool(cert) and re.sub(r"[\s\-_]+", "", str(cert)).upper() == "NC17"
+
+def classic_porn_mpaa(c, fid, cert):
+    """Classic Porn standing rule: NC-17 becomes X. Other certs (and non-Classic-Porn films) unchanged."""
+    if cert and is_classic_porn(c, fid) and is_nc17(cert):
+        return "X"
+    return cert
+
 def porn_primary_genre(c, fid):
     """'Softcore' if the film has a Softcore / Softcore sex / Pink film / Not hardcore porn tag, else 'Hardcore'."""
     names = {(r[0] or "").strip().lower() for r in c.execute(
