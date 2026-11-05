@@ -1343,7 +1343,7 @@ function ppOpen(id){if(S.page=='perf')return pfOpen(id);showPerson(id)}
 function ppGroupPick(v){if(S.page=='perf'&&S.pfTab=='studios'){S.pfSGroup=v;localStorage.pfSGroup=v;pfTabsDraw();ppBRedraw()}else ppBGroupSet(v)}
 /* top-bar People: back to the empty default like Home / Dashboard (search box and results cleared, sidebar tag groups
    collapsed and scrolled to the top, side panel closed) */
-function perfHome(){try{setAllCats(true)}catch(e){}resetSearch();renderTagCloud();$('side').scrollTop=0;S.pfQv='';S.pfAll=null;const q=$('pfQ');if(q)q.value='';showPerformers()}
+function perfHome(){try{setAllCats(true)}catch(e){}resetSearch();renderTagCloud();$('side').scrollTop=0;S.pfQv='';S.pfAll=null;const q=$('pfQ');if(q)q.value='';const f=()=>{const i=$('pfQ');if(i&&S.page=='perf'){i.focus();try{i.setSelectionRange(0,0)}catch(e){}}};Promise.resolve(showPerformers()).finally(()=>requestAnimationFrame(f));requestAnimationFrame(f)}
 async function showPerformers(opt={}){
  if(opt.tab&&PF_TABS.some(t=>t[0]==opt.tab)){S.pfTab=opt.tab;localStorage.pfTab=opt.tab}
  if('cat' in opt)S.pfCat=opt.cat||'';else if(!opt.keep)S.pfCat='';if(!pfTabsFor(S.pfCat).some(t=>t[0]==S.pfTab))S.pfTab='built';
