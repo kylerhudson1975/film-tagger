@@ -7,7 +7,24 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.3.3
+People, birth and death dates, stills and MKV titles — everything since v1.3.2.
+
+### 👥 People
+- **People** replaces the top-bar **Performers** label (same place, same shortcuts). Opening it clears the search box and results, like Home and Dashboard.
+- **Gender** on Edit profile (Female / Male / Non Binary / Transgender Female / Transgender Male / Unknown). Filled add-only from TMDB and ThePornDB; a one-off background job fills existing profiles.
+- **Find birth date:** checks ThePornDB, TMDB, Wikidata and Wikipedia against your library titles, with a review popup from Needs attention, Find all, the side panel and Edit profile. Accept saves a protected hand edit.
+- **Recently added** shows only after you pick Mainstream or Porn (filtered to that category). Cards without a photo build in the background and swap in place.
+- **Happy Birthday!** and **In memoriam** rows on People (and filtered by category). Death dates are filled add-only from Wikidata and TMDB, with a Death date field and an RIP marker on the person page.
+
+### 🎞 Stills and MKV
+- **Make stills** asks how many (10 / 20 / 40) and, when the folder already has images, whether to Add to existing or Replace (Replace moves old images into a backup subfolder; nothing is deleted). A done toast shows the count and **Open folder**.
+- **Movie MKV titles:** regular (non-adult) `.mkv` files get the container title `Title (Year)`. Written automatically when you save title/year or fetch from TMDB, from a **Write MKV title** button in Edit, or in batch under Library & Settings (dry-run first). Files are never renamed or moved.
+
+### 📊 Person page
+- Click a year's **blue** (in your library) bar on the Career timeline to show only that year's credits below. Click it again or the chip's × to clear.
 
 ## What's new in v1.3.2
 A new **Performers** section, smarter people lists and a batch of fixes.
@@ -448,7 +465,7 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
 - API keys are stored only in your local database.
 
 ## Tech
-Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed; MKVToolNix's mkvpropedit, if installed, writes MKV titles for hard-matched scenes). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
+Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed; MKVToolNix's mkvpropedit, if installed, writes MKV titles for hard-matched scenes and for regular movies as Title (Year)). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Release history
 <details><summary>Older release notes (v1.0.43 to v1.1.0)</summary>

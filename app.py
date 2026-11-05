@@ -9,7 +9,7 @@ import focus as focusmod
 import gallery as gallerymod
 import mkvtag
 
-APP_VERSION = "1.3.2"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.3.3"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
