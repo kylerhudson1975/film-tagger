@@ -61,8 +61,9 @@ TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing 
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
-             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT")]
-EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender", "deathday")
+             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT"),
+             ("ethnicity", "TEXT"), ("ethnicity_source", "TEXT"), ("ethnicity_checked_at", "REAL")]
+EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender", "deathday", "ethnicity")
 # Gender values: ThePornDB's wording (what the library already holds) plus 'Unknown' (set by hand: checked, not known).
 GENDERS = ("Female", "Male", "Non Binary", "Transgender Female", "Transgender Male", "Unknown")
 TMDB_GENDER = {1: "Female", 2: "Male", 3: "Non Binary"}  # TMDB person.gender (0 = not set)
@@ -76,6 +77,32 @@ def norm_gender(v):
     for g in GENDERS:
         if k == re.sub(r"[^a-z]", "", g.lower()): return g
     return alias.get(k)
+# Ethnicity: only what a source publishes (ThePornDB performer extras.ethnicity, Wikidata P172 'ethnic group') or a hand
+# edit; never inferred from photos, names or nationality (TMDB has no such field). Obvious variants fold into this small
+# set; a source value that maps to none of them is kept as published.
+ETHNICITIES = ("Asian", "Black", "Latina/Latino", "Middle Eastern", "Mixed", "Native American", "Pacific Islander", "South Asian", "White")
+_ETH_ALIAS = {"asian": "Asian", "eastasian": "Asian", "southeastasian": "Asian", "asianamerican": "Asian", "asianamericans": "Asian",
+              "black": "Black", "african": "Black", "africanamerican": "Black", "africanamericans": "Black", "ebony": "Black",
+              "afroamerican": "Black", "blackpeople": "Black", "blackamericans": "Black", "blackbritish": "Black", "blackbritishpeople": "Black",
+              "latin": "Latina/Latino", "latina": "Latina/Latino", "latino": "Latina/Latino", "latinx": "Latina/Latino", "hispanic": "Latina/Latino",
+              "latinalatino": "Latina/Latino", "latinolatina": "Latina/Latino", "hispanicandlatinoamericans": "Latina/Latino",
+              "hispanicamericans": "Latina/Latino", "latinoamericans": "Latina/Latino", "hispanics": "Latina/Latino", "latinos": "Latina/Latino",
+              "middleeastern": "Middle Eastern", "arab": "Middle Eastern", "arabic": "Middle Eastern", "arabs": "Middle Eastern",
+              "mixed": "Mixed", "mixedrace": "Mixed", "multiracial": "Mixed", "biracial": "Mixed", "multiracialamericans": "Mixed",
+              "nativeamerican": "Native American", "nativeamericans": "Native American", "americanindian": "Native American",
+              "nativeamericansintheunitedstates": "Native American", "pacificislander": "Pacific Islander", "pacificislanders": "Pacific Islander",
+              "indian": "South Asian", "southasian": "South Asian", "southasians": "South Asian", "desi": "South Asian",
+              "white": "White", "caucasian": "White", "caucasians": "White", "european": "White", "whitepeople": "White",
+              "whiteamericans": "White", "whitebritish": "White", "whitebritishpeople": "White", "europeanamericans": "White"}
+_ETH_NONE = {"", "other", "unknown", "na", "none", "notapplicable", "notlisted"}
+def norm_ethnicity(v, keep=True):
+    """A source / hand-typed ethnicity -> one of ETHNICITIES; an unmapped value is kept as written (keep=True) or None.
+    'Other' / 'Unknown' / '' -> None (nothing published)."""
+    t = " ".join(str(v or "").split())
+    k = re.sub(r"[^a-z]", "", t.lower())
+    if k in _ETH_NONE: return None
+    if k in _ETH_ALIAS: return _ETH_ALIAS[k]
+    return t[:60] if keep else None
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
 RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
@@ -128,6 +155,7 @@ def clean_value(k, v):
         v = {str(a): str(b) for a, b in (v or {}).items() if str(b).startswith("http")}
         return json.dumps(v) if v else None
     if k == "gender": return norm_gender(v)
+    if k == "ethnicity": return norm_ethnicity(v)
     if k == "deathday":  # YYYY-MM-DD only; anything else clears it
         m = re.match(r"\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$", str(v or ""))
         return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
@@ -200,7 +228,7 @@ def tpdb_fields(p):
                 measurements=ex.get("measurements") or None, height=ex.get("height") or None, career=career,
                 aliases=json.dumps([a for a in (p.get("aliases") or []) if a]) if p.get("aliases") else None,
                 links_json=json.dumps(links) if links else None, image_url=p.get("image") or p.get("thumbnail") or None,
-                gender=norm_gender(ex.get("gender")))
+                gender=norm_gender(ex.get("gender")), ethnicity=norm_ethnicity(ex.get("ethnicity")))
 
 def photo_locked(row):
     """A profile photo Kyle set by hand (upload, URL, crop in the Person Profile edit window) is a protected hand edit
@@ -222,6 +250,8 @@ def apply_tpdb(c, row, p, allow_image=True, fill_only=False):
     if fill_only: sets = {k: v for k, v in sets.items() if v and (k == "image_url" or not row[k])}
     if not sets.get("gender") or row["gender"]: sets.pop("gender", None)  # gender is add-only: never replaces a stored value
     if not sets.get("deathday") or row["deathday"]: sets.pop("deathday", None)  # death date is add-only
+    if not sets.get("ethnicity") or row["ethnicity"]: sets.pop("ethnicity", None)  # ethnicity is add-only, never over a hand edit
+    else: sets["ethnicity_source"] = f"theporndb {p.get('id')}"
     if not sets.get("birthday"): sets.pop("birthday", None)  # ThePornDB has none: keep one found elsewhere (Wikidata, TMDB)
     elif sets["birthday"] != row["birthday"]: sets["birth_date_source"] = f"theporndb {p.get('id')}"
     if fill_only: sets.update(tpdb_performer_id=str(p.get("id")), tpdb_fetched_at=time.time())
@@ -366,7 +396,8 @@ def init(app, tmdb, posters_dir):
     def people_search():
         """Accent/case-insensitive name search over everyone credited in the library."""
         q = fold(request.args.get("q") or "").split()
-        if not q: return jsonify(people=[], total=0)
+        eth = " ".join((request.args.get("eth") or "").split())
+        if not q and not eth: return jsonify(people=[], total=0)
         lim = min(int(request.args.get("limit", 24)), 200)
         c = C(); data = index(c)
         lib = (request.args.get("lib") or "").strip().rstrip("\\/")
@@ -374,16 +405,31 @@ def init(app, tmdb, posters_dir):
         if scoped:  # only credits on titles in the chosen library folder (same folder match as /api/films?lib=)
             ctx = {}; data = lib_scope(c, data, lib, ctx)
             left_out = sum(1 for k in data.pop(None, ()) if all(w in k for w in q))
+        attr = {r["name_norm"]: r for r in c.execute("SELECT name_norm, ethnicity, nationality FROM people WHERE merged_into IS NULL AND "
+                                                       "(COALESCE(ethnicity,'')<>'' OR COALESCE(nationality,'')<>'')")}
+        if eth:  # Ethnicity filter: exact stored value
+            data = {k: e for k, e in data.items() if k in attr and (attr[k]["ethnicity"] or "") == eth}
+            if scoped: left_out = 0
         hits = [(k, e) for k, e in data.items() if all(w in k for w in q)]
+        if q:  # also match ethnicity / nationality: a known ethnicity word matches that value exactly, else word prefixes
+            qe = norm_ethnicity(" ".join(q), keep=False)
+            have0 = {k for k, _ in hits}
+            for k, r in attr.items():
+                if k in have0 or k not in data: continue
+                if qe: ok = norm_ethnicity(r["ethnicity"]) == qe
+                else:
+                    toks = re.split(r"[^a-z0-9]+", fold(f"{r['ethnicity'] or ''} {r['nationality'] or ''}"))
+                    ok = all(any(t.startswith(w) for t in toks if t) for w in q)
+                if ok: hits.append((k, data[k]))
         def score(ke):
             k, e = ke; toks = k.split()
             return (0 if k == " ".join(q) else 1 if all(any(t.startswith(w) for t in toks) for w in q) else 2, -len(e["films"]), k)
         hits.sort(key=score)
         have = {k for k, _ in hits}
         for r in ([] if scoped else c.execute("SELECT name, name_norm FROM people WHERE source='manual'")):  # no credits, so never in a folder
-            if r["name_norm"] not in have and all(w in r["name_norm"] for w in q):
+            if not eth and r["name_norm"] not in have and all(w in r["name_norm"] for w in q):
                 hits.append((r["name_norm"], {"names": {r["name"]: 1}, "roles": {}, "films": set()}))
-        for k2, names in db.alias_groups(c).items():  # a search for any alias finds the person
+        for k2, names in (db.alias_groups(c).items() if q else ()):  # a search for any alias finds the person
             if all(w in k2 for w in q):
                 for n in names:
                     kn = fold(n)
@@ -558,6 +604,8 @@ def init(app, tmdb, posters_dir):
         c.commit()
         if not row["deathday"] and "deathday" not in sets and "deathday" not in edited and "pytest" not in __import__("sys").modules:
             threading.Thread(target=death_wikidata, args=([row["id"]],), daemon=True).start()  # Wikidata P570 (TMDB id link), off the request
+        if not row["ethnicity"] and "ethnicity" not in edited and not row["ethnicity_checked_at"] and "pytest" not in __import__("sys").modules:
+            threading.Thread(target=eth_wikidata, args=([row["id"]],), daemon=True).start()  # Wikidata P172, only when published
 
     def filmography(c, credits):
         lib = [dict(r) for r in c.execute("SELECT id, title, original_title, year, tmdb_id, poster, custom_poster FROM films")]
@@ -729,7 +777,7 @@ def init(app, tmdb, posters_dir):
             id=pid, name=row["name"], aka=[n for n in names if n != row["name"]], tmdb_person_id=tp, manual=bool(row["tmdb_manual"]),
             source=source, classic=classic, adult=adult, tpdb_performer_id=tpid, tpdb_manual=bool(row["tpdb_manual"]),
             tpdb_url=tpid and f"https://theporndb.net/performers/{tpid}", aliases=json.loads(row["aliases"] or "[]"),
-            nationality=row["nationality"], gender=row["gender"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
+            nationality=row["nationality"], ethnicity=row["ethnicity"], ethnicity_source=row["ethnicity_source"], gender=row["gender"], measurements=row["measurements"], height=row["height"], height_display=fmt_height(row["height"], height_units(c)), career=row["career"],
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
@@ -980,6 +1028,7 @@ def init(app, tmdb, posters_dir):
             confirm = col == "birthday" and v and v == row[col] and (note or col not in edited)
             if v != row[col] or confirm:
                 c.execute(f"UPDATE people SET {col}=? WHERE id=?", (v, pid)); edited.add(col)
+                if col == "ethnicity": c.execute("UPDATE people SET ethnicity_source=? WHERE id=?", ("hand edit" if v else None, pid))
                 if col == "birthday":  # optional note on where the date came from, e.g. "entered by Kyle"
                     c.execute("UPDATE people SET birth_date_source=? WHERE id=?", ((f"hand edit ({note})" if note else "hand edit") if v else None, pid))
                     if v:  # settled by hand: off the birth-date review list
@@ -1909,7 +1958,7 @@ def init(app, tmdb, posters_dir):
                    first=min(yrs) if yrs else None, last=max(yrs) if yrs else None,
                    busiest=dict(year=busy[0], n=busy[1]) if busy else None,
                    years=[dict(k=y, lib=yl[y], other=yrs[y] - yl[y]) for y in sorted(yrs)], undated=sum(1 for r in rows if not r["year"]),
-                   studios=studios, excluded=excluded, birthday=row["birthday"], deathday=row["deathday"],
+                   studios=studios, excluded=excluded, birthday=row["birthday"], deathday=row["deathday"], ethnicity=row["ethnicity"], nationality=row["nationality"],
                    excluded_why=None if not excluded else ("under_18" if _bd(row["birthday"]) else "no_birthday"))
         if not loading:
             SUMC[ck] = res
@@ -2133,6 +2182,116 @@ def init(app, tmdb, posters_dir):
     def death_job_start():
         if not DJ.get("running"): death_job()
         return jsonify(DJ)
+
+    # ---------- Ethnicity (add-only, never over a hand edit): Wikidata P172 via TMDB person id (P4985) or a linked QID,
+    # then ThePornDB performer extras.ethnicity. Nothing is inferred; people with nothing published stay empty. ----------
+    def _p172(vals, by_tmdb):
+        import birthdates as bdm
+        pat = "?p wdt:P4985 ?k . ?p wdt:P172 ?e ." if by_tmdb else "?k wdt:P172 ?e . BIND(?k AS ?p)"
+        q = (f'SELECT ?k ?p ?e ?eLabel WHERE {{ VALUES ?k {{ {vals} }} {pat} '
+             f'SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }} }}')
+        res = {}
+        for b in bdm._sparql(q)["results"]["bindings"]:
+            k = b["k"]["value"].rsplit("/", 1)[-1]; lab = (b.get("eLabel") or {}).get("value") or ""
+            if not lab or re.fullmatch(r"Q\d+", lab): continue  # no English label: skip rather than store an id
+            qid = b["p"]["value"].rsplit("/", 1)[-1]
+            res.setdefault(k, {}).setdefault(qid, set()).add(norm_ethnicity(lab))
+        out = {}
+        for k, items in res.items():
+            if len(items) != 1: continue  # several Wikidata items for one TMDB id: ambiguous, skip
+            qid, vals_ = next(iter(items.items())); vals_ = sorted(v for v in vals_ if v)
+            if vals_: out[k] = (", ".join(vals_), f"wikidata {qid}")
+        return out
+    def _save_eth(c, pid, v, src):
+        n = c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, ethnicity_checked_at=? WHERE id=? AND COALESCE(ethnicity,'')='' "
+                      "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'", (v, src, time.time(), pid)).rowcount
+        c.commit(); return n
+    def eth_wikidata(ids, gap=1.0, st=None, mark=()):
+        """Wikidata P172 pass for people ids (batched SPARQL). `mark`: ids to flag as checked when their batch had nothing."""
+        c = C(); filled = 0; mark = set(mark)
+        try:
+            rows = [r for r in c.execute("SELECT id, tmdb_person_id, birth_date_source FROM people WHERE id IN (%s)" % ",".join("?" * len(ids)), ids)] if ids else []
+            bytm = {str(r["tmdb_person_id"]): r["id"] for r in rows if (r["tmdb_person_id"] or 0) > 0}
+            byq = {}
+            for r in rows:
+                m = re.match(r"wikidata (Q\d+)", r["birth_date_source"] or "")
+                if m and r["id"] not in bytm.values(): byq[m.group(1)] = r["id"]
+            for keys, mk, tm, by in ((list(bytm), lambda k: f'"{k}"', True, bytm), (list(byq), lambda k: "wd:" + k, False, byq)):
+                for i in range(0, len(keys), 150):
+                    chunk = keys[i:i + 150]
+                    try: got = _p172(" ".join(mk(k) for k in chunk), tm)
+                    except Exception:
+                        if st is not None: st["errors"] += 1
+                        time.sleep(10); continue
+                    for k, (v, src) in got.items():
+                        if _save_eth(c, by[k], v, src):
+                            filled += 1
+                            if st is not None: st["wikidata"] += 1
+                    left = [by[k] for k in chunk if k not in got and by[k] in mark]
+                    if left: c.execute("UPDATE people SET ethnicity_checked_at=? WHERE id IN (%s)" % ",".join("?" * len(left)), [time.time()] + left); c.commit()
+                    if st is not None: st["wd_done"] += len(chunk)
+                    time.sleep(gap)
+            if st is not None:  # people with no Wikidata link at all count as looked at
+                rest = [r["id"] for r in rows if r["id"] in mark and r["id"] not in bytm.values() and r["id"] not in byq.values()]
+                if rest: c.execute("UPDATE people SET ethnicity_checked_at=? WHERE id IN (%s)" % ",".join("?" * len(rest)), [time.time()] + rest); c.commit()
+        finally: c.close()
+        return filled
+    EJ = dict(running=False, phase=None, total=0, wd_done=0, wd_total=0, tpdb_done=0, tpdb_total=0, wikidata=0, tpdb=0, errors=0, started=None, finished=None, error=None)
+    def eth_job(wait=0, tpdb_gap=1.5):
+        def work():
+            time.sleep(wait); c = C()
+            try:
+                import tpdb as tpdbmod
+                tok = db.get_setting(c, "tpdb_key", "") or ""
+                todo = [r for r in c.execute("SELECT id, tmdb_person_id, tpdb_performer_id, birth_date_source, edited_fields FROM people WHERE merged_into IS NULL "
+                                             "AND COALESCE(ethnicity,'')='' AND ethnicity_checked_at IS NULL AND (COALESCE(tmdb_person_id,0)>0 "
+                                             "OR birth_date_source LIKE 'wikidata Q%' OR (tpdb_performer_id IS NOT NULL AND tpdb_performer_id<>?))", (TPDB_NONE,))
+                        if "ethnicity" not in json.loads(r["edited_fields"] or "[]")]
+                tp = lambda r: r["tpdb_performer_id"] not in (None, "", TPDB_NONE)
+                wd = [r["id"] for r in todo if (r["tmdb_person_id"] or 0) > 0 or (r["birth_date_source"] or "").startswith("wikidata Q")]
+                EJ.update(total=len(todo), wd_total=len(wd), wd_done=0, tpdb_done=0, wikidata=0, tpdb=0, errors=0, started=time.time(), phase="wikidata")
+                eth_wikidata(wd, st=EJ, mark=[r["id"] for r in todo if not (tp(r) and tok)])
+                left = [r for r in todo if tp(r) and not c.execute("SELECT COALESCE(ethnicity,'') FROM people WHERE id=?", (r["id"],)).fetchone()[0]]
+                EJ.update(phase="theporndb", tpdb_total=len(left) if tok else 0)
+                for r in (left if tok else []):
+                    EJ["tpdb_done"] += 1
+                    try: p = tpdbmod.call_retry(f"/performers/{r['tpdb_performer_id']}", tok).get("data") or {}
+                    except Exception: EJ["errors"] += 1; time.sleep(5); continue
+                    v = norm_ethnicity((p.get("extras") or {}).get("ethnicity"))
+                    if v and _save_eth(c, r["id"], v, f"theporndb {r['tpdb_performer_id']}"): EJ["tpdb"] += 1
+                    else: c.execute("UPDATE people SET ethnicity_checked_at=? WHERE id=?", (time.time(), r["id"])); c.commit()
+                    time.sleep(tpdb_gap)
+                db.set_setting(c, "ethnicity_backfill_done", time.time()); c.commit()
+            except Exception as ex: EJ["error"] = str(ex)[:200]
+            finally: EJ.update(running=False, phase="done", finished=time.time()); c.close()
+        EJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
+    if "pytest" not in __import__("sys").modules:
+        _c = C()  # a backfill cut short by a restart picks up where it stopped (already-checked people are skipped)
+        if db.get_setting(_c, "ethnicity_backfill_started", None) and not db.get_setting(_c, "ethnicity_backfill_done", None): eth_job(wait=150)
+    def eth_counts(c):
+        data = index(c); adult = adult_film_ids(c); vals = {}; unknown = 0; srcs = {}
+        for r in c.execute("SELECT name_norm, ethnicity, ethnicity_source FROM people WHERE merged_into IS NULL"):
+            e = data.get(r["name_norm"])
+            if not e: continue
+            if not r["ethnicity"]: unknown += 1; continue
+            a = bool(e["films"] & adult); d = vals.setdefault(r["ethnicity"], dict(value=r["ethnicity"], n=0, porn=0, mainstream=0))
+            d["n"] += 1; d["porn" if a else "mainstream"] += 1
+            s = (r["ethnicity_source"] or "unknown").split(" ")[0]; srcs[s] = srcs.get(s, 0) + 1
+        return sorted(vals.values(), key=lambda d: (-d["n"], d["value"])), unknown, srcs
+    @app.get("/api/people/ethnicities")
+    def people_ethnicities():
+        """Ethnicity values held by people credited in the library, with counts (all / porn / mainstream)."""
+        c = C(); v, unknown, srcs = eth_counts(c)
+        return jsonify(values=v, unknown=unknown, sources=srcs, known=ETHNICITIES)
+    @app.get("/api/people/ethnicity_job")
+    def eth_job_status():
+        c = C(); v, unknown, srcs = eth_counts(c)
+        return jsonify(dict(EJ, with_ethnicity=sum(d["n"] for d in v), unknown=unknown, sources=srcs))
+    @app.post("/api/people/ethnicity_job")
+    def eth_job_start():
+        c = C(); db.set_setting(c, "ethnicity_backfill_started", time.time()); c.commit()
+        if not EJ.get("running"): eth_job()
+        return jsonify(EJ)
 
     # ---------- Needs attention (Performers tab): people missing key info ----------
     # Porn: everyone credited on an adult title, most scenes first (library scenes or ThePornDB total, whichever is larger).
