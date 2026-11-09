@@ -12,7 +12,7 @@ from werkzeug.serving import make_server
 from playwright.sync_api import sync_playwright
 c = db.connect(); db.set_setting(c, "scene_roots", [r"D:\S"])
 P = [("Ana Porn", "scene", "Latina/Latino"), ("Bea Porn", "scene", "White"), ("Cat Porn", "scene", "White"),
-     ("Max Main", "movie", "White"), ("Moe Main", "movie", "Black"), ("Nia Main", "movie", None)]
+     ("Dee Porn", "scene", None), ("Eve Porn", "scene", None), ("Max Main", "movie", "White"), ("Moe Main", "movie", "Black"), ("Nia Main", "movie", None)]
 for i, (n, k, e) in enumerate(P, 1):
     c.execute("INSERT INTO films(id,title,kind,cast_,release_date,year) VALUES(?,?,?,?,?,?)", (i, f"T{i}", k if k == "scene" else None, n, "2015-01-01", 2015))
     c.execute("INSERT INTO files(film_id,path) VALUES(?,?)", (i, rf"D:\S\{i}.mp4" if k == "scene" else rf"D:\Movies\{i}.mkv"))
@@ -54,6 +54,32 @@ with sync_playwright() as pw:
             if t == "fav": check(names() == ["Max Main"], f"Favorites narrowed {names()}")
     pg.click("#perfBtn"); pg.wait_for_timeout(1000)
     check(vis() and pg.locator("#pfEth").input_value() == "", "People button clears the filter")
+    # Needs ethnicity quick tagging (Porn): one at a time, keys, skip, undo, reset skips, grid
+    E = lambda n: tuple(c.execute("SELECT ethnicity, ethnicity_source FROM people WHERE id=?", (ids[n],)).fetchone())
+    pg.click("#pfCatP"); pg.wait_for_timeout(800); pg.click("#pfTabs button[data-tab=neth]"); pg.wait_for_timeout(1000)
+    check(vis(), "dropdown on Needs ethnicity")
+    check(pg.locator("#nethLeft").inner_text() == "2", "remaining 2")
+    first = pg.locator("#nethName").inner_text(); other = ({"Dee Porn", "Eve Porn"} - {first}).pop()
+    check(pg.locator("#nethBtns button").count() == 9, "9 group buttons")
+    pg.keyboard.press("2"); pg.wait_for_timeout(900)
+    check(E(first) == ("Black", "manual"), f"key 2 saved Black {E(first)}")
+    check(pg.locator("#nethName").inner_text() == other and pg.locator("#nethLeft").inner_text() == "1", "advanced")
+    pg.keyboard.press("s"); pg.wait_for_timeout(900)
+    check("Nobody left" in pg.inner_text("#pfNeth") and pg.locator("#nethReset").count() == 1, "skip -> empty, reset link")
+    pg.keyboard.press("u"); pg.wait_for_timeout(900)
+    check(pg.locator("#nethName").inner_text() == other, "undo skip brings them back")
+    pg.keyboard.press("u"); pg.wait_for_timeout(900)
+    check(E(first) == (None, None) and pg.locator("#nethName").inner_text() == first and pg.locator("#nethLeft").inner_text() == "2", f"undo tag {E(first)}")
+    pg.keyboard.press("o"); pg.keyboard.type("Romani"); pg.keyboard.press("Enter"); pg.wait_for_timeout(900)
+    check(E(first) == ("Romani", "manual"), f"Other saved {E(first)}")
+    pg.click("#nethSkipB"); pg.wait_for_timeout(800)
+    pg.on("dialog", lambda dlg: dlg.accept()); pg.click("#nethReset"); pg.wait_for_timeout(1000)
+    check(pg.locator("#nethName").inner_text() == other, "reset skips")
+    pg.click("#nethBar a:has-text('Show as a grid')"); pg.wait_for_timeout(1000)
+    check(pg.locator("#pfNeth.neth-grid select").count() == 1, "grid with a picker")
+    pg.select_option("#pfNeth.neth-grid select", "Asian"); pg.wait_for_timeout(900)
+    check(E(other) == ("Asian", "manual") and pg.locator("#nethLeft").inner_text() == "0", f"grid tag {E(other)}")
+    pg.evaluate("localStorage.nethMode='one'")
     check(not errs, f"page errors {errs}")
     br.close()
 srv.shutdown()

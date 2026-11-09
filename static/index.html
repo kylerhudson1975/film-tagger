@@ -66,7 +66,7 @@ th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none
 .pp a{color:#8cf}.ppl{padding:10px 14px 0}.ppl h3{margin:4px 0 8px}.pcards{display:flex;flex-wrap:wrap;gap:8px}
 .ppfav{background:none;border:0;padding:0 4px;font-size:.9em;cursor:pointer;vertical-align:middle;line-height:1}.ppfav:hover{transform:scale(1.15)}.ppfav:hover .st-off{opacity:1}.pfs{font-size:.9em}
 .st-on{color:#ff00ff;text-shadow:0 0 3px #ff00ffaa,0 0 8px #ff00ff66;font-variant-emoji:text}.st-off{color:#f5c518;opacity:.7;font-variant-emoji:text}
-.pf{padding:14px 14px 0}.pf-h{margin:0 0 10px;font-size:22px;letter-spacing:.04em}.pf-bar{display:flex;gap:10px;margin:0 0 10px}.pf-bar input{flex:1;max-width:560px;font-size:14px;padding:7px 10px}.pf-bar select{font-size:13px;padding:5px 6px;max-width:220px}
+.pf{padding:14px 14px 0}.pf-h{margin:0 0 10px;font-size:22px;letter-spacing:.04em}.pf-bar{display:flex;gap:10px;margin:0 0 10px}.pf-bar input{flex:1;max-width:560px;font-size:14px;padding:7px 10px}.neth-one{display:flex;gap:18px;align-items:flex-start;margin:6px 0 12px}.neth-ph{width:200px;height:270px;border-radius:8px;overflow:hidden;background:#2a2f3a;display:flex;align-items:center;justify-content:center;font-size:42px;flex:none}.neth-ph img{width:100%;height:100%;object-fit:cover}.neth-btns{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.neth-btns button{min-width:120px}.neth-btns kbd,.neth-k{opacity:.6;font-size:.85em;margin-right:4px}.neth-grid .pcard select{width:100%;margin-top:4px}.pf-bar select{font-size:13px;padding:5px 6px;max-width:220px}
 .pf-cats{display:flex;gap:6px}.pf-cats button{font-size:13.5px;padding:6px 14px}.pf-cats button.on{border-color:var(--a);color:var(--t);background:var(--p2);font-weight:600;box-shadow:inset 0 0 0 1px var(--a)}
 .pf-need-f{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}.pf-need-f button{font-size:12.5px;padding:4px 10px}.pf-need-f button.on{border-color:var(--a);background:var(--p2);font-weight:600}.pf-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}.pf-badge{font-size:11px;padding:1px 6px;border-radius:9px;background:#5a2a2a;color:#ffd0d0}
 .fb-btn{font-size:12px;padding:3px 9px;margin-top:6px}.fb-box{background:var(--p1,#1b1d22);border:1px solid var(--b,#333);border-radius:8px;padding:14px;max-width:1000px;width:100%}.fb-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}.fb-p{border-top:1px solid var(--b,#333);padding:10px 0}.fb-t{margin-top:6px;width:100%}.fb-f{font-size:11px;padding:1px 6px;border-radius:9px;background:#444;margin-right:4px;white-space:nowrap}.fb-f.bad{background:#6a2020;color:#ffd0d0}.fb-f.warn{background:#5a4a10;color:#ffe9a0}.fb-acc[disabled]{opacity:.45;cursor:not-allowed}.fb-spin{display:inline-block;width:14px;height:14px;border:2px solid #888;border-top-color:transparent;border-radius:50%;animation:fbs 0.8s linear infinite}@keyframes fbs{to{transform:rotate(360deg)}}
@@ -1260,7 +1260,7 @@ function ppBuiltTable(){const B=bList(),mm=pfMain(),qq=ppQ(),grp=curGrp(),sorts=
  return `<div id=ppBuilt>${ctl}${note}${shown?secs:'<p class=muted>No built profile matches the search.</p>'}${foot}</div>`}
 /* ---------- People page (top bar; was Performers): Favorites | Built profiles | Not opened yet | All people | Studios, with a side
    summary panel (/api/people/<id>/summary). Reuses the People lists above; their search box is #pfQ here. ---------- */
-const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['need','Needs attention'],['all','All people'],['studios','Studios']];
+const PF_TABS=[['fav','Favorites'],['built','Built profiles'],['unop','Not opened yet'],['need','Needs attention'],['neth','Needs ethnicity'],['all','All people'],['studios','Studios']];
 S.pfTab=PF_TABS.some(t=>t[0]==localStorage.pfTab)?localStorage.pfTab:'fav';S.pfCat='';S.builtM=null;S.recent={};
 /* Recently added: a row of small cards for the cast of the titles added most recently (/api/people/recent), only at
    the top of a category (Mainstream or Porn, filtered to it), not on the opening screen; hidden while a search is active. */
@@ -1358,12 +1358,13 @@ async function showPerformers(opt={}){
  if(!opt.keep){S.pfSel=null;S.pfSum=null;clearTimeout(S.pfPollT)}  // opening / resetting People never keeps an old side panel
  pfCatDraw();pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
  await pfFetch();if(opt.scroll)$('content').scrollTop=opt.scroll}
-function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&(S.pfEth?S.need[S.pfCat].people.filter(pfEthOk).length:S.need[S.pfCat].total)):k=='unop'?(S.unop&&S.unop.filter(pfEthOk).length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&(S.pfAll.q||S.pfAll.eth)?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
+function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&(S.pfEth?S.need[S.pfCat].people.filter(pfEthOk).length:S.need[S.pfCat].total)):k=='neth'?(S.neth[S.pfCat]&&S.neth[S.pfCat].remaining)
+  :k=='unop'?(S.unop&&S.unop.filter(pfEthOk).length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&(S.pfAll.q||S.pfAll.eth)?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){if(S.pfTab!==k&&S.pfSel)pfClose();S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
  if(!S.pfCat){setTimeout(pfPhotoQueue,0);el.innerHTML=ppQ()||S.pfEth?pfAllList():pfBdayRow()+pfRipRow()+'<div id=pfEmpty><p class=muted>Pick <b>Mainstream</b> or <b>Porn</b> to see built profiles, or type a name to search everyone.</p></div>';pfMark();return}
- el.innerHTML=pfBdayRow()+pfRecentRow()+pfRipRow()+(t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():pfAllList());pfMark();setTimeout(pfPhotoQueue,0)}
+ el.innerHTML=pfBdayRow()+pfRecentRow()+pfRipRow()+(t=='fav'?ppFavList():(t=='built'||t=='studios')?ppBuiltTable():t=='unop'?ppUnopTable():t=='need'?pfNeedList():t=='neth'?pfNethList():pfAllList());pfMark();setTimeout(pfPhotoQueue,0)}
 function pfMark(){document.querySelectorAll('#pfList [data-pid]').forEach(x=>x.classList.toggle('sel',+x.dataset.pid===S.pfSel))}
 async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRowsLoad();if(!cat){if(ppQ()||S.pfEth)await pfAllSearch().then(()=>{if(S.page=='perf'&&!S.pfCat)pfDraw()});return}const done=k=>{if(S.page!='perf')return;pfTabsDraw();if(S.pfTab==k||(k=='built'&&S.pfTab=='studios')){const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}};
  jobs.push(api('/api/people/favorites').then(j=>{S.favs=j.people},()=>{S.favs=S.favs||[]}).then(()=>{done('fav');setTimeout(pfPrefetch,400)}));
@@ -1372,9 +1373,48 @@ async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRo
  if(t=='need')jobs.push(api('/api/people/needs_attention?cat='+cat).then(j=>{S.need[cat]=j},()=>{S.need[cat]=S.need[cat]||{people:[],total:0,counts:{}}}).then(()=>done('need')));
  if(t=='unop'&&cat=='porn')jobs.push(api('/api/people/unopened').then(j=>{S.unop=j.people;S.unopJob=j.job},()=>{S.unop=S.unop||[]}).then(()=>done('unop')));
  if(t=='all')jobs.push(pfAllSearch().then(()=>done('all')));
+ if(t=='neth')jobs.push(pfNethLoad(cat).then(()=>done('neth')));
  await Promise.allSettled(jobs)}
 async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim(),eth=S.pfEth||'';if(!q&&!eth){S.pfAll={q:'',people:[],total:0};return}
  try{const a={q,limit:eth&&!q?1000:120};if(eth)a.eth=eth;const j=await api('/api/people/search?'+new URLSearchParams(a));if((($('pfQ')||{}).value||'').trim()===q&&(S.pfEth||'')===eth)S.pfAll={q,eth,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,eth,people:[],total:0,error:true}}}
+/* Needs ethnicity (People → Mainstream / Porn): tag people with no ethnicity by hand, photo and most credits first. One at a
+   time (keys 1-9 = the groups, O = Other, S = Skip, U = Undo) or a grid. A tag is a normal Edit profile save (protected,
+   source 'manual'); Skip is remembered until 'Reset skips'. Nothing is suggested or guessed. */
+S.neth={};S.nethMode=localStorage.nethMode=='grid'?'grid':'one';S.nethUndo=[];
+async function pfNethLoad(cat){try{const j=await api('/api/people/needs_ethnicity?'+new URLSearchParams({cat,limit:S.nethMode=='grid'?120:40}));S.neth[cat]=j}catch(e){S.neth[cat]=S.neth[cat]||{people:[],remaining:0,skipped:0,error:true}}}
+function nethRedraw(){if(S.page=='perf'&&S.pfTab=='neth'){pfTabsDraw();const st=$('content').scrollTop;pfDraw();$('content').scrollTop=st}}
+function nethDone(cat,id){const d=S.neth[cat];if(!d)return null;const i=d.people.findIndex(p=>p.id===id);if(i<0)return null;const p=d.people.splice(i,1)[0];d.remaining=Math.max(0,d.remaining-1);
+ if(d.people.length<8&&d.remaining>d.people.length)pfNethLoad(cat).then(nethRedraw);clearTimeout(S.nethEthT);S.nethEthT=setTimeout(pfEthLoad,2500);return p}
+async function nethTag(id,val){const cat=S.pfCat;val=(val||'').trim();if(!val)return;
+ try{await api('/api/person/'+id+'/edit',{method:'POST',body:{ethnicity:val}})}catch(e){return toast((e&&e.error)||'Could not save')}
+ const p=nethDone(cat,id);if(p){S.nethUndo.push({kind:'tag',p,cat,val});toast(`${p.name}: ${val}`)}nethRedraw()}
+async function nethSkip(id){const cat=S.pfCat;try{await api('/api/people/'+id+'/eth_skip',{method:'POST',body:{skip:true}})}catch(e){return toast('Could not skip')}
+ const d=S.neth[cat];const p=nethDone(cat,id);if(p){S.nethUndo.push({kind:'skip',p,cat});if(d)d.skipped=(d.skipped||0)+1}nethRedraw()}
+async function nethUndo(){const u=S.nethUndo.pop();if(!u)return toast('Nothing to undo');
+ try{if(u.kind=='tag')await api('/api/people/'+u.p.id+'/eth_undo',{method:'POST'});else await api('/api/people/'+u.p.id+'/eth_skip',{method:'POST',body:{skip:false}})}catch(e){S.nethUndo.push(u);return toast((e&&e.error)||'Could not undo')}
+ const d=S.neth[u.cat];if(d){d.people.unshift(u.p);d.remaining++;if(u.kind=='skip')d.skipped=Math.max(0,(d.skipped||0)-1)}clearTimeout(S.nethEthT);S.nethEthT=setTimeout(pfEthLoad,2500);toast('Undone: '+u.p.name);nethRedraw()}
+async function nethReset(){const cat=S.pfCat;if(!confirm('Bring back everyone you skipped here?'))return;try{const r=await api('/api/people/eth_skips/reset',{method:'POST',body:{cat}});toast(`${dN(r.reset)} skipped ${r.reset==1?'person':'people'} back in the list`)}catch(e){return toast('Could not reset')}
+ await pfNethLoad(cat);nethRedraw()}
+function nethMode(m){S.nethMode=m;localStorage.nethMode=m;pfNethLoad(S.pfCat).then(nethRedraw)}
+function nethOther(id){const i=$('nethOther');if(i&&i.value.trim())nethTag(id,i.value)}
+function pfNethList(){const d=S.neth[S.pfCat];if(!d)return '<div id=pfNeth class=muted>Loading…</div>';const u=S.pfCat=='porn'?['scene','scenes']:['title','titles'];
+ const last=S.nethUndo[S.nethUndo.length-1];
+ const bar=`<div class=muted style="margin:0 0 8px" id=nethBar><b id=nethLeft>${dN(d.remaining)}</b> ${d.remaining==1?'person':'people'} with no ethnicity here${d.skipped?` · ${dN(d.skipped)} skipped <a href="#" id=nethReset onclick="nethReset();return false">Reset skips</a>`:''} · <a href="#" onclick="nethMode('${S.nethMode=='one'?'grid':'one'}');return false">${S.nethMode=='one'?'Show as a grid':'One at a time'}</a>${last?` · <a href="#" id=nethUndoL onclick="nethUndo();return false">Undo ${esc(last.p.name)} (U)</a>`:''}</div>`;
+ if(!d.people.length)return `<div id=pfNeth>${bar}<p class=muted>${d.remaining?'Loading more…':'Nobody left to tag here.'}</p></div>`;
+ if(S.nethMode=='grid')return `<div id=pfNeth class=neth-grid>${bar}<div class=pcards>${d.people.map(p=>`<div class=pcard data-pid="${p.id}"><div class=pph onclick="pfOpen(${p.id})">${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0"><b onclick="pfOpen(${p.id})">${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.nationality?esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]}</div>
+  <select onchange="if(this.value=='~'){const v=prompt('Ethnicity for ${jsq(p.name)}');if(v)nethTag(${p.id},v);else this.value=''}else nethTag(${p.id},this.value)"><option value="">Ethnicity…</option>${ETHNICITIES.map(g=>`<option>${g}</option>`).join('')}<option value="~">Other…</option></select> <a href="#" onclick="nethSkip(${p.id});return false">Skip</a></div></div>`).join('')}</div></div>`;
+ const p=d.people[0];
+ return `<div id=pfNeth>${bar}<div class=neth-one data-pid="${p.id}"><div class=neth-ph>${p.photo?`<img src="${esc(p.photo)}" alt="">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0;flex:1">
+ <h2 style="margin:0 0 4px"><a href="#" onclick="pfOpen(${p.id});return false" id=nethName>${esc(p.name)}</a>${favStar(p)}</h2>
+ <div class=muted>${p.nationality?'Nationality: '+esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]} in your library</div>
+ <div class=neth-btns id=nethBtns>${ETHNICITIES.map((g,i)=>`<button data-g="${g}" onclick="nethTag(${p.id},'${jsq(g)}')"><span class=neth-k>${i+1}</span>${g}</button>`).join('')}</div>
+ <div><input id=nethOther placeholder="Other (O)…" style="width:220px" onkeydown="if(event.key=='Enter'){event.preventDefault();nethOther(${p.id})}else if(event.key=='Escape')this.blur()"> <button onclick="nethOther(${p.id})">Save other</button> <button id=nethSkipB onclick="nethSkip(${p.id})"><span class=neth-k>S</span>Skip</button></div>
+ <p class=muted style="font-size:12px;margin-top:10px">Keys: 1–${ETHNICITIES.length} pick a group · O type another · S skip · U undo. Saved as your own edit, so no automatic fill ever changes it.</p></div></div>
+ ${d.people.length>1?`<h4 style="margin:4px 0">Up next</h4><div class=pf-rrow>${d.people.slice(1,9).map(q=>`<div class=pf-rc data-pid="${q.id}" onclick="pfOpen(${q.id})"><div class=pph>${q.photo?`<img loading=lazy src="${esc(q.photo)}">`:`<span>${initials(q.name)}</span>`}</div><b>${esc(q.name)}</b></div>`).join('')}</div>`:''}</div>`}
+document.addEventListener('keydown',e=>{if(S.page!='perf'||S.pfTab!='neth'||!S.pfCat||e.ctrlKey&&e.key!='z'||e.altKey||e.metaKey)return;const t=e.target,tag=(t&&t.tagName)||'';if(/INPUT|TEXTAREA|SELECT/.test(tag)||$('modal').style.display=='flex'||$('fbOv'))return;
+ const d=S.neth[S.pfCat],k=e.key.toLowerCase();if(k=='u'||(e.ctrlKey&&k=='z')){e.preventDefault();nethUndo();return}
+ if(S.nethMode!='one'||!d||!d.people.length)return;const p=d.people[0];
+ if(/^[1-9]$/.test(k)&&ETHNICITIES[+k-1]){e.preventDefault();nethTag(p.id,ETHNICITIES[+k-1])}else if(k=='s'){e.preventDefault();nethSkip(p.id)}else if(k=='o'){e.preventDefault();const i=$('nethOther');if(i)i.focus()}});
 /* Ethnicity filter (People page): values held by people in the library, with counts for the current Mainstream / Porn choice */
 S.pfEth='';S.ethV=null;
 function pfEthLoad(){api('/api/people/ethnicities').then(j=>{S.ethV=j.values||[];pfEthDraw()},()=>{})}
