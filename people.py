@@ -81,7 +81,7 @@ def norm_gender(v):
 # edit; never inferred from photos, names or nationality (TMDB has no such field). Obvious variants fold into this small
 # set; a source value that maps to none of them is kept as published.
 ETHNICITIES = ("Asian", "Black", "Latina/Latino", "Middle Eastern", "Mixed", "Native American", "Pacific Islander", "South Asian", "White")
-_ETH_ALIAS = {"asian": "Asian", "eastasian": "Asian", "southeastasian": "Asian", "asianamerican": "Asian", "asianamericans": "Asian",
+_ETH_ALIAS = {"asian": "Asian", "asianpeople": "Asian", "asians": "Asian", "eastasian": "Asian", "southeastasian": "Asian", "asianamerican": "Asian", "asianamericans": "Asian",
               "black": "Black", "african": "Black", "africanamerican": "Black", "africanamericans": "Black", "ebony": "Black",
               "afroamerican": "Black", "blackpeople": "Black", "blackamericans": "Black", "blackbritish": "Black", "blackbritishpeople": "Black",
               "latin": "Latina/Latino", "latina": "Latina/Latino", "latino": "Latina/Latino", "latinx": "Latina/Latino", "hispanic": "Latina/Latino",
@@ -92,7 +92,7 @@ _ETH_ALIAS = {"asian": "Asian", "eastasian": "Asian", "southeastasian": "Asian",
               "nativeamerican": "Native American", "nativeamericans": "Native American", "americanindian": "Native American",
               "nativeamericansintheunitedstates": "Native American", "pacificislander": "Pacific Islander", "pacificislanders": "Pacific Islander",
               "indian": "South Asian", "southasian": "South Asian", "southasians": "South Asian", "desi": "South Asian",
-              "white": "White", "caucasian": "White", "caucasians": "White", "european": "White", "whitepeople": "White",
+              "white": "White", "caucasian": "White", "caucasians": "White", "european": "White", "europeanpeople": "White", "europeans": "White", "whitepeople": "White",
               "whiteamericans": "White", "whitebritish": "White", "whitebritishpeople": "White", "europeanamericans": "White"}
 _ETH_NONE = {"", "other", "unknown", "na", "none", "notapplicable", "notlisted"}
 def norm_ethnicity(v, keep=True):
@@ -103,6 +103,9 @@ def norm_ethnicity(v, keep=True):
     if k in _ETH_NONE: return None
     if k in _ETH_ALIAS: return _ETH_ALIAS[k]
     return t[:60] if keep else None
+def eth_parts(v):
+    """A stored ethnicity -> its values ('Irish Americans, White' -> ['Irish Americans', 'White']; several = several sources' groups)."""
+    return [x.strip() for x in str(v or "").split(",") if x.strip()]
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
 RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
@@ -155,7 +158,7 @@ def clean_value(k, v):
         v = {str(a): str(b) for a, b in (v or {}).items() if str(b).startswith("http")}
         return json.dumps(v) if v else None
     if k == "gender": return norm_gender(v)
-    if k == "ethnicity": return norm_ethnicity(v)
+    if k == "ethnicity": return ", ".join(dict.fromkeys(x for x in map(norm_ethnicity, eth_parts(v)) if x)) or None
     if k == "deathday":  # YYYY-MM-DD only; anything else clears it
         m = re.match(r"\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$", str(v or ""))
         return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}" if m else None
@@ -408,7 +411,7 @@ def init(app, tmdb, posters_dir):
         attr = {r["name_norm"]: r for r in c.execute("SELECT name_norm, ethnicity, nationality FROM people WHERE merged_into IS NULL AND "
                                                        "(COALESCE(ethnicity,'')<>'' OR COALESCE(nationality,'')<>'')")}
         if eth:  # Ethnicity filter: exact stored value
-            data = {k: e for k, e in data.items() if k in attr and (attr[k]["ethnicity"] or "") == eth}
+            data = {k: e for k, e in data.items() if k in attr and eth in eth_parts(attr[k]["ethnicity"])}
             if scoped: left_out = 0
         hits = [(k, e) for k, e in data.items() if all(w in k for w in q)]
         if q:  # also match ethnicity / nationality: a known ethnicity word matches that value exactly, else word prefixes
@@ -416,7 +419,7 @@ def init(app, tmdb, posters_dir):
             have0 = {k for k, _ in hits}
             for k, r in attr.items():
                 if k in have0 or k not in data: continue
-                if qe: ok = norm_ethnicity(r["ethnicity"]) == qe
+                if qe: ok = qe in [norm_ethnicity(x) for x in eth_parts(r["ethnicity"])]
                 else:
                     toks = re.split(r"[^a-z0-9]+", fold(f"{r['ethnicity'] or ''} {r['nationality'] or ''}"))
                     ok = all(any(t.startswith(w) for t in toks if t) for w in q)
@@ -2269,24 +2272,26 @@ def init(app, tmdb, posters_dir):
         _c = C()  # a backfill cut short by a restart picks up where it stopped (already-checked people are skipped)
         if db.get_setting(_c, "ethnicity_backfill_started", None) and not db.get_setting(_c, "ethnicity_backfill_done", None): eth_job(wait=150)
     def eth_counts(c):
-        data = index(c); adult = adult_film_ids(c); vals = {}; unknown = 0; srcs = {}
+        data = index(c); adult = adult_film_ids(c); vals = {}; unknown = 0; srcs = {}; known = 0
         for r in c.execute("SELECT name_norm, ethnicity, ethnicity_source FROM people WHERE merged_into IS NULL"):
             e = data.get(r["name_norm"])
             if not e: continue
             if not r["ethnicity"]: unknown += 1; continue
-            a = bool(e["films"] & adult); d = vals.setdefault(r["ethnicity"], dict(value=r["ethnicity"], n=0, porn=0, mainstream=0))
-            d["n"] += 1; d["porn" if a else "mainstream"] += 1
+            a = bool(e["films"] & adult); known += 1
+            for v in eth_parts(r["ethnicity"]):  # someone listed as 'Black, White' counts under both
+                d = vals.setdefault(v, dict(value=v, n=0, porn=0, mainstream=0, main=v in ETHNICITIES))
+                d["n"] += 1; d["porn" if a else "mainstream"] += 1
             s = (r["ethnicity_source"] or "unknown").split(" ")[0]; srcs[s] = srcs.get(s, 0) + 1
-        return sorted(vals.values(), key=lambda d: (-d["n"], d["value"])), unknown, srcs
+        return sorted(vals.values(), key=lambda d: (not d["main"], -d["n"], d["value"])), unknown, srcs, known
     @app.get("/api/people/ethnicities")
     def people_ethnicities():
         """Ethnicity values held by people credited in the library, with counts (all / porn / mainstream)."""
-        c = C(); v, unknown, srcs = eth_counts(c)
-        return jsonify(values=v, unknown=unknown, sources=srcs, known=ETHNICITIES)
+        c = C(); v, unknown, srcs, known = eth_counts(c)
+        return jsonify(values=v, people_with=known, unknown=unknown, sources=srcs, main=ETHNICITIES)
     @app.get("/api/people/ethnicity_job")
     def eth_job_status():
-        c = C(); v, unknown, srcs = eth_counts(c)
-        return jsonify(dict(EJ, with_ethnicity=sum(d["n"] for d in v), unknown=unknown, sources=srcs))
+        c = C(); v, unknown, srcs, known = eth_counts(c)
+        return jsonify(dict(EJ, with_ethnicity=known, unknown=unknown, sources=srcs))
     @app.post("/api/people/ethnicity_job")
     def eth_job_start():
         c = C(); db.set_setting(c, "ethnicity_backfill_started", time.time()); c.commit()

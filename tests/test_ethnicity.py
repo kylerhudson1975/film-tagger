@@ -83,7 +83,13 @@ assert S(eth="White") == ["Bea White", "Cy Hand"] and S(q="cy", eth="White") == 
 # counts per value
 v = cl.get("/api/people/ethnicities").json
 assert {x["value"]: x["n"] for x in v["values"]} == {"White": 2, "Latina/Latino": 1, "Black": 1}, v
-assert v["unknown"] == 2 and v["sources"] == {"theporndb": 2, "hand": 1, "wikidata": 1}, v
+assert v["unknown"] == 2 and v["people_with"] == 4 and v["sources"] == {"theporndb": 2, "hand": 1, "wikidata": 1}, v
+# several values (Wikidata lists ancestry groups): each counts, the filter and a known word find the person
+cl.post(f"/api/person/{ids['Flo Ruiz']}/edit", json={"ethnicity": "Irish Americans, white"})
+assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Irish Americans, White"
+assert "Flo Ruiz" in S(q="white") and "Flo Ruiz" in S(eth="White") and S(eth="Irish Americans") == ["Flo Ruiz"] and S(q="irish") == ["Flo Ruiz"]
+v = {x["value"]: x["n"] for x in cl.get("/api/people/ethnicities").json["values"]}
+assert v["White"] == 3 and v["Irish Americans"] == 1, v
 # summary panel carries it
 assert cl.get(f"/api/people/{ids['Di Wiki']}/summary").json["ethnicity"] == "Black"
 print("ok")

@@ -1378,7 +1378,8 @@ async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim(),eth=S.p
 S.pfEth='';S.ethV=null;
 function pfEthLoad(){api('/api/people/ethnicities').then(j=>{S.ethV=j.values||[];pfEthDraw()},()=>{})}
 function pfEthDraw(){const el=$('pfEth');if(!el)return;const k=S.pfCat||'n',l=(S.ethV||[]).filter(v=>v[k]>0||v.value===S.pfEth);el.style.display=(S.ethV&&S.ethV.length)||S.pfEth?'':'none';
- el.innerHTML='<option value="">Any ethnicity</option>'+l.map(v=>`<option value="${esc(v.value)}"${v.value===S.pfEth?' selected':''}>${esc(v.value)} (${dN(v[k])})</option>`).join('')}
+ const o=v=>`<option value="${esc(v.value)}"${v.value===S.pfEth?' selected':''}>${esc(v.value)} (${dN(v[k])})</option>`,m=l.filter(v=>v.main),x=l.filter(v=>!v.main);
+ el.innerHTML='<option value="">Any ethnicity</option>'+m.map(o).join('')+(x.length?'<option disabled>── as the source lists it ──</option>'+x.map(o).join(''):'')}
 function pfEthSet(v){S.pfEth=v||'';if(S.pfCat&&S.pfEth&&S.pfTab!='all'){pfTab('all');return}pfAllSearch().then(()=>{pfTabsDraw();pfDraw()})}
 function pfAllList(){const a0=S.pfAll,a=a0&&(a0.q||a0.eth)&&S.pfCat?{...a0,people:a0.people.filter(pfInCat)}:a0;if(a!==a0)a.total=a.people.length;
  if(!a||!(a.q||a.eth))return '<div id=pfAll><p class=muted>Type a name in the search box to find anyone credited in your library (films and scenes).</p></div>';
