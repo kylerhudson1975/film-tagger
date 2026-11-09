@@ -43,17 +43,36 @@ def download_ffmpeg():
     return p, "downloaded (gyan.dev essentials)"
 
 def probe(ffmpeg, video):
-    """-> (seconds, width, height, fps) from ffmpeg's banner; any part may be None."""
+    """-> (seconds, width, height, fps, sar) from ffmpeg's banner; any part may be None.
+    sar is the sample/pixel aspect ratio as a float (1.0 for square pixels). Used so stills and the
+    sharpness preview follow display aspect (DAR = width/height * sar), not the storage shape."""
     r = subprocess.run([ffmpeg, "-hide_banner", "-i", video], capture_output=True, text=True, errors="replace", creationflags=NOWIN, timeout=120)
     e = r.stderr or ""
     m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", e)
     d = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else None
     v = re.search(r"Stream #[^\n]*Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b", e)
     f = re.search(r"Stream #[^\n]*Video:[^\n]*?([\d.]+) (?:fps|tbr)", e)
-    return d, (int(v.group(1)) if v else None), (int(v.group(2)) if v else None), (float(f.group(1)) if f else None)
+    sar = None
+    sm = re.search(r"\bSAR\s+(\d+)\s*:\s*(\d+)\b", e)
+    if sm and int(sm.group(2)):
+        sar = int(sm.group(1)) / int(sm.group(2))
+    else:
+        dm = re.search(r"\bDAR\s+(\d+)\s*:\s*(\d+)\b", e)
+        if dm and v and int(dm.group(2)) and int(v.group(2)):
+            # DAR = (width/height)*SAR  =>  SAR = DAR * height / width
+            sar = (int(dm.group(1)) / int(dm.group(2))) * int(v.group(2)) / int(v.group(1))
+    return d, (int(v.group(1)) if v else None), (int(v.group(2)) if v else None), (float(f.group(1)) if f else None), sar
 
 def duration(ffmpeg, video):
     return probe(ffmpeg, video)[0]
+
+def display_size(w, h, sar=None):
+    """Square-pixel (display) width x height for storage size w x h and sample aspect ratio sar."""
+    if not w or not h: return None, None
+    s = float(sar) if sar and sar > 0 else 1.0
+    dw = max(2, int(round(w * s / 2)) * 2)
+    dh = max(2, int(h // 2) * 2)
+    return dw, dh
 
 # Sharp stills: around each spot, CANDS frames over WIN seconds are decoded small (SW px wide, grey) and scored; the
 # sharpest usable one is then saved at full resolution. Frames are only ever handled as numbers here.
@@ -87,10 +106,11 @@ def candidates(ff, video, t0, win, n, fps, sw, sh):
 
 def save_frame(ff, video, t0, idx, out):
     """Full-resolution JPG of frame `idx` after the same seek used for scoring (so it is the very frame scored).
-    Anamorphic video (non-square pixels, e.g. 2160x2160 stored with SAR 16:9) is stretched to square pixels so the JPG
-    keeps the display aspect ratio (3840x2160), never the storage shape."""
+    Stills keep the video's *display* aspect ratio, never a forced square and never the anamorphic storage shape:
+    non-square pixels (SAR) are scaled to square pixels (e.g. 2160x2160 SAR 16:9 -> 3840x2160), with no crop or
+    letterbox. ffmpeg's default autorotate also applies phone-video rotation metadata before this filter."""
     subprocess.run([ff, "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{t0:.3f}", "-i", video, "-an", "-sn",
-                    "-vf", f"select='eq(n\\,{idx})',scale='trunc(iw*sar/2)*2':ih:flags=lanczos,setsar=1", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "2", out],
+                    "-vf", f"select='eq(n\\,{idx})',scale='trunc(iw*sar/2)*2':'trunc(ih/2)*2':flags=lanczos,setsar=1", "-fps_mode", "passthrough", "-frames:v", "1", "-q:v", "2", out],
                    capture_output=True, creationflags=NOWIN, timeout=300)
     return os.path.isfile(out) and os.path.getsize(out) > 0
 
@@ -132,11 +152,13 @@ def run(fid, video, dest, done=None, count=COUNT, start_no=1):
         ff, src = find_ffmpeg()
         if not ff: ff, src = download_ffmpeg()
         JOB.update(source=src, phase="reading video")
-        d, w, h, fps = probe(ff, video)
+        d, w, h, fps, sar = probe(ff, video)
         if not d or d < 5: raise RuntimeError("Could not read the video's length")
         fps = fps if fps and 5 <= fps <= 120 else 24.0
-        sw = SW if not w or w >= SW else w - w % 2
-        sh = max(2, int(round(sw * h / w / 2)) * 2) if w and h else (sw * 9 // 16) // 2 * 2
+        dw, dh = display_size(w, h, sar)
+        sw = SW if not dw or dw >= SW else dw - dw % 2
+        # Sharpness preview uses display aspect (after SAR), so anamorphic video is not scored as a square.
+        sh = max(2, int(round(sw * dh / dw / 2)) * 2) if dw and dh else (sw * 9 // 16) // 2 * 2
         spots = [d * (SKIP + (1 - 2 * SKIP) * i / (COUNT - 1)) for i in range(COUNT)]
         gap = d * (1 - 2 * SKIP) / (COUNT - 1)
         JOB["phase"] = "finding sharp frames"; picks = []
