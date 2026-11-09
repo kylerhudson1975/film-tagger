@@ -383,8 +383,11 @@ function filterPerson(name,role=''){if(name)return openPersonByName(name);S.keep
 const MPAA_ALL=['G','PG','PG-13','R','NC-17','X','NR','Unrated','TV-Y','TV-Y7','TV-G','TV-PG','TV-14','TV-MA'];
 function mpaaOpts(v){v=v||'';const l=['',...MPAA_ALL];if(v&&!l.includes(v))l.push(v);return l.map(m=>`<option value="${esc(m)}" ${m==v?'selected':''}>${m?esc(m):'—'}</option>`).join('')}
 function castRoleMap(f){let r=f&&f.cast_roles;if(!r)return{};if(typeof r==='string'){try{r=JSON.parse(r)||{}}catch(e){return{}}}return(typeof r==='object'&&r)?r:{}}
-function peopleField(f,k,role){const v=f[k]||'',names=v.split(',').map(s=>s.trim()).filter(Boolean),roles=role==='cast'?castRoleMap(f):{};
- const link=n=>{const ch=(roles[n]||'').trim();const tip=ch?'as '+ch:'';
+function splitPeople(v){if(!v)return[];if(Array.isArray(v))return v.map(x=>String(x||'').trim()).filter(Boolean);const mark='\uE000';const s=String(v).replace(/,\s*((?:Jr|Sr)\.?|II|III|IV)(?=,|$)/gi,(_,suf)=>mark+suf);return s.split(',').map(x=>x.trim().replaceAll(mark,', ')).filter(Boolean)}
+function peopleNameKey(s){return String(s||'').normalize('NFD').replace(/\p{M}/gu,'').toLowerCase().replace(/\bjunior\b/g,'jr').replace(/\bsenior\b/g,'sr').replace(/[^a-z0-9]+/g,'')}
+function castRoleFor(roles,name){if(!roles)return'';const exact=(roles[name]||'').trim();if(exact)return exact;const k=peopleNameKey(name);for(const[n,ch]of Object.entries(roles)){const v=String(ch||'').trim();if(v&&peopleNameKey(n)===k)return v}return''}
+function peopleField(f,k,role){const v=f[k]||'',names=role==='cast'?splitPeople(v):v.split(',').map(s=>s.trim()).filter(Boolean),roles=role==='cast'?castRoleMap(f):{};
+ const link=n=>{const ch=role==='cast'?castRoleFor(roles,n):(roles[n]||'').trim();const tip=ch?'as '+ch:'';
   return `<a href="#"${tip?` class=cast-tip data-tip="${esc(tip)}" title="${esc(tip)}"`:` title="Open ${esc(n)}'s page"`} onclick="filterPerson('${jsq(n)}','${role}');return false">${esc(n)}</a>`};
  return `<div><label>${ROLES[role][1]} <a href="#" title="Edit names" style="text-decoration:none" onclick="togglePF('${k}');return false">✏️</a></label>
  <div id=pv_${k} class=plinks style="min-height:1.6em">${names.map(link).join(', ')||'<span class=muted>—</span>'}</div>
