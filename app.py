@@ -910,12 +910,25 @@ def delete_film(fid):  # removes the library entry only; never touches files
     else: db.exclude_film(c, fid)  # remembered so scans never re-add it; the file itself is left alone
     c.commit(); return ok()
 
-# ---------- Delete files & remove from library: the item's own video file(s) + gallery are deleted permanently ----------
+# ---------- Delete files & remove from library: whole film folder when safe, else own video(s)+gallery; permanent ----------
 def _df_roots(c):
     rs = list(db.get_setting(c, "roots", []) or []) + list(db.get_setting(c, "scene_roots", []) or [])
     return [r for r in dict.fromkeys(rs) if r and str(r).strip()]
 
 def _df_norm(p): return os.path.normcase(os.path.realpath(os.path.abspath(p)))
+
+def _df_is_drive_root(p):
+    """True for C:\\, D:\\, /, etc."""
+    ap = os.path.abspath(p)
+    return os.path.dirname(ap) == ap
+
+def _df_is_link(p):
+    try:
+        if os.path.islink(p): return True
+        if hasattr(os.path, "isjunction") and os.path.isjunction(p): return True
+    except OSError:
+        pass
+    return False
 
 def df_inside_roots(p, roots):
     """True when p lies strictly inside one of the library roots (never a root itself)."""
@@ -927,19 +940,67 @@ def df_inside_roots(p, roots):
         except ValueError: continue  # different drives
     return False
 
+def _df_protected_dirs():
+    """(path, reason) pairs that must never be wiped as a film folder."""
+    home = os.path.abspath(os.path.expanduser("~"))
+    out = [
+        (home, "That is your user profile"),
+        (os.path.join(home, "Desktop"), "That is the Desktop"),
+        (db.BASE, "That is the Film Tagger install folder"),
+        (db.user_data_dir(), "That is the Film Tagger Data folder"),
+    ]
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        out.append((os.path.join(la, "Film Tagger"), "That is the Film Tagger install folder"))
+        out.append((os.path.join(la, "Film Tagger Data"), "That is the Film Tagger Data folder"))
+    return out
+
+def df_folder_guard(folder, roots, others):
+    """None when this folder may be wiped for Delete files; else a short reason (caller falls back to file-only)."""
+    if not folder or not str(folder).strip():
+        return "No folder"
+    if _df_is_link(folder):
+        return "That folder is a link"
+    if _df_is_drive_root(folder):
+        return "That is a drive root"
+    if not os.path.isdir(folder):
+        return "Folder not found (drive unplugged or already gone)"
+    nf = _df_norm(folder)
+    for r in roots:
+        if nf == _df_norm(r):
+            return "That is a library folder"
+    if not df_inside_roots(folder, roots):
+        return "Not inside a library folder"
+    for prot, why in _df_protected_dirs():
+        try:
+            if prot and nf == _df_norm(prot):
+                return why
+        except OSError:
+            continue
+    sep = os.sep
+    for o in others:
+        if o == nf or o.startswith(nf + sep):
+            return "Another library item has files in that folder"
+    return None
+
 def _df_dir_size(d):
+    """File count + bytes under d; never follows symlinks/junctions out of the tree."""
     n = total = 0
-    for base, _, names in os.walk(d):
+    for base, dirs, names in os.walk(d, topdown=True, followlinks=False):
+        dirs[:] = [x for x in dirs if not _df_is_link(os.path.join(base, x))]
         for x in names:
-            try: total += os.path.getsize(os.path.join(base, x)); n += 1
-            except OSError: pass
+            fp = os.path.join(base, x)
+            if _df_is_link(fp):
+                continue
+            try:
+                total += os.path.getsize(fp); n += 1
+            except OSError:
+                pass
     return n, total
 
-def df_plan(c, fid):
-    """What 'Delete files' would delete for an item: [{key, kind, path, size, count, ok, reason}]."""
-    roots = _df_roots(c); out = []
-    mine = [r["path"] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY path", (fid,))]
-    others = {_df_norm(r["path"]) for r in c.execute("SELECT path FROM files WHERE film_id<>? OR film_id IS NULL", (fid,))}
+def _df_files_plan(c, fid, roots, mine, others):
+    """Today's behaviour: the item's own video file(s) + gallery folders."""
+    out = []
     for i, p in enumerate(mine):
         it = dict(key=f"v{i}", kind="video", path=p, size=None, count=1, ok=False, reason=None)
         if not df_inside_roots(p, roots): it["reason"] = "Not inside a library folder"
@@ -960,51 +1021,136 @@ def df_plan(c, fid):
         out.append(gi)
     return out
 
+def df_plan(c, fid):
+    """What 'Delete files' would delete: prefer the film's containing folder(s); fall back to own video(s)+gallery.
+    Returns (mode, folder_reason, items). mode is 'folder' or 'files'."""
+    roots = _df_roots(c)
+    mine = [r["path"] for r in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY path", (fid,))]
+    others = {_df_norm(r["path"]) for r in c.execute("SELECT path FROM files WHERE film_id<>? OR film_id IS NULL", (fid,))}
+    # Unique containing folders (abspath, not realpath — we delete the path as filed, without following links).
+    folders, seen = [], set()
+    for p in mine:
+        folder = os.path.abspath(os.path.dirname(p))
+        key = os.path.normcase(folder)
+        if key in seen: continue
+        seen.add(key); folders.append(folder)
+    folder_reason = None
+    if not folders:
+        folder_reason = "No folder"
+    else:
+        for folder in folders:
+            folder_reason = df_folder_guard(folder, roots, others)
+            if folder_reason:
+                break
+    if not folder_reason:
+        items = []
+        for i, folder in enumerate(folders):
+            count, size = _df_dir_size(folder)
+            items.append(dict(key=f"f{i}", kind="folder", path=folder, size=size, count=count, ok=True, reason=None))
+        return "folder", None, items
+    return "files", folder_reason, _df_files_plan(c, fid, roots, mine, others)
+
+def _rmtree_nofollow(path):
+    """Permanently delete a directory tree without following symlinks or junctions out of it."""
+    if _df_is_link(path):
+        os.unlink(path); return
+    for base, dirs, names in os.walk(path, topdown=False, followlinks=False):
+        for name in names:
+            fp = os.path.join(base, name)
+            try: os.unlink(fp)
+            except OSError:
+                if os.path.isdir(fp) and not _df_is_link(fp):
+                    _rmtree_nofollow(fp)
+                else:
+                    raise
+        for name in dirs:
+            dp = os.path.join(base, name)
+            if _df_is_link(dp):
+                os.unlink(dp)
+            else:
+                try: os.rmdir(dp)
+                except OSError:
+                    if os.path.isdir(dp): _rmtree_nofollow(dp)
+    if _df_is_link(path):
+        os.unlink(path)
+    else:
+        os.rmdir(path)
+
 def delete_paths(paths):
-    """Permanently delete each path (file, or folder with its contents). Returns {path: None (deleted) or error text}."""
-    import shutil
+    """Permanently delete each path (file, or folder with its contents; never follows links). Returns {path: None (deleted) or error text}."""
     res = {}
     for p in paths:
         try:
-            if os.path.isdir(p) and not os.path.islink(p): shutil.rmtree(p)
-            elif os.path.lexists(p): os.remove(p)
-            else: res[p] = "Not found"; continue
+            if _df_is_link(p):
+                os.unlink(p)
+            elif os.path.isdir(p):
+                _rmtree_nofollow(p)
+            elif os.path.lexists(p):
+                os.remove(p)
+            else:
+                res[p] = "Not found"; continue
             res[p] = None if not os.path.lexists(p) else "Still there after deleting"
         except OSError as e:
             res[p] = f"Could not delete ({e.strerror or type(e).__name__})"
     return res
+
+def _retire_local_poster(cp):
+    """Move a film's local custom poster (Film Tagger Data/posters/) into posters/backup/ — same as Find Posters helpers."""
+    if not cp or not str(cp).startswith("/posters/") or str(cp).startswith("/posters/backup/"):
+        return
+    src = os.path.join(POSTERS_DIR, os.path.basename(cp))
+    if not os.path.isfile(src):
+        return
+    os.makedirs(POSTER_BACKUP_DIR, exist_ok=True)
+    name = os.path.basename(cp)
+    if os.path.exists(os.path.join(POSTER_BACKUP_DIR, name)):
+        name = f"{int(time.time())}-{name}"
+    os.replace(src, os.path.join(POSTER_BACKUP_DIR, name))
 
 @app.get("/api/films/<int:fid>/deletefiles")
 def deletefiles_list(fid):
     c = C()
     f = c.execute("SELECT id, title, kind FROM films WHERE id=?", (fid,)).fetchone()
     if not f: return jsonify(error="not found"), 404
-    return jsonify(id=fid, title=f["title"], items=df_plan(c, fid))
+    mode, folder_reason, items = df_plan(c, fid)
+    return jsonify(id=fid, title=f["title"], mode=mode, folder_reason=folder_reason, items=items)
 
 @app.post("/api/films/<int:fid>/deletefiles")
 def deletefiles_do(fid):
     """{keys:[...]} from the list above. Permanently deletes those (only ones the server itself lists as deletable), then
-    removes the item from the library like Remove does. If a deletion fails, the failures are listed and the item is kept
-    only while one of its ticked video files still exists (so it never points at a deleted file)."""
+    removes the item from the library like Remove does. Prefer the whole containing folder when safe; otherwise only the
+    item's own video(s)+gallery. If a deletion fails, the failures are listed and the item is kept only while one of its
+    ticked video files (or, in folder mode, any of its video files) still exists."""
     c = C()
-    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    row = c.execute("SELECT id, custom_poster FROM films WHERE id=?", (fid,)).fetchone()
+    if not row: return jsonify(error="not found"), 404
     keys = ((request.json or {}).get("keys") if request.is_json else None) or []
     if not isinstance(keys, list): return jsonify(error="Bad request"), 400
-    plan = {it["key"]: it for it in df_plan(c, fid)}
+    mode, folder_reason, items = df_plan(c, fid)
+    plan = {it["key"]: it for it in items}
     bad = [k for k in keys if k not in plan or not plan[k]["ok"]]
     if bad: return jsonify(error="Some of those files can't be deleted: " + ", ".join(plan[k]["path"] if k in plan else str(k) for k in bad)), 400
     keys = list(dict.fromkeys(keys)); paths = [plan[k]["path"] for k in keys]
-    videos = [plan[k]["path"] for k in keys if plan[k]["kind"] == "video"]
+    videos = [r["path"] for r in c.execute("SELECT path FROM files WHERE film_id=?", (fid,))]
+    if mode == "files":
+        videos = [plan[k]["path"] for k in keys if plan[k]["kind"] == "video"]
+    cp = row["custom_poster"]
     db.exclude_film(c, fid)  # remembered (path, size, hash) while the files still exist; rolled back if the item is kept
     res = delete_paths(paths) if paths else {}
     failed = [dict(path=p, error=e) for p, e in res.items() if e]; deleted = [p for p, e in res.items() if not e]
-    if not failed: c.commit(); return ok(deleted=deleted, removed=True)
+    if not failed:
+        _retire_local_poster(cp)
+        c.commit()
+        return ok(deleted=deleted, removed=True, mode=mode, folder_reason=folder_reason)
     keep = any(os.path.exists(v) for v in videos)
-    if keep: c.rollback()
-    else: c.commit()
+    if keep:
+        c.rollback()
+    else:
+        _retire_local_poster(cp)
+        c.commit()
     return jsonify(error=("Some files could not be deleted; the video file is still there, so the item was kept in the library" if keep
                           else "Some files could not be deleted; the video file was deleted, so the item was removed from the library"),
-                   failed=failed, deleted=deleted, removed=not keep), 500
+                   failed=failed, deleted=deleted, removed=not keep, mode=mode, folder_reason=folder_reason), 500
 
 # ---------- Upgrade file: swap one of an item's video files for a better copy (upgrade.py); the item itself is kept ----------
 import upgrade as upgrademod
