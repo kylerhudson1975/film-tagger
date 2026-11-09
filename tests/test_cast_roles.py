@@ -165,6 +165,55 @@ class CastRoles(unittest.TestCase):
         out = A.merge_cast_roles(cur, {"A": "Two", "B": "Bee"}, only_names={"A", "B"})
         self.assertEqual(out, {"A": "One", "B": "Bee"})  # existing kept
 
+    def test_nfo_duplicate_crewish_upgraded(self):
+        # Succubus-style .nfo: crew row first (role=Producer), later cast row with the real character
+        folder = tempfile.mkdtemp(); nfo = os.path.join(folder, "movie.nfo")
+        open(nfo, "w", encoding="utf-8").write(
+            '<?xml version="1.0"?><movie>'
+            '<actor><name>Adrian Hoven</name><role>Producer</role></actor>'
+            '<actor><name>Pier A. Caminnecci</name><role>Producer</role></actor>'
+            '<actor><name>Adrian Hoven</name><role>Ralf Drawes</role></actor>'
+            '<actor><name>Pier A. Caminnecci</name><role>Hermann</role></actor>'
+            '<actor><name>Janine Reynaud</name><role>Lorna Green</role></actor>'
+            '<actor><name>Eva Brauner</name><role></role></actor>'
+            '</movie>')
+        roles = A.parse_nfo_roles(nfo)
+        self.assertEqual(roles["Adrian Hoven"], "Ralf Drawes")
+        self.assertEqual(roles["Pier A. Caminnecci"], "Hermann")
+        self.assertEqual(roles["Janine Reynaud"], "Lorna Green")
+        self.assertNotIn("Eva Brauner", roles)  # empty role skipped
+
+    def test_merge_replace_crewish(self):
+        cur = {"Adrian Hoven": "Producer", "Janine Reynaud": "Lorna Green", "Jesús Franco": "Writer"}
+        incoming = {"Adrian Hoven": "Ralf Drawes", "Jesús Franco": "Writer", "New": "X"}
+        out = A.merge_cast_roles(cur, incoming, only_names=["Adrian Hoven", "Janine Reynaud", "Jesús Franco"],
+                                 replace_crewish=True)
+        self.assertEqual(out["Adrian Hoven"], "Ralf Drawes")  # Producer upgraded
+        self.assertEqual(out["Janine Reynaud"], "Lorna Green")  # kept
+        self.assertEqual(out["Jesús Franco"], "Writer")  # crewish<-crewish stays
+        self.assertNotIn("New", out)
+        # without replace_crewish, Producer stays
+        out2 = A.merge_cast_roles(cur, incoming, only_names=["Adrian Hoven"])
+        self.assertEqual(out2["Adrian Hoven"], "Producer")
+
+    def test_requeue_crewish(self):
+        c = db.connect()
+        fid = c.execute(
+            "INSERT INTO films(title, year, cast_, cast_roles, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,1,?,?)",
+            ("Succubus", 1968, "Adrian Hoven, Janine Reynaud",
+             json.dumps({"Adrian Hoven": "Producer", "Janine Reynaud": "Lorna Green"}),
+             time.time(), time.time())).lastrowid
+        c.execute("INSERT INTO files(film_id, path, size) VALUES(?,?,?)", (fid, "/tmp/succubus.mkv", 10))
+        c.commit()
+        self.assertTrue(A.cast_roles_has_crewish(
+            "Adrian Hoven, Janine Reynaud",
+            {"Adrian Hoven": "Producer", "Janine Reynaud": "Lorna Green"}))
+        n = A.requeue_incomplete_cast_roles(c); c.commit()
+        row = c.execute("SELECT cast_roles_checked FROM films WHERE id=?", (fid,)).fetchone()
+        c.close()
+        self.assertGreaterEqual(n, 1)
+        self.assertIsNone(row[0])
+
     def test_tmdb_fetch_endpoint(self):
         c = db.connect(); c.execute("UPDATE films SET tmdb_id=481 WHERE id=?", (self.fid,)); c.commit(); c.close()
         r = self.cl.post(f"/api/films/{self.fid}/tmdb", json={})
@@ -187,6 +236,28 @@ class CastRoles(unittest.TestCase):
         self.assertGreaterEqual(n, 1)
         self.assertIsNone(row[0])
 
+
+    def test_empty_cast_filled_from_tmdb(self):
+        """Films with a TMDB id but no cast_ get names (and characters) from credits; hand-locked cast_ stays empty."""
+        c = db.connect()
+        fid = c.execute(
+            "INSERT INTO films(title, year, tmdb_id, cast_, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,NULL,?,?)",
+            ("The Ninth Gate", 1999, 481, None, time.time(), time.time())).lastrowid
+        c.execute("INSERT INTO files(film_id, path, size) VALUES(?,?,?)", (fid, "/tmp/ninth.mkv", 10))
+        locked = c.execute(
+            "INSERT INTO films(title, year, tmdb_id, cast_, edited_fields, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,?,?,?,?)",
+            ("Locked", 1999, 481, None, json.dumps(["cast_"]), None, time.time(), time.time())).lastrowid
+        c.execute("INSERT INTO files(film_id, path, size) VALUES(?,?,?)", (locked, "/tmp/locked.mkv", 10))
+        c.commit(); c.close()
+        A.run_cast_roles_job("test", wait=0, tmdb_gap=0.01)
+        for _ in range(100):
+            if not A.CRJ.get("running"): break
+            time.sleep(0.05)
+        f = self.cl.get(f"/api/films/{fid}").get_json()
+        self.assertIn("Johnny Depp", f["cast_"] or "")
+        self.assertEqual(f["cast_roles"].get("Johnny Depp"), "Dean Corso")
+        f2 = self.cl.get(f"/api/films/{locked}").get_json()
+        self.assertFalse(f2.get("cast_"))  # hand-locked empty cast untouched
 
 if __name__ == "__main__":
     unittest.main()

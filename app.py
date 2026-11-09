@@ -1944,8 +1944,25 @@ def cast_roles_incomplete(cast_, roles):
     by_key = {people_name_key(k): (v or "").strip() for k, v in (roles or {}).items() if (v or "").strip()}
     return any(people_name_key(n) not in by_key for n in names)
 
+# Job titles some .nfo files put in <actor><role> for people who are also crew. A later duplicate
+# <actor> entry often has the real character; never let these block a real character name.
+_CREWISH_ROLES = frozenset({
+    "producer", "executive producer", "co-producer", "associate producer", "line producer",
+    "writer", "screenplay", "story", "director", "assistant director", "second unit director",
+    "composer", "original music composer", "music", "cinematographer", "director of photography",
+    "editor", "casting", "casting director", "art director", "production designer",
+    "costume designer", "makeup", "sound", "stunts", "stunt coordinator", "narrator",
+})
+
+def is_crewish_role(role):
+    """True when a role string looks like a crew job title rather than a character name."""
+    r = " ".join((role or "").split()).casefold()
+    return bool(r) and r in _CREWISH_ROLES
+
 def parse_nfo_roles(path):
-    """Kodi/Emby .nfo next to a video: <actor><name>…</name><role>…</role>. -> {name: role}. Missing/broken file -> {}."""
+    """Kodi/Emby .nfo next to a video: <actor><name>…</name><role>…</role>. -> {name: role}. Missing/broken file -> {}.
+    Duplicate <actor> rows for the same name: keep the first real character; a later character upgrades a
+    crew-job label (Producer/Writer/…); two characters keep the first."""
     import xml.etree.ElementTree as ET
     try:
         root = ET.parse(path).getroot()
@@ -1955,7 +1972,11 @@ def parse_nfo_roles(path):
     for actor in root.iter("actor"):
         name = " ".join(((actor.findtext("name") or "").split()))
         role = " ".join(((actor.findtext("role") or "").split()))
-        if name and role and name not in out: out[name] = role
+        if not name or not role: continue
+        if name not in out:
+            out[name] = role
+        elif is_crewish_role(out[name]) and not is_crewish_role(role):
+            out[name] = role
     return out
 
 def nfo_roles_for_film(c, fid):
@@ -1969,8 +1990,9 @@ def nfo_roles_for_film(c, fid):
                 if roles: return roles
     return {}
 
-def merge_cast_roles(existing, incoming, only_names=None):
-    """Add-only merge. never overwrites a non-empty existing value.
+def merge_cast_roles(existing, incoming, only_names=None, replace_crewish=False):
+    """Add-only merge. never overwrites a non-empty existing value, except when replace_crewish is True and the
+    existing value is a crew job label (Producer/Writer/…) while the incoming value is a real character.
     only_names (iterable of displayed cast spellings) limits keys and rewrites incoming names onto those spellings
     via people_name_key (so 'Alfred Sauchelli, Jr.' fills the cast entry 'Alfred Sauchelli, Jr.' even after a
     naive comma split once lived in the wild)."""
@@ -1988,7 +2010,11 @@ def merge_cast_roles(existing, incoming, only_names=None):
             k = people_name_key(name)
             if k not in prefer: continue
             name = prefer[k]
-        if not (out.get(name) or "").strip(): out[name] = ch
+        cur = (out.get(name) or "").strip()
+        if not cur:
+            out[name] = ch
+        elif replace_crewish and is_crewish_role(cur) and not is_crewish_role(ch):
+            out[name] = ch
     return out
 
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
@@ -2040,7 +2066,7 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
         ids = tmdb_ids_for_cast_names(c, names)
         incoming = cast_roles_for_names(crew, names, ids)
         incoming = merge_cast_roles(incoming, cast_roles_from_credits(crew))  # keep full-cast keys too
-        roles = merge_cast_roles(cur_roles, incoming, only_names=names or None)
+        roles = merge_cast_roles(cur_roles, incoming, only_names=names or None, replace_crewish=True)
         if roles != cur_roles:
             upd["cast_roles"] = json.dumps(roles, ensure_ascii=False)
         upd["cast_roles_checked"] = 1
@@ -2406,7 +2432,7 @@ def credits_start():
 
 # ---------- Cast character names (Edit-window hover tip): NFO <role> + TMDB cast[].character ----------
 CRJ = dict(running=False, phase=None, done=0, total=0, filled=0, nfo=0, tmdb=0, remapped=0, skipped=0, errors=0,
-           started=None, finished=None, error=None, cancel=False)
+           cast_filled=0, cast_searched=0, unmatched=0, started=None, finished=None, error=None, cancel=False)
 
 def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
     """Resumable backfill: films not yet checked. NFO first (free), then TMDB for those with a tmdb_id.
@@ -2417,39 +2443,113 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
         c = C(); rl = RateLimiter(max(1, int(1.0 / max(tmdb_gap, 0.05))))
         try:
             locked = '%"cast_roles"%'
+            cast_lock = '%"cast_"%'
             todo = [r[0] for r in c.execute(
                 "SELECT f.id FROM films f WHERE f.cast_roles_checked IS NULL "
                 "AND COALESCE(f.edited_fields,'') NOT LIKE ? "
                 "AND f.id IN (SELECT film_id FROM files) ORDER BY f.id", (locked,))]
-            CRJ.update(phase="nfo+tmdb", total=len(todo), done=0, filled=0, nfo=0, tmdb=0, remapped=0, skipped=0, errors=0,
-                       started=time.time(), error=None, cancel=False)
+            CRJ.update(phase="cast+roles", total=len(todo), done=0, filled=0, nfo=0, tmdb=0, remapped=0, skipped=0, errors=0,
+                       cast_filled=0, cast_searched=0, unmatched=0, started=time.time(), error=None, cancel=False)
             for fid in todo:
                 if CRJ.get("cancel"): break
                 CRJ["done"] += 1
                 try:
-                    row = c.execute("SELECT cast_, cast_roles, tmdb_id, edited_fields, kind FROM films WHERE id=?", (fid,)).fetchone()
+                    row = c.execute(
+                        "SELECT cast_, cast_roles, tmdb_id, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
+                        (fid,)).fetchone()
                     if not row: CRJ["skipped"] += 1; continue
                     ed = set(json.loads(row["edited_fields"] or "[]"))
                     if "cast_roles" in ed:
                         c.execute("UPDATE films SET cast_roles_checked=1 WHERE id=?", (fid,)); c.commit(); CRJ["skipped"] += 1; continue
+
+                    # ---- Fill empty cast_ first (hand-locked cast_ never touched) ----
+                    if "cast_" not in ed and not split_people(row["cast_"] or ""):
+                        filled_cast = False
+                        if (row["kind"] or "") == "scene":
+                            # Scenes: ThePornDB performers only (no character names there)
+                            if row["tpdb_id"]:
+                                try:
+                                    token = db.get_setting(c, "tpdb_token", "") or db.get_setting(c, "tpdb_key", "") or ""
+                                    if token:
+                                        sc = tpdb.call(f"/scenes/{row['tpdb_id']}", token)
+                                        data = (sc or {}).get("data") or sc or {}
+                                        perfs = [p.get("name") for p in (data.get("performers") or []) if p.get("name")]
+                                        if perfs:
+                                            cast_s = ", ".join(perfs)
+                                            c.execute("UPDATE films SET cast_=?, updated_at=? WHERE id=? AND COALESCE(edited_fields,'') NOT LIKE ?",
+                                                      (cast_s, time.time(), fid, cast_lock))
+                                            if c.execute("SELECT changes()").fetchone()[0]:
+                                                CRJ["cast_filled"] += 1; filled_cast = True
+                                                row = dict(row); row["cast_"] = cast_s
+                                except Exception:
+                                    CRJ["errors"] += 1
+                        elif key:
+                            try:
+                                tid = row["tmdb_id"]; credits = None; m = None
+                                if tid:
+                                    rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="credits", include_adult="true")
+                                    credits = (m or {}).get("credits") or {}
+                                else:
+                                    # title+year search for unmatched films (same confidence as the poster job)
+                                    p = {"query": row["title"] or ""}
+                                    if row["year"]: p["year"] = row["year"]
+                                    rl.wait(); res = tmdb("search/movie", key, include_adult="true", **p).get("results") or []
+                                    if not res and row["year"]:
+                                        rl.wait(); res = tmdb("search/movie", key, include_adult="true", query=row["title"] or "").get("results") or []
+                                    hit = pick_confident(row["title"], row["year"], res)
+                                    CRJ["cast_searched"] += 1
+                                    if hit:
+                                        tid = hit["id"]
+                                        rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
+                                        credits = (m or {}).get("credits") or {}
+                                        # apply full match (respects hand edits); cast_ comes with it
+                                        apply_movie(c, fid, m, respect_edits=True, genres=True)
+                                        c.commit()
+                                        CRJ["cast_filled"] += 1; filled_cast = True
+                                        row = c.execute(
+                                            "SELECT cast_, cast_roles, tmdb_id, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
+                                            (fid,)).fetchone()
+                                    else:
+                                        CRJ["unmatched"] += 1
+                                if tid and credits is not None and not filled_cast:
+                                    names0 = [x.get("name") for x in (credits.get("cast") or [])[:10] if x.get("name")]
+                                    if names0:
+                                        cast_s = ", ".join(names0)
+                                        c.execute("UPDATE films SET cast_=?, updated_at=? WHERE id=? AND COALESCE(edited_fields,'') NOT LIKE ?",
+                                                  (cast_s, time.time(), fid, cast_lock))
+                                        if c.execute("SELECT changes()").fetchone()[0]:
+                                            CRJ["cast_filled"] += 1; filled_cast = True
+                                            row = dict(row); row["cast_"] = cast_s
+                                    elif not row["tmdb_id"]:
+                                        pass
+                            except urllib.error.HTTPError as e:
+                                if e.code == 401: CRJ["error"] = "TMDB rejected the API key (401)"; break
+                                CRJ["errors"] += 1
+                            except Exception as e:
+                                CRJ["errors"] += 1
+                                if CRJ["errors"] >= 8 and CRJ["filled"] == 0 and CRJ["cast_filled"] == 0:
+                                    CRJ["error"] = f"Network/TMDB error: {e} (stopped)"; break
+
                     try: cur0 = json.loads(row["cast_roles"] or "{}") or {}
                     except Exception: cur0 = {}
                     names = split_people(row["cast_"] or "")
                     cur = remap_cast_roles(cur0, names)
                     remapped_only = cur != cur0
                     incoming = nfo_roles_for_film(c, fid); src = "nfo" if incoming else None
-                    # TMDB for non-scene titles with an id (scenes / many adult titles have no characters)
-                    if row["tmdb_id"] and (row["kind"] or "") != "scene" and key:
-                        need = cast_roles_incomplete(row["cast_"], merge_cast_roles(cur, incoming, only_names=names or None))
+                    # TMDB characters for non-scene titles with an id (many adult titles have empty characters)
+                    if row["tmdb_id"] and (row["kind"] or "") != "scene" and key and names:
+                        need = (cast_roles_incomplete(row["cast_"], merge_cast_roles(cur, incoming, only_names=names or None, replace_crewish=True))
+                                or cast_roles_has_crewish(row["cast_"], merge_cast_roles(cur, incoming, only_names=names or None, replace_crewish=True)))
                         if need:
                             try:
-                                rl.wait(); m = tmdb(f"movie/{row['tmdb_id']}", key, append_to_response="credits")
+                                rl.wait(); m = tmdb(f"movie/{row['tmdb_id']}", key, append_to_response="credits", include_adult="true")
                                 credits = m.get("credits") or {}
                                 ids = tmdb_ids_for_cast_names(c, names)
                                 troles = cast_roles_for_names(credits, names, ids)
                                 troles = merge_cast_roles(troles, cast_roles_from_credits(credits))
                                 if troles:
-                                    incoming = merge_cast_roles(incoming, troles); src = "tmdb" if src is None else src
+                                    incoming = merge_cast_roles(incoming, troles, replace_crewish=True)
+                                    src = "tmdb" if src is None else src
                             except urllib.error.HTTPError as e:
                                 if e.code == 401: CRJ["error"] = "TMDB rejected the API key (401)"; break
                                 CRJ["errors"] += 1
@@ -2457,7 +2557,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                                 CRJ["errors"] += 1
                                 if CRJ["errors"] >= 8 and CRJ["filled"] == 0:
                                     CRJ["error"] = f"Network/TMDB error: {e} (stopped)"; break
-                    roles = merge_cast_roles(cur, incoming, only_names=names or None)
+                    roles = merge_cast_roles(cur, incoming, only_names=names or None, replace_crewish=True)
                     if roles != cur0 and roles:
                         c.execute("UPDATE films SET cast_roles=?, cast_roles_checked=1, updated_at=? WHERE id=? "
                                   "AND COALESCE(edited_fields,'') NOT LIKE ?",
@@ -2480,17 +2580,29 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
             CRJ.update(running=False, phase="done", finished=time.time()); c.close()
     CRJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
 
+def cast_roles_has_crewish(cast_, roles):
+    """True when any displayed cast name is stored with a crew-job label (Producer/Writer/…) as its character."""
+    names = split_people(cast_ or "")
+    if not names: return False
+    by_key = {people_name_key(k): (v or "").strip() for k, v in (roles or {}).items() if (v or "").strip()}
+    return any(is_crewish_role(by_key[people_name_key(n)]) for n in names if people_name_key(n) in by_key)
+
 def requeue_incomplete_cast_roles(c):
-    """Clear cast_roles_checked for non-hand-locked films whose displayed cast still lacks a character
-    (exact or normalised). Returns how many rows were requeued."""
+    """Clear cast_roles_checked for non-hand-locked films that still need work: missing characters,
+    crew-job labels that a later NFO/TMDB character should replace, or an empty cast_ (so the job can
+    fill names from TMDB / ThePornDB). Scenes are included so empty scene casts can be filled from TPDB;
+    scenes still rarely get character names. Returns how many rows were requeued."""
     locked = '%"cast_roles"%'
     n = 0
     for r in c.execute(
-        "SELECT id, cast_, cast_roles FROM films WHERE id IN (SELECT film_id FROM files) "
-        "AND COALESCE(edited_fields,'') NOT LIKE ? AND COALESCE(kind,'')<>'scene'", (locked,)):
+        "SELECT id, cast_, cast_roles, edited_fields, kind FROM films WHERE id IN (SELECT film_id FROM files) "
+        "AND COALESCE(edited_fields,'') NOT LIKE ?", (locked,)):
+        ed = set(json.loads(r["edited_fields"] or "[]"))
+        if "cast_roles" in ed: continue
         try: roles = json.loads(r["cast_roles"] or "{}") or {}
         except Exception: roles = {}
-        if cast_roles_incomplete(r["cast_"], roles):
+        empty_cast = not split_people(r["cast_"] or "") and "cast_" not in ed
+        if empty_cast or cast_roles_incomplete(r["cast_"], roles) or cast_roles_has_crewish(r["cast_"], roles):
             c.execute("UPDATE films SET cast_roles_checked=NULL WHERE id=?", (r["id"],)); n += 1
     return n
 
