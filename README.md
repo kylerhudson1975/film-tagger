@@ -10,7 +10,23 @@ Point it at the folders where your video files live. It builds a searchable cata
 **Contents:** [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
 
 ## What's new in v1.3.4
+People ethnicity, safer library art, stills that keep their shape, and a faster Edit window — everything since v1.3.3.
+
+### 👥 People and Ethnicity
+- **Ethnicity** on Edit profile (protected hand edit), the person page and the side panel. Search matches ethnicity and nationality; an Ethnicity filter with counts sits on All people and stays in effect on every tab inside Mainstream / Porn.
+- **Add-only fill** from ThePornDB and Wikidata (never inferred from photos, names or nationality). A resumable background job fills existing profiles; hand edits keep source *manual* and are never overwritten.
+- **Needs ethnicity** tab in Mainstream / Porn: one-at-a-time quick tagging (keys 1–9 / O / S / U, or a grid), photo and most credits first, Skip with Reset skips, and Undo.
+- **Find birth date** on the person page itself when no birth date is set (was only inside Edit profile).
+- **People search autofocus:** opening People puts the cursor in the search box.
+
+### 🖼 Library art and stills
+- **Library art lives outside the install folder:** custom posters, person photos and `films.db` sit in `%LOCALAPPDATA%\Film Tagger Data`, so an update, reinstall or install move cannot wipe them. An existing install\data library is copied once on first run.
+- **Copy custom poster / person photo** into the video folder (and into the person folder) without overwriting foreign art already there.
+- **Make stills keep the source aspect ratio** (including anamorphic video via SAR). Gallery thumbs no longer force a 2:3 crop.
+
+### 🛠️ Fixes and Classic Porn
 - **Faster Edit / clicks:** opening a title no longer waits on a disk scan of its gallery folder. That probe could stall for ~20–30s on a waking or busy drive and pin the browser’s few connections to localhost, so every UI action felt hung. Gallery counts still refresh in the background; Edit opens from the cached values.
+- **Classic Porn MPAA:** NC-17 variants map to **X** for Classic Porn only (Movies and Scenes keep NC-17).
 
 ## What's new in v1.3.3
 People, birth and death dates, stills and MKV titles — everything since v1.3.2.
@@ -425,7 +441,7 @@ Scenes libraries, ThePornDB token and Fix all scene file names:
 ![Scenes settings](docs/screenshots/7-settings-scenes.png)
 
 ## Install
-- **Windows (recommended):** download **`FilmTaggerSetup.exe`** from the [latest release](https://github.com/kylerhudson1975/film-tagger/releases/latest) and run it. It installs per user into `%LOCALAPPDATA%\Film Tagger` with a bundled Python 3.12, so no admin rights are needed. It adds Start Menu and (optionally) Desktop and sign-in shortcuts and an entry in *Apps* for uninstalling. Your library (`films.db` + `posters/`) lives in `%LOCALAPPDATA%\Film Tagger\data`. See [INSTALL.txt](INSTALL.txt).
+- **Windows (recommended):** download **`FilmTaggerSetup.exe`** from the [latest release](https://github.com/kylerhudson1975/film-tagger/releases/latest) and run it. It installs per user into `%LOCALAPPDATA%\Film Tagger` with a bundled Python 3.12, so no admin rights are needed. It adds Start Menu and (optionally) Desktop and sign-in shortcuts and an entry in *Apps* for uninstalling. Your library (`films.db`, custom posters and person photos) lives in `%LOCALAPPDATA%\Film Tagger Data` (outside the install folder). See [INSTALL.txt](INSTALL.txt).
   - Silent install: `FilmTaggerSetup.exe /S [/D=C:\path] [/NODESKTOP] [/STARTUP] [/PORT=5051]`. Silent uninstall (keeps the library): `uninstall.exe /S`.
   - Build the installer yourself on Linux: `installer/build_installer.sh` (needs `makensis`, `pip`, `curl`, `unzip`) → `dist/FilmTaggerSetup.exe`.
 - **Windows (manual):** install Python 3, unzip the source, double-click `Install Film Tagger.bat`.
