@@ -278,6 +278,59 @@ def learn(page, studio, performers, plist):
     return dict(prefix=pre[0] if pre else None, prefix_label=pre[1] if pre else None, names_in_title=nit,
                 notes="; ".join(notes)[:1].upper() + "; ".join(notes)[1:] + ".")
 
+
+# ---------- image-host page -> direct URL (gallery-dl's imx.to extractor still expects the old HTML) ----------
+IMX_PAGE_RE = re.compile(r"^https?://(?:www\.)?(?:imx\.to|img\.yt)/(?:i/|img-)(\w+)", re.I)
+IMX_REMOVED_RE = re.compile(r"This image has been removed or is missing", re.I)
+
+def parse_imx_image_url(page):
+    """Full-size image URL from an imx.to view page (text only). Supports the old centred <a href> layout and the
+    current <img class="centred img-full" src="..."> layout. Never opens image bytes."""
+    page = page or ""
+    for pat in (
+        r'<img[^>]+class="[^"]*\bcentred\b[^"]*"[^>]*\bsrc="(https?://[^"]+)"',
+        r'<img[^>]+\bsrc="(https?://[^"]+)"[^>]*class="[^"]*\bcentred\b[^"]*"',
+        r'<div style="text-align:center;"><a href="(https?://[^"]+)"',
+    ):
+        m = re.search(pat, page, re.I)
+        if m: return html.unescape(m.group(1))
+    return None
+
+def resolve_imx(url):
+    """imx.to / img.yt image-page URL -> direct image URL, or None if the host reports it missing/unreadable.
+    Other URLs are returned unchanged. Uses the continue form (imgToken when present). Text / headers only."""
+    m = IMX_PAGE_RE.match((url or "").strip())
+    if not m: return url
+    page_url = "https://imx.to/i/" + m.group(1)
+    try: page = http(page_url)
+    except Exception: return None
+    if IMX_REMOVED_RE.search(page or ""): return None
+    direct = parse_imx_image_url(page)
+    if direct: return direct
+    data = {"imgContinue": "Continue to your image..."}
+    tok = re.search(r'name="imgToken"\s+value="([^"]+)"', page or "")
+    if tok: data["imgToken"] = tok.group(1)
+    try: page2 = http(page_url, data=data)
+    except Exception: return None
+    if IMX_REMOVED_RE.search(page2 or ""): return None
+    return parse_imx_image_url(page2)
+
+def resolve_links(urls):
+    """Resolve each host-page URL that we know how to (imx.to today) to a direct file URL. Keeps positions
+    (empty string = missing/unreadable) so an alternate upload can still fill by index. Stops early on cancel."""
+    out = []
+    for u in urls or []:
+        if cancelled(): break
+        if not u:
+            out.append("")
+            continue
+        if IMX_PAGE_RE.match(u):
+            try: out.append(resolve_imx(u) or "")
+            except Exception: out.append("")
+        else:
+            out.append(u)
+    return out
+
 # ---------- download (gallery-dl as a separate process) ----------
 DL = {"running": False}
 CANCEL = threading.Event()  # set by cancel(); every wait in a download wakes up on it
@@ -530,6 +583,14 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
         # Link mode: download the set's host-page links ourselves (one gallery-dl run with a URL file), so only the
         # links that fail are retried and a set posted twice is downloaded once. Falls back to the whole URL.
         main, alt = _unless_cancelled(lambda: set_links(url), ([], [])) if url.startswith(BASE) else ([], [])
+        # gallery-dl's imx.to extractor still looks for the old HTML; resolve those pages to direct image URLs first
+        if main and not cancelled():
+            main = _unless_cancelled(lambda: resolve_links(main), main) or main
+            if alt and not cancelled():
+                alt = _unless_cancelled(lambda: resolve_links(alt), alt) or alt
+            # if every imx.to page resolved to nothing, the set really is gone (or unreadable)
+            if main and not any(main):
+                DL["error"] = MISSING_MSG; main, alt = [], []; tries = []
         tmpd = tempfile.gettempdir(); LK = {"main": main, "alt": alt, "todo": list(range(len(main))), "used_alt": False}
         if main:
             DL["expected"] = len(main); tries = ["&"] + tries

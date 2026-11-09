@@ -3763,6 +3763,10 @@ def findgallery_search(fid):
         head = [(one, prefix) for one in perfs[:2]] if prefix else []
         lead_al = [(a, prefix) for a in alias_map[perfs[0]]] if prefix else []
         co_al = [(a, prefix) for one in perfs[1:2] for a in alias_map[one]] if prefix else []
+        # Site prefixes (StepSiblings) often miss threads posted under a network prefix (TeamSkeet). After prefix
+        # steps fail, retry the same performers with no prefix. Leave the studio name out: vBulletin ANDs every
+        # keyword, and the thread title usually has the network name, not the site.
+        noprefix = [(one, None) for one in perfs[:2]] if prefix else []
         plain = [(default_q, None)]
         # last resort: the lead performer's last name (and each alias's last word) alone, only with a studio prefix
         lasts = []
@@ -3772,10 +3776,13 @@ def findgallery_search(fid):
                 if len(w) >= 3 and db.fold(w) not in {db.fold(x) for x in lasts}: lasts.append(w)
         last = [(w, prefix, False, "last") for w in lasts]
         alt = [(one, alt_prefix) for one in perfs[:1]] if alt_prefix else []  # the old prefix, after the learned one
+        # aliases keep priority over the no-prefix fallback (room is computed without noprefix first)
         room = fgmod.MAX_STEPS - len(head) - len(alt) - len(plain) - len(last)
         mid = (lead_al + co_al)[:max(0, room)]  # co-star aliases are trimmed first, then the lead's
+        left = fgmod.MAX_STEPS - len(head) - len(mid) - len(alt) - len(plain) - len(last)
+        noprefix = noprefix[:max(0, left)]
         # learned: titles leave names out -> prefix + last names right after the full names, before aliases
-        steps = head + last + mid + alt + plain if no_names else head + mid + alt + plain + last
+        steps = head + last + mid + alt + noprefix + plain if no_names else head + mid + alt + noprefix + plain + last
         steps = steps[:fgmod.MAX_STEPS]
     steps = [tuple(x) + (False, "")[len(x) - 2:] for x in steps]
     steps = list(dict.fromkeys(steps))[:fgmod.MAX_STEPS]

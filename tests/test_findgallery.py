@@ -92,7 +92,8 @@ def test_search_endpoint_strategy(monkeypatch):
     cl = app.app.test_client(); fid, _ = scene(cl)
     d = cl.post(f"/api/films/{fid}/findgallery/search", json={}).json
     P = ["SunsetStudios_com"]
-    assert calls == [("Ann Example", P), ("Bea Sample", P), ("Ann Example Bea Sample Sunset Studios", None)]
+    # prefix steps empty -> no-prefix performer retry (studio name left out) finds results and stops
+    assert calls == [("Ann Example", P), ("Bea Sample", P), ("Ann Example", None)]
     assert d["default_query"] == "Ann Example Bea Sample Sunset Studios" and d["prefix"] == "SunsetStudios_com"
     assert d["results"][0]["thread_id"] == "111" and len(d["tried"]) == 3
     # cached: no new HTTP call
@@ -290,7 +291,7 @@ def test_every_step_restricted_to_forum(monkeypatch):
     monkeypatch.setattr(fg, "http", http)
     cl = app.app.test_client(); fid, _ = scene(cl)
     cl.post(f"/api/films/{fid}/findgallery/search", json={})
-    assert len(sent) == 4 and all(x == (["999"], "1") for x in sent)  # every step (incl. last name) stays in the forum
+    assert len(sent) == 6 and all(x == (["999"], "1") for x in sent)  # every step (incl. noprefix + last name) stays in the forum
 
 def test_forum_fallback_with_warning(monkeypatch, caplog):
     sent = []
@@ -568,3 +569,89 @@ def test_stuck_retry_stops_and_title_caps(monkeypatch, tmp_path):
     monkeypatch.setattr(fg, "links_cmd", lambda path, dest, err, slow=False: runs.append(len(open(path).read().split())) or [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path])
     fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
     assert runs == [76, 3, 2] and fg.DL["files"] == 74 and fg.DL["error"] == "1 failed (image removed from host)"
+
+# ---------- imx.to continue-gate / HTML layout (Nov 2026): gallery-dl still expects the old <a href> markup ----------
+IMX_CONTINUE = """<!DOCTYPE html><html><head><title>IMX.to / x.jpg</title></head><body>
+<form action="" method="POST"><input type="hidden" name="imgToken" value="tok123" />
+<input id="continuebutton" type="submit" name="imgContinue" value="Continue to your image..." /></form></body></html>"""
+IMX_VIEW_NEW = """<!DOCTYPE html><html><head><title>IMX.to / becca.jpg</title></head><body>
+<a target="_blank"><img class="centred img-full" src="https://image.imx.to/u/i/2026/07/04/6vv4df.jpg" alt="becca.jpg"></a>
+<div class='img-meta'>[ FILESIZE <span class='img-meta-v'>397.53 KB</span> ]</div></body></html>"""
+IMX_VIEW_OLD = """<!DOCTYPE html><html><body><div style="text-align:center;"><a href="https://imx.to/upload/img/old.jpg">
+<img src="https://imx.to/upload/img/old.jpg" title="old.jpg"></a></div>
+<div>[ FILESIZE <span>10 KB</span> ]</div></body></html>"""
+IMX_REMOVED = """<!DOCTYPE html><html><head><title>IMX.to</title></head><body>
+<p class="error">This image has been removed or is missing.</p></body></html>"""
+
+def test_parse_imx_image_url_new_and_old_layouts():
+    assert fg.parse_imx_image_url(IMX_VIEW_NEW) == "https://image.imx.to/u/i/2026/07/04/6vv4df.jpg"
+    assert fg.parse_imx_image_url(IMX_VIEW_OLD) == "https://imx.to/upload/img/old.jpg"
+    assert fg.parse_imx_image_url(IMX_CONTINUE) is None
+    assert fg.parse_imx_image_url(IMX_REMOVED) is None
+
+def test_resolve_imx_posts_continue_and_reads_new_layout(monkeypatch):
+    calls = []
+    def http(url, data=None, timeout=None):
+        calls.append((url, data))
+        if data is None: return IMX_CONTINUE
+        assert data.get("imgToken") == "tok123"
+        return IMX_VIEW_NEW
+    monkeypatch.setattr(fg, "http", http)
+    assert fg.resolve_imx("https://imx.to/i/6vv4df") == "https://image.imx.to/u/i/2026/07/04/6vv4df.jpg"
+    assert calls[0][0] == "https://imx.to/i/6vv4df" and calls[0][1] is None
+    assert calls[1][1]["imgContinue"] == "Continue to your image..."
+    assert fg.resolve_imx("https://vipr.im/abc") == "https://vipr.im/abc"
+    monkeypatch.setattr(fg, "http", lambda *a, **k: IMX_REMOVED)
+    assert fg.resolve_imx("https://imx.to/i/gone") is None
+
+def test_resolve_links_keeps_positions(monkeypatch):
+    monkeypatch.setattr(fg, "resolve_imx", lambda u: "https://image.imx.to/u/i/x.jpg" if "6vv4df" in u else None)
+    assert fg.resolve_links(["https://imx.to/i/6vv4df", "https://vipr.im/a", "https://imx.to/i/gone"]) == [
+        "https://image.imx.to/u/i/x.jpg", "https://vipr.im/a", ""]
+
+def test_noprefix_fallback_finds_network_prefix_thread(monkeypatch):
+    """Step Siblings maps to StepSiblings_com, but TeamSkeet network threads use the TeamSkeet prefix."""
+    form = ('<select name="prefixchoice[]"><option value="StepSiblings_com">StepSiblings</option>'
+            '<option value="TeamSkeet_com">TeamSkeet</option></select>')
+    title = "Becca Blair &amp; Ali Jones - What If We Just did it Together - 24x - (July 04, 2026)"
+    res = "<html>" + guest_post(16305350, "Becca-Blair-amp-Ali-Jones", 264129180, title) + "</html>"
+    sent = []
+    def http(url, data=None, timeout=None):
+        if data is None: return form
+        sent.append((data["query"], data.get("prefixchoice[]")))
+        if data.get("prefixchoice[]"): return "<html></html>"
+        return res if data["query"] == "Ali Jones" else "<html></html>"
+    monkeypatch.setattr(fg, "http", http)
+    cl = app.app.test_client(); fid, _ = scene(cl, studio="Step Siblings", cast="Ali Jones, Becca Blair")
+    d = cl.post(f"/api/films/{fid}/findgallery/search", json={}).json
+    assert ("Ali Jones", ["StepSiblings_com"]) in sent and ("Becca Blair", ["StepSiblings_com"]) in sent
+    assert ("Ali Jones", None) in sent
+    assert d["results"][0]["thread_id"] == "16305350"
+    assert d["results"][0]["performers_found"] == 2 and d["results"][0]["score"] >= 2.0
+
+def test_run_download_resolves_imx_before_gallery_dl(monkeypatch, tmp_path):
+    """Link mode must feed gallery-dl the direct image.imx.to URL, not the host page gallery-dl can't parse."""
+    thread = "https://vipergirls.to/threads/16305350"
+    # Patch the helpers run_download calls (they run inside a worker thread).
+    monkeypatch.setattr(fg, "set_links", lambda url: (["https://imx.to/i/6vv4df"], []))
+    monkeypatch.setattr(fg, "resolve_links", lambda urls: [
+        "https://image.imx.to/u/i/2026/07/04/6vv4df.jpg" if u else "" for u in urls])
+    seen = []
+    def popen(cmd, **kw):
+        if "-i" in cmd:
+            path = cmd[cmd.index("-i") + 1]
+            seen.extend([x.strip() for x in open(path, encoding="utf-8") if x.strip()])
+        dest = cmd[cmd.index("-D") + 1]
+        os.makedirs(dest, exist_ok=True)
+        open(os.path.join(dest, "a.jpg"), "wb").write(b"\xff" * 20000)
+        class P:
+            returncode = None; pid = 1
+            def poll(self): self.returncode = 0; return 0
+            def wait(self, timeout=None): return 0
+            def terminate(self): pass
+        return P()
+    dest = tmp_path / "g"
+    fg.prepare()
+    fg.run_download(thread, str(dest), popen=popen, timeout=30, fresh=False)
+    assert seen == ["https://image.imx.to/u/i/2026/07/04/6vv4df.jpg"], seen
+    assert fg.DL["files"] == 1 and not fg.DL["error"]
