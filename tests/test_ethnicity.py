@@ -16,6 +16,9 @@ N = P.norm_ethnicity
 assert N("Caucasian") == N("white") == "White" and N("Latin") == N("Latina") == N("latino") == N("Hispanic") == "Latina/Latino"
 assert N("African American") == "Black" and N("Indian") == "South Asian" and N("Asian") == "Asian"
 assert N("Other") is None and N("") is None and N("Irish Americans") == "Irish Americans" and N("Irish Americans", keep=False) is None
+assert "Jewish" in P.ETHNICITIES and P.ETHNICITIES.index("Jewish") == P.ETHNICITIES.index("Black") + 1
+assert N("Jewish people") == N("Ashkenazi Jews") == N("ashkenazi") == N("Sephardi") == N("Jewish Americans") == "Jewish"
+assert N("jew") == N("Jews") == N("Israeli Jews") == N("Russian Jews") == N("Polish Jews") == "Jewish"
 names = ["Ana Lopez", "Bea White", "Cy Hand", "Di Wiki", "Ed None", "Flo Ruiz"]
 for i, n in enumerate(names, 1):
     c.execute("INSERT INTO films(id,title,kind,cast_) VALUES(?,?,?,?)", (i, f"S{i}", "scene", n))
@@ -92,6 +95,19 @@ assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).
 assert "Flo Ruiz" in S(q="white") and "Flo Ruiz" in S(eth="White") and S(eth="Irish Americans") == ["Flo Ruiz"] and S(q="irish") == ["Flo Ruiz"]
 v = {x["value"]: x["n"] for x in cl.get("/api/people/ethnicities").json["values"]}
 assert v["White"] == 3 and v["Irish Americans"] == 1, v
+# start-up remapping folds source variants (hand edits / manual stay untouched)
+c.execute("UPDATE people SET ethnicity=?, ethnicity_source=? WHERE id=?", ("Jewish people, White", "wikidata Qx", ids["Ed None"]))
+c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, edited_fields=? WHERE id=?",
+          ("Ashkenazi Jews", "manual", json.dumps(["ethnicity"]), ids["Flo Ruiz"]))
+c.commit()
+for r in c.execute("SELECT id, ethnicity FROM people WHERE COALESCE(ethnicity,'')<>'' AND COALESCE(ethnicity_source,'') NOT IN ('hand edit','manual') "
+                   "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'").fetchall():
+    v = ", ".join(dict.fromkeys(x for x in map(P.norm_ethnicity, P.eth_parts(r["ethnicity"])) if x)) or None
+    if v and v != r["ethnicity"]: c.execute("UPDATE people SET ethnicity=? WHERE id=?", (v, r["id"]))
+c.commit()
+assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Ed None"],)).fetchone()[0] == "Jewish, White"
+assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Ashkenazi Jews"  # manual locked
+assert "Ed None" in S(eth="Jewish") and "Ed None" in S(q="jewish")
 # summary panel carries it
 assert cl.get(f"/api/people/{ids['Di Wiki']}/summary").json["ethnicity"] == "Black"
 print("ok")

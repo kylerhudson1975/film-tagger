@@ -81,10 +81,15 @@ def norm_gender(v):
 # Ethnicity: only what a source publishes (ThePornDB performer extras.ethnicity, Wikidata P172 'ethnic group') or a hand
 # edit; never inferred from photos, names or nationality (TMDB has no such field). Obvious variants fold into this small
 # set; a source value that maps to none of them is kept as published.
-ETHNICITIES = ("Asian", "Black", "Latina/Latino", "Middle Eastern", "Mixed", "Native American", "Pacific Islander", "South Asian", "White")
+ETHNICITIES = ("Asian", "Black", "Jewish", "Latina/Latino", "Middle Eastern", "Mixed", "Native American", "Pacific Islander", "South Asian", "White")
 _ETH_ALIAS = {"asian": "Asian", "asianpeople": "Asian", "asians": "Asian", "eastasian": "Asian", "southeastasian": "Asian", "asianamerican": "Asian", "asianamericans": "Asian",
               "black": "Black", "african": "Black", "africanamerican": "Black", "africanamericans": "Black", "ebony": "Black",
               "afroamerican": "Black", "blackpeople": "Black", "blackamericans": "Black", "blackbritish": "Black", "blackbritishpeople": "Black",
+              "jewish": "Jewish", "jews": "Jewish", "jewishpeople": "Jewish", "ashkenazijews": "Jewish", "ashkenazi": "Jewish",
+              "ashkenazijewish": "Jewish", "sephardijews": "Jewish", "sephardicjews": "Jewish", "sephardi": "Jewish", "sephardic": "Jewish",
+              "mizrahijews": "Jewish", "mizrahi": "Jewish", "jewishamericans": "Jewish", "americanjews": "Jewish",
+              "britishjews": "Jewish", "israelijews": "Jewish", "jew": "Jewish", "jewishcanadian": "Jewish", "canadianjews": "Jewish",
+              "russianjews": "Jewish", "frenchjews": "Jewish", "germanjews": "Jewish", "polishjews": "Jewish", "hungarianjews": "Jewish",
               "latin": "Latina/Latino", "latina": "Latina/Latino", "latino": "Latina/Latino", "latinx": "Latina/Latino", "hispanic": "Latina/Latino",
               "latinalatino": "Latina/Latino", "latinolatina": "Latina/Latino", "hispanicandlatinoamericans": "Latina/Latino",
               "hispanicamericans": "Latina/Latino", "latinoamericans": "Latina/Latino", "hispanics": "Latina/Latino", "latinos": "Latina/Latino",

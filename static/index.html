@@ -1378,7 +1378,7 @@ async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRo
 async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim(),eth=S.pfEth||'';if(!q&&!eth){S.pfAll={q:'',people:[],total:0};return}
  try{const a={q,limit:eth&&!q?1000:120};if(eth)a.eth=eth;const j=await api('/api/people/search?'+new URLSearchParams(a));if((($('pfQ')||{}).value||'').trim()===q&&(S.pfEth||'')===eth)S.pfAll={q,eth,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,eth,people:[],total:0,error:true}}}
 /* Needs ethnicity (People → Mainstream / Porn): tag people with no ethnicity by hand, photo and most credits first. One at a
-   time (keys 1-9 = the groups, O = Other, S = Skip, U = Undo) or a grid. A tag is a normal Edit profile save (protected,
+   time (keys 1-9 = the groups, J = Jewish, O = Other, S = Skip, U = Undo) or a grid. A tag is a normal Edit profile save (protected,
    source 'manual'); Skip is remembered until 'Reset skips'. Nothing is suggested or guessed. */
 S.neth={};S.nethMode=localStorage.nethMode=='grid'?'grid':'one';S.nethUndo=[];
 async function pfNethLoad(cat){try{const j=await api('/api/people/needs_ethnicity?'+new URLSearchParams({cat,limit:S.nethMode=='grid'?120:40}));S.neth[cat]=j}catch(e){S.neth[cat]=S.neth[cat]||{people:[],remaining:0,skipped:0,error:true}}}
@@ -1407,14 +1407,14 @@ function pfNethList(){const d=S.neth[S.pfCat];if(!d)return '<div id=pfNeth class
  return `<div id=pfNeth>${bar}<div class=neth-one data-pid="${p.id}"><div class=neth-ph>${p.photo?`<img src="${esc(p.photo)}" alt="">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0;flex:1">
  <h2 style="margin:0 0 4px"><a href="#" onclick="pfOpen(${p.id});return false" id=nethName>${esc(p.name)}</a>${favStar(p)}</h2>
  <div class=muted>${p.nationality?'Nationality: '+esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]} in your library</div>
- <div class=neth-btns id=nethBtns>${ETHNICITIES.map((g,i)=>`<button data-g="${g}" onclick="nethTag(${p.id},'${jsq(g)}')"><span class=neth-k>${i+1}</span>${g}</button>`).join('')}</div>
+ <div class=neth-btns id=nethBtns>${ETHNICITIES.map(g=>`<button data-g="${g}" onclick="nethTag(${p.id},'${jsq(g)}')"><span class=neth-k>${ethKey(g)}</span>${g}</button>`).join('')}</div>
  <div><input id=nethOther placeholder="Other (O)…" style="width:220px" onkeydown="if(event.key=='Enter'){event.preventDefault();nethOther(${p.id})}else if(event.key=='Escape')this.blur()"> <button onclick="nethOther(${p.id})">Save other</button> <button id=nethSkipB onclick="nethSkip(${p.id})"><span class=neth-k>S</span>Skip</button></div>
- <p class=muted style="font-size:12px;margin-top:10px">Keys: 1–${ETHNICITIES.length} pick a group · O type another · S skip · U undo. Saved as your own edit, so no automatic fill ever changes it.</p></div></div>
+ <p class=muted style="font-size:12px;margin-top:10px">Keys: 1–9 pick a group · J Jewish · O type another · S skip · U undo. Saved as your own edit, so no automatic fill ever changes it.</p></div></div>
  ${d.people.length>1?`<h4 style="margin:4px 0">Up next</h4><div class=pf-rrow>${d.people.slice(1,9).map(q=>`<div class=pf-rc data-pid="${q.id}" onclick="pfOpen(${q.id})"><div class=pph>${q.photo?`<img loading=lazy src="${esc(q.photo)}">`:`<span>${initials(q.name)}</span>`}</div><b>${esc(q.name)}</b></div>`).join('')}</div>`:''}</div>`}
 document.addEventListener('keydown',e=>{if(S.page!='perf'||S.pfTab!='neth'||!S.pfCat||e.ctrlKey&&e.key!='z'||e.altKey||e.metaKey)return;const t=e.target,tag=(t&&t.tagName)||'';if(/INPUT|TEXTAREA|SELECT/.test(tag)||$('modal').style.display=='flex'||$('fbOv'))return;
  const d=S.neth[S.pfCat],k=e.key.toLowerCase();if(k=='u'||(e.ctrlKey&&k=='z')){e.preventDefault();nethUndo();return}
  if(S.nethMode!='one'||!d||!d.people.length)return;const p=d.people[0];
- if(/^[1-9]$/.test(k)&&ETHNICITIES[+k-1]){e.preventDefault();nethTag(p.id,ETHNICITIES[+k-1])}else if(k=='s'){e.preventDefault();nethSkip(p.id)}else if(k=='o'){e.preventDefault();const i=$('nethOther');if(i)i.focus()}});
+ {const g=ethByKey(k);if(g){e.preventDefault();nethTag(p.id,g)}else if(k=='s'){e.preventDefault();nethSkip(p.id)}else if(k=='o'){e.preventDefault();const i=$('nethOther');if(i)i.focus()}}});
 /* Ethnicity filter (People page): values held by people in the library, with counts for the current Mainstream / Porn choice */
 S.pfEth='';S.ethV=null;
 function pfEthLoad(){api('/api/people/ethnicities').then(j=>{S.ethV=j.values||[];pfEthDraw()},()=>{})}
@@ -1567,7 +1567,9 @@ async function ppRefresh(pid){const b=$('ppRef');if(!b||b.disabled)return;const 
  toast(`Updated from ${d.person.source||'TMDB'} — Filmography: ${d.total} film${d.total==1?'':'s'}, you have ${d.owned}`+(ch.length?` (${ch.join(', ')})`:' (no changes)'))}
 async function setPersonTpdb(pid,auto){try{await api('/api/person/'+pid+'/tpdb',{method:'POST',body:{tpdb:auto?'':$('ppTpdb').value}})}catch(e){toast(e.message||String(e));return}showPerson(pid,{keep:true,nohist:true,refresh:!!auto})}
 const GENDERS=['Female','Male','Non Binary','Transgender Female','Transgender Male','Unknown'];
-const ETHNICITIES=['Asian','Black','Latina/Latino','Middle Eastern','Mixed','Native American','Pacific Islander','South Asian','White'];
+const ETHNICITIES=['Asian','Black','Jewish','Latina/Latino','Middle Eastern','Mixed','Native American','Pacific Islander','South Asian','White'];
+function ethKey(g){return g==='Jewish'?'J':String(ETHNICITIES.filter(x=>x!=='Jewish').indexOf(g)+1)}
+function ethByKey(k){if(k==='j'||k==='J')return 'Jewish';if(/^[1-9]$/.test(k)){const gs=ETHNICITIES.filter(x=>x!=='Jewish');return gs[+k-1]||null}return null}
 const PPF=[['links','Links (one per line, "IAFD: https://…" or just the URL)'],['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['ethnicity','Ethnicity (as a source lists it, or your own)'],['gender','Gender'],['deathday','Death date (YYYY-MM-DD)'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
 function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}e.dataset.pid=p.id;
  e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:k=='gender'?`<select id=ppe_gender><option value="">(not set)</option>${GENDERS.map(g=>`<option${v==g?' selected':''}>${g}</option>`).join('')}</select>`:k=='ethnicity'?`<input id=ppe_ethnicity list=ppeEthL value="${esc(v)}" style="width:100%" autocomplete=off><datalist id=ppeEthL>${ETHNICITIES.map(x=>`<option value="${x}">`).join('')}</datalist>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+`<button class=fb-btn id=ppeFindBirth onclick="findBirth([${p.id}])">Find birth date</button>`+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <button onclick="$('ppEdit').style.display='none'">Close</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
