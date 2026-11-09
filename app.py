@@ -232,6 +232,13 @@ def attach(c, films, full=False):
     for f in films: f["aznude_queued"] = f["id"] in aq
     sm = soft_match_ids(c, [f["id"] for f in films if f.get("kind") == "scene"])
     for f in films: f["soft_match"] = f["id"] in sm
+    for f in films:  # cast character names: JSON {actor: character} -> object for the Edit hover tip
+        raw = f.get("cast_roles")
+        if isinstance(raw, str) and raw.strip():
+            try: f["cast_roles"] = json.loads(raw) or {}
+            except Exception: f["cast_roles"] = {}
+        elif not isinstance(raw, dict):
+            f["cast_roles"] = {}
     return films
 
 def soft_match_ids(c, ids=None):
@@ -1844,6 +1851,49 @@ def tmdb_date(d):
     d = (d or "")[:10] or None
     return d[:4] if d and d.endswith("-01-01") else d
 
+def cast_roles_from_credits(credits):
+    """TMDB credits.cast -> {actor name: character} for the top-billed 10 (same slice as cast_). Empty characters skipped."""
+    out = {}
+    for x in (credits or {}).get("cast", [])[:10]:
+        name = (x.get("name") or "").strip(); ch = (x.get("character") or "").strip()
+        if name and ch and name not in out: out[name] = ch
+    return out
+
+def parse_nfo_roles(path):
+    """Kodi/Emby .nfo next to a video: <actor><name>…</name><role>…</role>. -> {name: role}. Missing/broken file -> {}."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        return {}
+    out = {}
+    for actor in root.iter("actor"):
+        name = " ".join(((actor.findtext("name") or "").split()))
+        role = " ".join(((actor.findtext("role") or "").split()))
+        if name and role and name not in out: out[name] = role
+    return out
+
+def nfo_roles_for_film(c, fid):
+    """First readable .nfo beside any of the film's video files (same stem, or movie.nfo / Movie.nfo in the folder)."""
+    for (path,) in c.execute("SELECT path FROM files WHERE film_id=?", (fid,)):
+        if not path: continue
+        folder, base = os.path.split(path); stem = os.path.splitext(base)[0]
+        for cand in (os.path.join(folder, stem + ".nfo"), os.path.join(folder, "movie.nfo"), os.path.join(folder, "Movie.nfo")):
+            if os.path.isfile(cand):
+                roles = parse_nfo_roles(cand)
+                if roles: return roles
+    return {}
+
+def merge_cast_roles(existing, incoming, only_names=None):
+    """Add-only merge. never overwrites a non-empty existing value. only_names limits keys (e.g. current cast_)."""
+    out = dict(existing or {})
+    for name, ch in (incoming or {}).items():
+        name, ch = (name or "").strip(), (ch or "").strip()
+        if not name or not ch: continue
+        if only_names is not None and name not in only_names: continue
+        if not (out.get(name) or "").strip(): out[name] = ch
+    return out
+
 def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     """Apply TMDB details to a film. Never removes or alters existing tags (approved or pending): genres are only
     added when the film does not already have that tag. Hand-edited fields (edited_fields) are never replaced,
@@ -1882,6 +1932,16 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     upd = {k: v for k, v in upd.items() if k not in lock and k not in TMDB_NEVER}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
     if upd.get("title"): upd["title"] = db.strip_title_quotes(upd["title"])
+    # Character names (cast hover tip). Never overwrite a hand-locked cast_roles value.
+    if "cast_roles" not in lock:
+        row0 = c.execute("SELECT cast_, cast_roles FROM films WHERE id=?", (fid,)).fetchone()
+        try: cur_roles = json.loads((row0["cast_roles"] if row0 else None) or "{}") or {}
+        except Exception: cur_roles = {}
+        names = set(split_list(upd.get("cast_") if "cast_" in upd else ((row0["cast_"] if row0 else None) or "")))
+        roles = merge_cast_roles(cur_roles, cast_roles_from_credits(crew), only_names=names or None)
+        if roles != cur_roles:
+            upd["cast_roles"] = json.dumps(roles, ensure_ascii=False)
+        upd["cast_roles_checked"] = 1
     upd["updated_at"] = time.time()
     gnames = [g.get("name") for g in m.get("genres", []) if g.get("name")]
     if "genres" in m: upd["tmdb_genres"] = json.dumps(gnames, ensure_ascii=False)
@@ -2241,6 +2301,101 @@ def credits_start():
         JOB.clear(); JOB.update(running=True, kind="credits", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_credits_job, args=(key, ids), daemon=True).start()
     return jsonify(JOB)
+
+# ---------- Cast character names (Edit-window hover tip): NFO <role> + TMDB cast[].character ----------
+CRJ = dict(running=False, phase=None, done=0, total=0, filled=0, nfo=0, tmdb=0, skipped=0, errors=0,
+           started=None, finished=None, error=None, cancel=False)
+
+def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
+    """Resumable backfill: films not yet checked. NFO first (free), then TMDB for those with a tmdb_id.
+    Never overwrites a hand-locked cast_roles value. Gentle TMDB rate (~3/s)."""
+    def work():
+        time.sleep(wait)
+        c = C(); rl = RateLimiter(max(1, int(1.0 / max(tmdb_gap, 0.05))))
+        try:
+            # Pass 1: anything with a video file and no check yet (NFO may fill without TMDB)
+            locked = '%"cast_roles"%'
+            todo = [r[0] for r in c.execute(
+                "SELECT f.id FROM films f WHERE f.cast_roles_checked IS NULL "
+                "AND COALESCE(f.edited_fields,'') NOT LIKE ? "
+                "AND f.id IN (SELECT film_id FROM files) ORDER BY f.id", (locked,))]
+            CRJ.update(phase="nfo+tmdb", total=len(todo), done=0, filled=0, nfo=0, tmdb=0, skipped=0, errors=0,
+                       started=time.time(), error=None, cancel=False)
+            for fid in todo:
+                if CRJ.get("cancel"): break
+                CRJ["done"] += 1
+                try:
+                    row = c.execute("SELECT cast_, cast_roles, tmdb_id, edited_fields, kind FROM films WHERE id=?", (fid,)).fetchone()
+                    if not row: CRJ["skipped"] += 1; continue
+                    ed = set(json.loads(row["edited_fields"] or "[]"))
+                    if "cast_roles" in ed:
+                        c.execute("UPDATE films SET cast_roles_checked=1 WHERE id=?", (fid,)); c.commit(); CRJ["skipped"] += 1; continue
+                    try: cur = json.loads(row["cast_roles"] or "{}") or {}
+                    except Exception: cur = {}
+                    names = set(split_list(row["cast_"] or ""))
+                    incoming = nfo_roles_for_film(c, fid); src = "nfo" if incoming else None
+                    # TMDB for mainstream titles with an id (scenes / adult usually have no characters)
+                    if row["tmdb_id"] and (row["kind"] or "") != "scene" and key:
+                        need = not incoming or (names and any(n not in incoming for n in names))
+                        if need:
+                            try:
+                                rl.wait(); m = tmdb(f"movie/{row['tmdb_id']}", key, append_to_response="credits")
+                                troles = cast_roles_from_credits(m.get("credits") or {})
+                                if troles:
+                                    incoming = merge_cast_roles(incoming, troles); src = "tmdb" if src is None else src
+                            except urllib.error.HTTPError as e:
+                                if e.code == 401: CRJ["error"] = "TMDB rejected the API key (401)"; break
+                                CRJ["errors"] += 1
+                            except Exception as e:
+                                CRJ["errors"] += 1
+                                if CRJ["errors"] >= 8 and CRJ["filled"] == 0:
+                                    CRJ["error"] = f"Network/TMDB error: {e} (stopped)"; break
+                    roles = merge_cast_roles(cur, incoming, only_names=names or None)
+                    if roles != cur and roles:
+                        c.execute("UPDATE films SET cast_roles=?, cast_roles_checked=1, updated_at=? WHERE id=? "
+                                  "AND COALESCE(edited_fields,'') NOT LIKE ?",
+                                  (json.dumps(roles, ensure_ascii=False), time.time(), fid, locked))
+                        if c.execute("SELECT changes()").fetchone()[0]:
+                            CRJ["filled"] += 1
+                            if src == "nfo": CRJ["nfo"] += 1
+                            else: CRJ["tmdb"] += 1
+                        else: CRJ["skipped"] += 1
+                    else:
+                        c.execute("UPDATE films SET cast_roles_checked=1 WHERE id=?", (fid,)); CRJ["skipped"] += 1
+                    c.commit()
+                except Exception:
+                    CRJ["errors"] += 1; c.rollback()
+            db.set_setting(c, "cast_roles_backfill_done", time.time()); c.commit()
+        except Exception as ex:
+            CRJ["error"] = str(ex)[:200]
+        finally:
+            CRJ.update(running=False, phase="done", finished=time.time()); c.close()
+    CRJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
+
+@app.get("/api/cast_roles/job")
+def cast_roles_job_status():
+    c = C()
+    with_roles = c.execute("SELECT COUNT(*) FROM films WHERE COALESCE(cast_roles,'') NOT IN ('', '{}')").fetchone()[0]
+    locked = '%"cast_roles"%'
+    pending = c.execute("SELECT COUNT(*) FROM films WHERE cast_roles_checked IS NULL AND id IN (SELECT film_id FROM files) "
+                        "AND COALESCE(edited_fields,'') NOT LIKE ?", (locked,)).fetchone()[0]
+    return jsonify(dict(CRJ, with_roles=with_roles, pending=pending))
+
+@app.post("/api/cast_roles/job")
+def cast_roles_job_start():
+    c = C(); key = db.get_setting(c, "tmdb_key", "") or ""
+    db.set_setting(c, "cast_roles_backfill_started", time.time()); c.commit()
+    if not CRJ.get("running"): run_cast_roles_job(key)
+    return jsonify(CRJ)
+
+if "pytest" not in __import__("sys").modules:
+    try:
+        _c = C()
+        if db.get_setting(_c, "cast_roles_backfill_started", None) and not db.get_setting(_c, "cast_roles_backfill_done", None):
+            run_cast_roles_job(db.get_setting(_c, "tmdb_key", "") or "", wait=60)
+        _c.close()
+    except Exception:
+        pass
 
 @app.post("/api/posters/start")
 def posters_start():

@@ -471,6 +471,9 @@ def connect():
     if "rename_pending" not in cols: c.execute("ALTER TABLE films ADD COLUMN rename_pending INTEGER DEFAULT 0")  # matched by the scan, file not auto-renamed
     for col in ("kind", "release_date", "tpdb_id"):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} TEXT")
+    # Cast character names (TMDB cast[].character / NFO <actor><role>); JSON {actor name: character}
+    if "cast_roles" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles TEXT")
+    if "cast_roles_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles_checked INTEGER")  # backfill tried
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
