@@ -7,7 +7,21 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.3.5
+Jewish ethnicity, safer Delete files, and cast character names on hover — everything since v1.3.4.
+
+### 👥 People
+- **Jewish** is in the Ethnicity dropdown and Needs ethnicity quick-tag (press **J**). Wikidata values such as Jewish people, Ashkenazi, Sephardi and Mizrahi map to Jewish on fill; hand edits stay untouched.
+
+### 🗑 Delete files
+- **Delete files and remove from library** now removes the film's whole folder and everything in it (videos, Poster.jpg, nfo, stills, extras, subfolders), permanently. The confirm dialog names the folder first.
+- Falls back to deleting just the video and its stills when the folder is a library root, a drive, Desktop, the install folder, Film Tagger Data, or holds another library item. Never follows junctions or symlinks. Custom posters in Film Tagger Data move to `posters/backup/`.
+
+### 🎭 Cast
+- **Hover a cast name** in a film's Edit window to see the character they play (for example "as Dean Corso"). Click still opens the person page.
+- Character names come from TMDB (top cast) and from NFO `<actor><role>` when present. A resumable background job fills the library; hand-locked values are kept.
 
 ## What's new in v1.3.4
 People ethnicity, safer library art, stills that keep their shape, and a faster Edit window — everything since v1.3.3.
