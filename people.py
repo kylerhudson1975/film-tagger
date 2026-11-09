@@ -2270,6 +2270,10 @@ def init(app, tmdb, posters_dir):
         EJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
     if "pytest" not in __import__("sys").modules:
         _c = C()  # a backfill cut short by a restart picks up where it stopped (already-checked people are skipped)
+        for r in _c.execute("SELECT id, ethnicity FROM people WHERE COALESCE(ethnicity,'')<>'' AND COALESCE(ethnicity_source,'')<>'hand edit'").fetchall():
+            v = ", ".join(dict.fromkeys(x for x in map(norm_ethnicity, eth_parts(r["ethnicity"])) if x)) or None  # newer variant mapping
+            if v and v != r["ethnicity"]: _c.execute("UPDATE people SET ethnicity=? WHERE id=?", (v, r["id"]))
+        _c.commit()
         if db.get_setting(_c, "ethnicity_backfill_started", None) and not db.get_setting(_c, "ethnicity_backfill_done", None): eth_job(wait=150)
     def eth_counts(c):
         data = index(c); adult = adult_film_ids(c); vals = {}; unknown = 0; srcs = {}; known = 0
