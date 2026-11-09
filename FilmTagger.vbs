@@ -7,16 +7,31 @@ d = fso.GetParentFolderName(WScript.ScriptFullName)
 serverOnly = False
 If WScript.Arguments.Count > 0 Then If LCase(WScript.Arguments(0)) = "/server" Then serverOnly = True
 
-' Installed with FilmTaggerSetup.exe: bundled Python in .\python, library data in .\data (kept on upgrade).
+' Installed with FilmTaggerSetup.exe: bundled Python in .\python, library data in
+' %LOCALAPPDATA%\Film Tagger Data (outside the install folder so updates / reinstalls / install
+' moves never wipe custom posters or person photos). Older installs kept data in .\data; that
+' folder is copied once into the new location (never deleted).
 ' Manual install with "Install Film Tagger.bat": .venv, data (films.db) next to app.py.
 port = "5050"
 pyw = d & "\python\pythonw.exe"
 If fso.FileExists(pyw) Then
-  dataDir = d & "\data"
+  dataDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Film Tagger Data"
+  oldData = d & "\data"
   If Not fso.FolderExists(dataDir) Then fso.CreateFolder(dataDir)
+  ' One-time copy of the old install\data library (robocopy skips existing files; films.db last via /XF then copy).
+  If Not fso.FileExists(dataDir & "\films.db") And fso.FileExists(oldData & "\films.db") Then
+    sh.Run "cmd /c robocopy """ & oldData & """ """ & dataDir & """ /E /COPY:DAT /R:2 /W:1 /NFL /NDL /NJH /NJS /XF films.db & copy /Y """ & oldData & "\films.db"" """ & dataDir & "\films.db""", 0, True
+  End If
   sh.Environment("PROCESS")("FILMTAGGER_DB") = dataDir & "\films.db"
+  sh.Environment("PROCESS")("FILMTAGGER_DATA") = dataDir
+  portFile = ""
   If fso.FileExists(dataDir & "\port.txt") Then
-    t = Trim(fso.OpenTextFile(dataDir & "\port.txt").ReadLine())
+    portFile = dataDir & "\port.txt"
+  ElseIf fso.FileExists(oldData & "\port.txt") Then
+    portFile = oldData & "\port.txt"
+  End If
+  If portFile <> "" Then
+    t = Trim(fso.OpenTextFile(portFile).ReadLine())
     If IsNumeric(t) And t <> "" Then port = CStr(CLng(t))
   End If
 Else

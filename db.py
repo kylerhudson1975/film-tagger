@@ -1,11 +1,68 @@
 """Shared database layer for Film Tagger (used by app.py and smarttag.py)."""
-import os, re, sqlite3, json, time, unicodedata
+import os, re, sqlite3, json, time, unicodedata, shutil
 
 BASE = os.path.dirname(os.path.abspath(__file__))
+
+def user_data_dir():
+    """Library folder (films.db + posters/) kept outside the install tree so an update, reinstall, or install
+    move never wipes custom posters or person photos. Override with FILMTAGGER_DATA. On Windows the default is
+    %LOCALAPPDATA%\\Film Tagger Data; elsewhere (and for manual installs) it is <code>\\data when that exists."""
+    env = os.environ.get("FILMTAGGER_DATA")
+    if env: return os.path.abspath(env)
+    la = os.environ.get("LOCALAPPDATA")
+    if la: return os.path.join(la, "Film Tagger Data")
+    return os.path.join(BASE, "data")
+
+def _copy_library(src, dest):
+    """Copy an existing library folder into dest (files only copied when missing). Never deletes or overwrites.
+    films.db is copied last so a half-finished run is retried (missing films.db) on the next launch."""
+    os.makedirs(dest, exist_ok=True)
+    delayed = []
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dest if rel == "." else os.path.join(dest, rel)
+        os.makedirs(target_root, exist_ok=True)
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for name in files:
+            s, t = os.path.join(root, name), os.path.join(target_root, name)
+            if rel == "." and name.lower() == "films.db":
+                delayed.append((s, t)); continue
+            if not os.path.exists(t):
+                shutil.copy2(s, t)
+    for s, t in delayed:
+        if not os.path.exists(t):
+            shutil.copy2(s, t)
+
+def migrate_library_if_needed():
+    """One-time: if the library still lives under the install folder (BASE\\data) and the external user-data
+    folder has no films.db yet, copy it there. Returns the destination path when a copy ran, else None."""
+    la = os.environ.get("LOCALAPPDATA")
+    if not la and not os.environ.get("FILMTAGGER_DATA"):
+        return None
+    dest = user_data_dir()
+    src = os.path.join(BASE, "data")
+    if not os.path.isfile(os.path.join(src, "films.db")):
+        return None
+    if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dest)):
+        return None
+    if os.path.isfile(os.path.join(dest, "films.db")):
+        return None
+    _copy_library(src, dest)
+    if not os.path.isfile(os.path.join(dest, "films.db")):
+        raise OSError(f"Library copy to {dest} did not produce films.db")
+    return dest
+
 def _default_db():
-    """data\\films.db (installed layout) when it exists, else films.db next to the code (manual install)."""
-    d = os.path.join(BASE, "data", "films.db")
-    return d if os.path.exists(d) else os.path.join(BASE, "films.db")
+    """FILMTAGGER_DB wins. Else prefer the external user-data library (migrating from install\\data once),
+    then legacy install\\data\\films.db, then films.db next to the code (manual / dev)."""
+    try: migrate_library_if_needed()
+    except OSError: pass
+    external = os.path.join(user_data_dir(), "films.db")
+    if os.path.exists(external): return external
+    legacy = os.path.join(BASE, "data", "films.db")
+    if os.path.exists(legacy): return legacy
+    return os.path.join(BASE, "films.db")
+
 DB_PATH = os.environ.get("FILMTAGGER_DB") or _default_db()  # FILMTAGGER_DB always wins
 VIDEO_EXT = {".mkv", ".mp4", ".avi", ".mov", ".wmv", ".m4v", ".mpg", ".mpeg", ".ts", ".m2ts",
              ".webm", ".flv", ".vob", ".divx", ".ogv", ".3gp", ".rmvb", ".rm", ".asf", ".mts", ".iso"}

@@ -37,8 +37,10 @@ STEP 2 - Double-click FilmTaggerSetup.exe
 Film Tagger is installed in your own user folder
 (%LOCALAPPDATA%\Film Tagger). There is a "Film Tagger" icon in the
 Start menu, and on the Desktop if you chose it.
-To update later, just run a newer FilmTaggerSetup.exe. Your library is
-kept.
+To update later, just run a newer FilmTaggerSetup.exe. Your library
+(database, custom posters and person photos) lives in
+%LOCALAPPDATA%\Film Tagger Data, outside the install folder, so an update,
+reinstall or install move never wipes it.
 
 
 ---------------------------------------------------------------------
@@ -146,10 +148,10 @@ TROUBLESHOOTING
 The window says "localhost refused to connect" / "can't reach this page"
    - Wait 5 seconds and press F5. The first start can be slow.
    - Still not working? Press Windows+R, paste this and press Enter:
-         cmd /k cd /d "%LOCALAPPDATA%\Film Tagger" && set "FILMTAGGER_DB=data\films.db" && python\python.exe app.py
+         cmd /k cd /d "%LOCALAPPDATA%\Film Tagger" && set "FILMTAGGER_DB=%LOCALAPPDATA%\Film Tagger Data\films.db" && python\python.exe app.py
      Any error message appears in that window.
    - Another program already uses port 5050? Put a different number
-     (e.g. 5051) in the file  %LOCALAPPDATA%\Film Tagger\data\port.txt
+     (e.g. 5051) in the file  %LOCALAPPDATA%\Film Tagger Data\port.txt
      and start Film Tagger again.
 
 A Windows Firewall box appears
@@ -166,8 +168,8 @@ The drive with my films is unplugged
 
 Back up your catalogue
    Library & Settings > Backup > "Export JSON". Keep that file safe.
-   (Or copy the folder  %LOCALAPPDATA%\Film Tagger\data  while the
-   app is stopped. It holds films.db and your custom posters.)
+   (Or copy the folder  %LOCALAPPDATA%\Film Tagger Data  while the
+   app is stopped. It holds films.db, your custom posters and person photos.)
 
 
 ---------------------------------------------------------------------
@@ -179,7 +181,7 @@ Uninstall:  Windows Settings > Apps > Installed apps > Film Tagger >
             Uninstall (or Start menu > Film Tagger > Uninstall).
             It asks whether to delete your library (database and custom
             posters). The answer "No" is the default: your library is kept
-            in %LOCALAPPDATA%\Film Tagger\data and is used again if you
+            in %LOCALAPPDATA%\Film Tagger Data and is used again if you
             reinstall. Your video files are never touched.
 
 

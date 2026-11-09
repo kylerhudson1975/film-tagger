@@ -70,14 +70,16 @@ FunctionEnd
 Section "${APPNAME} (required)" SecMain
   SectionIn RO
   !insertmacro StopServer
-  ; replace program files, never the user's data folder
+  ; replace program files; library is in %LOCALAPPDATA%\Film Tagger Data (never touched here)
   RMDir /r "$INSTDIR\python"
   RMDir /r "$INSTDIR\static"
   SetOutPath "$INSTDIR"
   File /r "${STAGE}\*.*"
-  CreateDirectory "$INSTDIR\data"
+  ; Library lives outside the install folder (survives updates / reinstalls / install moves).
+  CreateDirectory "$LOCALAPPDATA\Film Tagger Data"
+  CreateDirectory "$INSTDIR\data"  ; legacy; kept so an old shortcut still finds a data folder
   ${If} $Port != ""
-    FileOpen $1 "$INSTDIR\data\port.txt" w
+    FileOpen $1 "$LOCALAPPDATA\Film Tagger Data\port.txt" w
     FileWrite $1 "$Port"
     FileClose $1
   ${EndIf}
@@ -151,11 +153,17 @@ Section "Uninstall"
   Delete "$INSTDIR\*.md"
   Delete "$INSTDIR\*.vbs"
   Delete "$INSTDIR\LICENSE"
-  ${If} ${FileExists} "$INSTDIR\data\*.*"
-    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your film library (database and custom posters)?$\r$\n$\r$\nChoose No to keep it in:$\r$\n$INSTDIR\data$\r$\n(it will be used again if you reinstall). Your video files are never touched." /SD IDNO IDYES deldata IDNO keepdata
+  ${If} ${FileExists} "$LOCALAPPDATA\Film Tagger Data\*.*"
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your film library (database and custom posters)?$\r$\n$\r$\nChoose No to keep it in:$\r$\n$LOCALAPPDATA\Film Tagger Data$\r$\n(it will be used again if you reinstall). Your video files are never touched." /SD IDNO IDYES deldata IDNO keepdata
     deldata:
+      RMDir /r "$LOCALAPPDATA\Film Tagger Data"
       RMDir /r "$INSTDIR\data"
     keepdata:
+  ${ElseIf} ${FileExists} "$INSTDIR\data\*.*"
+    MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "Also delete your film library (database and custom posters)?$\r$\n$\r$\nChoose No to keep it in:$\r$\n$INSTDIR\data$\r$\n(it will be used again if you reinstall). Your video files are never touched." /SD IDNO IDYES deldata2 IDNO keepdata2
+    deldata2:
+      RMDir /r "$INSTDIR\data"
+    keepdata2:
   ${EndIf}
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
