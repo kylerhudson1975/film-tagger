@@ -1201,7 +1201,7 @@ function ppUnopToggle(){S.ppUnop=!S.ppUnop;localStorage.ppUnop=S.ppUnop?'1':'0';
 function ppUSort(k){const s=S.uSort;S.uSort=s.k==k?{k,d:-s.d}:{k,d:k=='name'?1:-1};localStorage.uSort=JSON.stringify(S.uSort);const el=$('ppUnop');if(el)el.outerHTML=ppUnopTable()}
 function ppUnopTable(){const qq=ppQ(),s=S.uSort;
  if(S.unop==null)return '<div id=ppUnop class=muted>Loading…</div>';
- const l=S.unop.filter(p=>!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w))),j=S.unopJob||{};
+ const l=S.unop.filter(p=>pfEthOk(p)&&(!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w)))),j=S.unopJob||{};
  const v=(p,k)=>k=='career'?p.first:k=='last'?p.last:p[k],tie=(a,b)=>(b.scenes||0)-(a.scenes||0)||a.name.localeCompare(b.name);
  l.sort((a,b)=>{if(s.k=='name')return s.d*a.name.localeCompare(b.name,undefined,{sensitivity:'base'});const x=v(a,s.k),y=v(b,s.k);if(x==null&&y==null)return tie(a,b);if(x==null)return 1;if(y==null)return -1;return s.d*(x-y)||tie(a,b)});
  const cols=[['name','Name'],['career','Started'],['last','Last year'],['years','Years active'],['scenes','Scenes (ThePornDB)']];
@@ -1322,7 +1322,7 @@ function pfNeedF(k){S.needF=S.needF==k?'':k;S.needMax=300;pfTabsDraw();pfDraw()}
 function pfNeedList(){const d=S.need[S.pfCat],qq=ppQ();if(!d)return '<div id=pfNeed class=muted>Loading…</div>';
  const ks=Object.keys(NEED_L).filter(k=>S.pfCat=='porn'||k=='birth'||k=='photo'||k=='link');
  const chips=`<div class=pf-need-f>${S.needF=='birth'?`<button id=fbAll class=pri onclick="findBirthAll()" title="Look up every listed person without a birth date, one at a time, and show the results to review">Find all birth dates</button>`:''}${ks.map(k=>`<button data-f="${k}" class="${S.needF==k?'on':''}" onclick="pfNeedF('${k}')">${NEED_L[k]} <span class=pf-n>(${dN(d.counts[k]||0)})</span></button>`).join('')}</div>`;
- const l=d.people.filter(p=>(!S.needF||p.missing.includes(S.needF))&&(!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w))));
+ const l=d.people.filter(p=>pfEthOk(p)&&(!S.needF||p.missing.includes(S.needF))&&(!qq||qq.split(/\s+/).every(w=>p.name.toLowerCase().includes(w))));
  if(!l.length)return `<div id=pfNeed>${chips}<p class=muted>${d.people.length?'Nobody matches.':'Everyone here has their key info. Nice.'}</p></div>`;
  const u=S.pfCat=='porn'?['scene','scenes']:['title','titles'];
  return `<div id=pfNeed>${chips}<p class=muted style="margin:0 0 8px">${dN(l.length)} ${l.length==1?'person needs':'people need'} attention${S.pfCat=='porn'?', most scenes first':''}${S.pfCat=='mainstream'?' (opened profiles only)':''}. Open the full profile from the side panel to fix them.</p><div class=pcards>${l.slice(0,S.needMax).map(p=>`<div class=pcard data-pid="${p.id}" onclick="pfOpen(${p.id})" title="Show ${esc(p.name)}">
@@ -1332,10 +1332,11 @@ function pfNeedList(){const d=S.need[S.pfCat],qq=ppQ();if(!d)return '<div id=pfN
    on an adult title (a scene, or a file under an adult library), the same rule as Built profiles / the person page; Mainstream =
    everyone else. Mainstream hides the ThePornDB-only tabs (Not opened yet, Studios). */
 const pfTabsFor=c=>c=='mainstream'?PF_TABS.filter(t=>t[0]!='unop'&&t[0]!='studios'):PF_TABS;
-const pfInCat=p=>!S.pfCat||(S.pfCat=='porn')===!!p.adult;
+const pfEthOk=p=>S.page!='perf'||!S.pfEth||!!(S.ethIds&&S.ethIds.has(p.id||p.pid));
+const pfInCat=p=>(!S.pfCat||(S.pfCat=='porn')===!!p.adult)&&pfEthOk(p);
 const pfMain=()=>S.page=='perf'&&S.pfCat=='mainstream';
-function bList(){return pfMain()?S.builtM:S.built}
-function pfCatSet(k){S.pfCat=S.pfCat==k?'':k;setTimeout(pfEthDraw,0);if(S.pfCat){S.pfTab='built'}if(history.state&&history.state.page=='perf')history.replaceState({...history.state,pcat:S.pfCat,ptab:S.pfTab},'');pfClose();pfCatDraw();pfTabsDraw();pfDraw();if(S.pfCat||ppQ())pfFetch()}
+function bList(){const l=pfMain()?S.builtM:S.built;return l&&S.pfEth&&S.page=='perf'?l.filter(pfEthOk):l}
+function pfCatSet(k){S.pfCat=S.pfCat==k?'':k;setTimeout(pfEthDraw,0);if(S.pfCat){S.pfTab=S.pfEth?'all':'built'}if(history.state&&history.state.page=='perf')history.replaceState({...history.state,pcat:S.pfCat,ptab:S.pfTab},'');pfClose();pfCatDraw();pfTabsDraw();pfDraw();if(S.pfCat||ppQ())pfFetch()}
 function pfCatDraw(){[['mainstream','pfCatM'],['porn','pfCatP']].forEach(([k,id])=>{const b=$(id);if(b){b.classList.toggle('on',S.pfCat==k);b.setAttribute('aria-pressed',S.pfCat==k?'true':'false');b.title=S.pfCat==k?'Showing '+(k=='porn'?'porn performers':'mainstream people')+'. Click again to clear':'Show built profiles for '+(k=='porn'?'porn performers':'mainstream people')}})}S.pfSGroup=localStorage.pfSGroup=='site'?'site':'label';S.pfAll=null;S.pfSel=null;S.pfSum=null;S.pfKick={};S.pfCache={};S.pfCo={};
 function ppQ(){return (S.page=='perf'&&$('pfQ')?$('pfQ').value:$('q').value).trim().toLowerCase()}
 function curGrp(){return S.page=='perf'?(pfMain()?'':S.pfTab=='studios'?S.pfSGroup:S.pfTab=='built'?S.bGroup:''):S.bGroup}
@@ -1343,7 +1344,7 @@ function ppOpen(id){if(S.page=='perf')return pfOpen(id);showPerson(id)}
 function ppGroupPick(v){if(S.page=='perf'&&S.pfTab=='studios'){S.pfSGroup=v;localStorage.pfSGroup=v;pfTabsDraw();ppBRedraw()}else ppBGroupSet(v)}
 /* top-bar People: back to the empty default like Home / Dashboard (search box and results cleared, sidebar tag groups
    collapsed and scrolled to the top, side panel closed) */
-function perfHome(){try{setAllCats(true)}catch(e){}resetSearch();renderTagCloud();$('side').scrollTop=0;S.pfQv='';S.pfAll=null;S.pfEth='';const q=$('pfQ');if(q)q.value='';const f=()=>{const i=$('pfQ');if(i&&S.page=='perf'){i.focus();try{i.setSelectionRange(0,0)}catch(e){}}};Promise.resolve(showPerformers()).finally(()=>requestAnimationFrame(f));requestAnimationFrame(f)}
+function perfHome(){try{setAllCats(true)}catch(e){}resetSearch();renderTagCloud();$('side').scrollTop=0;S.pfQv='';S.pfAll=null;S.pfEth='';S.ethIds=null;const q=$('pfQ');if(q)q.value='';const f=()=>{const i=$('pfQ');if(i&&S.page=='perf'){i.focus();try{i.setSelectionRange(0,0)}catch(e){}}};Promise.resolve(showPerformers()).finally(()=>requestAnimationFrame(f));requestAnimationFrame(f)}
 async function showPerformers(opt={}){
  if(opt.tab&&PF_TABS.some(t=>t[0]==opt.tab)){S.pfTab=opt.tab;localStorage.pfTab=opt.tab}
  if('cat' in opt)S.pfCat=opt.cat||'';else if(!opt.keep)S.pfCat='';if(!pfTabsFor(S.pfCat).some(t=>t[0]==S.pfTab))S.pfTab='built';
@@ -1357,7 +1358,7 @@ async function showPerformers(opt={}){
  if(!opt.keep){S.pfSel=null;S.pfSum=null;clearTimeout(S.pfPollT)}  // opening / resetting People never keeps an old side panel
  pfCatDraw();pfTabsDraw();pfDraw();pfPanelDraw();if(opt.scroll)$('content').scrollTop=opt.scroll;
  await pfFetch();if(opt.scroll)$('content').scrollTop=opt.scroll}
-function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&S.need[S.pfCat].total):k=='unop'?(S.unop&&S.unop.length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&(S.pfAll.q||S.pfAll.eth)?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
+function pfCount(k){const B=bList(),n=k=='fav'?(S.favs&&S.favs.filter(pfInCat).length):k=='built'?(B&&B.length):k=='need'?(S.need[S.pfCat]&&(S.pfEth?S.need[S.pfCat].people.filter(pfEthOk).length:S.need[S.pfCat].total)):k=='unop'?(S.unop&&S.unop.filter(pfEthOk).length):k=='studios'?(S.bgrp&&S.bgrp.by==S.pfSGroup&&!S.bgrp.lib&&S.bgrp.groups?S.bgrp.groups.length:null):k=='all'?(S.pfAll&&(S.pfAll.q||S.pfAll.eth)?S.pfAll.total:null):null;return n==null?'':` <span class=pf-n>(${dN(n)})</span>`}
 function pfTabsDraw(){const el=$('pfTabs');if(!el)return;if(!S.pfCat){el.innerHTML='';el.style.display='none';return}el.style.display='';el.innerHTML=pfTabsFor(S.pfCat).map(([k,t])=>`<button data-tab="${k}" class="${S.pfTab==k?'on':''}${k=='fav'?' pf-fav':''}" onclick="pfTab('${k}')">${k=='fav'?ST_ON+' ':''}${t}${pfCount(k)}</button>`).join('')}
 function pfTab(k){if(S.pfTab!==k&&S.pfSel)pfClose();S.pfTab=k;localStorage.pfTab=k;if(history.state&&history.state.page=='perf')history.replaceState({...history.state,ptab:k},'');pfTabsDraw();pfDraw();pfFetch()}
 function pfDraw(){const el=$('pfList');if(!el||S.page!='perf')return;const t=S.pfTab;
@@ -1373,14 +1374,15 @@ async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRo
  if(t=='all')jobs.push(pfAllSearch().then(()=>done('all')));
  await Promise.allSettled(jobs)}
 async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim(),eth=S.pfEth||'';if(!q&&!eth){S.pfAll={q:'',people:[],total:0};return}
- try{const a={q,limit:eth&&!q?400:120};if(eth)a.eth=eth;const j=await api('/api/people/search?'+new URLSearchParams(a));if((($('pfQ')||{}).value||'').trim()===q&&(S.pfEth||'')===eth)S.pfAll={q,eth,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,eth,people:[],total:0,error:true}}}
+ try{const a={q,limit:eth&&!q?1000:120};if(eth)a.eth=eth;const j=await api('/api/people/search?'+new URLSearchParams(a));if((($('pfQ')||{}).value||'').trim()===q&&(S.pfEth||'')===eth)S.pfAll={q,eth,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,eth,people:[],total:0,error:true}}}
 /* Ethnicity filter (People page): values held by people in the library, with counts for the current Mainstream / Porn choice */
 S.pfEth='';S.ethV=null;
 function pfEthLoad(){api('/api/people/ethnicities').then(j=>{S.ethV=j.values||[];pfEthDraw()},()=>{})}
 function pfEthDraw(){const el=$('pfEth');if(!el)return;const k=S.pfCat||'n',l=(S.ethV||[]).filter(v=>v[k]>0||v.value===S.pfEth);el.style.display=(S.ethV&&S.ethV.length)||S.pfEth?'':'none';
  const o=v=>`<option value="${esc(v.value)}"${v.value===S.pfEth?' selected':''}>${esc(v.value)} (${dN(v[k])})</option>`,m=l.filter(v=>v.main),x=l.filter(v=>!v.main);
  el.innerHTML='<option value="">Any ethnicity</option>'+m.map(o).join('')+(x.length?'<option disabled>── as the source lists it ──</option>'+x.map(o).join(''):'')}
-function pfEthSet(v){S.pfEth=v||'';if(S.pfCat&&S.pfEth&&S.pfTab!='all'){pfTab('all');return}pfAllSearch().then(()=>{pfTabsDraw();pfDraw()})}
+async function pfEthIds(){const v=S.pfEth;if(!v){S.ethIds=null;return}if(S.ethIds&&S.ethIds.v===v)return;try{const j=await api('/api/people/ethnicities?'+new URLSearchParams({ids:v}));if(S.pfEth===v){S.ethIds=new Set(j.ids);S.ethIds.v=v}}catch(e){}}
+async function pfEthSet(v){S.pfEth=v||'';S.ethIds=null;await pfEthIds();if(S.pfCat&&S.pfEth&&['built','studios'].includes(S.pfTab)){pfTab('all');return}pfAllSearch().then(()=>{pfTabsDraw();pfDraw()})}
 function pfAllList(){const a0=S.pfAll,a=a0&&(a0.q||a0.eth)&&S.pfCat?{...a0,people:a0.people.filter(pfInCat)}:a0;if(a!==a0)a.total=a.people.length;
  if(!a||!(a.q||a.eth))return '<div id=pfAll><p class=muted>Type a name in the search box to find anyone credited in your library (films and scenes).</p></div>';
  if(!a.people.length)return `<div id=pfAll><p class=muted>Nobody in your library matches “${esc([a.q,a.eth].filter(Boolean).join(' · '))}”.</p></div>`;

@@ -57,7 +57,7 @@ with sync_playwright() as pw:
     pg.click("#perfBtn"); pg.wait_for_timeout(1500)
     check(pg.evaluate("S.page") == "perf" and "on" in pg.get_attribute("#perfBtn", "class"), "Performers page shown, button active")
     check(pg.evaluate("[...document.querySelectorAll('#navRow button.on')].map(b=>b.id)") == ["perfBtn"], "only Performers active")
-    check(pg.inner_text(".pf-h") == "PEOPLE" and pg.get_attribute("#pfQ", "placeholder") == "Search people…", "header + search")
+    check(pg.inner_text(".pf-h") == "PEOPLE" and pg.get_attribute("#pfQ", "placeholder") .startswith("Search people"), "header + search")
     tabs = lambda: pg.evaluate("[...document.querySelectorAll('#pfTabs button')].map(b=>b.innerText.replace(/\\s+/g,' ').trim())")
     # empty default: search box + Mainstream / Porn, no performers, no tabs
     check(pg.locator("#pfCatM").inner_text() == "Mainstream" and pg.locator("#pfCatP").inner_text() == "Porn", "category buttons")

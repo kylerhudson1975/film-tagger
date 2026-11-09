@@ -34,7 +34,7 @@ assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Ana Lopez"],))
 e = cl.post(f"/api/person/{ids['Cy Hand']}/edit", json={"ethnicity": "caucasian"}).json
 assert e["ok"] and "ethnicity" in e["edited"]
 pp = cl.get(f"/api/person/{ids['Cy Hand']}").json["person"]
-assert pp["ethnicity"] == "White" and pp["ethnicity_source"] == "hand edit", pp
+assert pp["ethnicity"] == "White" and pp["ethnicity_source"] == "manual", pp
 cl.post(f"/api/person/{ids['Cy Hand']}/edit", json={"ethnicity": ""})  # cleared by hand: stays empty and locked
 row = c.execute("SELECT * FROM people WHERE id=?", (ids["Cy Hand"],)).fetchone()
 P.apply_tpdb(c, row, {"id": "tpC", "extras": {"ethnicity": "Asian"}})
@@ -55,7 +55,9 @@ def fake_sparql(q):
 birthdates._sparql = fake_sparql
 tp_calls = []
 def fake_tpdb(path, tok, **k):
-    tp_calls.append(path); eth = {"tpB": "Caucasian", "tpE": "Other"}[path.rsplit("/", 1)[1]]
+    tp_calls.append(path)
+    if path == "/performers": return {"data": []}  # name search (Flo Ruiz, never linked): nothing found
+    eth = {"tpB": "Caucasian", "tpE": "Other"}[path.rsplit("/", 1)[1]]
     return {"data": {"id": "x", "extras": {"ethnicity": eth}}}
 tpdb.call_retry = fake_tpdb
 def run():
@@ -69,7 +71,7 @@ eth = {n: c.execute("SELECT ethnicity FROM people WHERE id=?", (ids[n],)).fetcho
 assert eth == {"Ana Lopez": "Latina/Latino", "Bea White": "White", "Cy Hand": "White", "Di Wiki": "Black", "Ed None": None, "Flo Ruiz": None}, eth
 assert c.execute("SELECT ethnicity_source FROM people WHERE id=?", (ids["Di Wiki"],)).fetchone()[0] == "wikidata Q9"
 assert st["wikidata"] == 1 and st["tpdb"] == 1 and st["error"] is None, st
-assert sorted(tp_calls) == ["/performers/tpB", "/performers/tpE"], tp_calls
+assert sorted(tp_calls) == ["/performers", "/performers/tpB", "/performers/tpE"], tp_calls
 # resumable: a second run looks nobody up again (Ed None was checked, nothing published)
 tp_calls.clear(); sparql.clear(); st = run()
 assert st["total"] == 0 and not tp_calls and not sparql, (st, tp_calls)
@@ -83,7 +85,7 @@ assert S(eth="White") == ["Bea White", "Cy Hand"] and S(q="cy", eth="White") == 
 # counts per value
 v = cl.get("/api/people/ethnicities").json
 assert {x["value"]: x["n"] for x in v["values"]} == {"White": 2, "Latina/Latino": 1, "Black": 1}, v
-assert v["unknown"] == 2 and v["people_with"] == 4 and v["sources"] == {"theporndb": 2, "hand": 1, "wikidata": 1}, v
+assert v["unknown"] == 2 and v["people_with"] == 4 and v["sources"] == {"theporndb": 2, "manual": 1, "wikidata": 1}, v
 # several values (Wikidata lists ancestry groups): each counts, the filter and a known word find the person
 cl.post(f"/api/person/{ids['Flo Ruiz']}/edit", json={"ethnicity": "Irish Americans, white"})
 assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Irish Americans, White"
