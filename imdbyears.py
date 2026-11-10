@@ -12,7 +12,9 @@ import db
 
 BASICS_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
 TITLE_TYPES = frozenset(("movie", "tvMovie", "video", "short"))
-TYPE_GROUPS = (("movie", "tvMovie"), ("video",), ("short",))
+# Prefer a theatrical movie over a TV movie, and never fall through to video/short
+# once a higher type group had any candidates (avoids "Amadeus" 1984 matching a 2018 video).
+TYPE_GROUPS = (("movie",), ("tvMovie",), ("video",), ("short",))
 STALE_SEC = 7 * 24 * 3600
 UA = "Film Tagger/1.0 (non-commercial; IMDb datasets.imdbws.com title.basics refresh)"
 SCHEMA = """
@@ -210,25 +212,27 @@ def _pick_match(rows, year=None):
         year = None
     for group in TYPE_GROUPS:
         cand = [r for t in group for r in by_type.get(t, [])]
-        if not cand: continue
+        if not cand:
+            continue
         ids = {r["tconst"] for r in cand}
         if len(ids) == 1:
             r = cand[0]
             return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "unique_title"}
         if year is None:
-            continue
+            return None  # ambiguous at this preferred type; do not fall through to video/short
         exact = [r for r in cand if int(r["start_year"]) == year]
         eids = {r["tconst"] for r in exact}
         if len(eids) == 1:
             r = exact[0]
             return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "exact_year"}
         if len(eids) > 1:
-            continue
+            return None
         near = [r for r in cand if abs(int(r["start_year"]) - year) == 1]
         nids = {r["tconst"] for r in near}
         if len(nids) == 1:
             r = near[0]
             return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "year_plus_minus_1"}
+        return None
     return None
 
 

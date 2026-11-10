@@ -28,6 +28,9 @@ FAKE = [
     ("tt2222222", "movie", "The Gift", "The Gift", 2015),
     ("tt3333333", "movie", "Classic Example", "Classic Example", 1972),
     ("tt4444444", "video", "Video Only Title", "Video Only Title", 1985),
+    ("tt0086879", "movie", "Amadeus", "Amadeus", 1984),
+    ("tt0229208", "tvMovie", "Amadeus", "Amadeus", 1984),
+    ("tt7938570", "video", "Amadeus", "Amadeus", 2018),
 ]
 
 
@@ -62,7 +65,7 @@ class FakeDataset(unittest.TestCase):
         self.assertTrue(st["ready"])
         self.assertEqual(st["source_date"], "2026-11-10")
         # tvSeries and \N year are dropped; 10 usable rows in FAKE
-        self.assertEqual(st["rows"], 10)
+        self.assertEqual(st["rows"], 13)
         self.assertFalse(st["stale"])
         self.assertIsNone(iy.year_for("tt0000001"))
         self.assertIsNone(iy.year_for("tt0999999"))
@@ -92,6 +95,14 @@ class FakeDataset(unittest.TestCase):
         self.assertEqual(near["how"], "year_plus_minus_1")
         # 2008 is not within ±1 of either remake
         self.assertIsNone(iy.find_by_title("The Gift", year=2008))
+
+    def test_same_title_prefers_movie_over_video_and_tv(self):
+        # 1984 movie + 1984 tvMovie + 2018 video: year 1984 must be the theatrical film, not the video
+        hit = iy.find_by_title("Amadeus", year=1984)
+        self.assertEqual(hit["tconst"], "tt0086879")
+        self.assertEqual(hit["year"], 1984)
+        self.assertIn(hit["how"], ("unique_title", "exact_year"))
+        self.assertEqual(iy.resolve_film("Amadeus", year=1984)["year"], 1984)
 
     def test_video_type_when_no_movie(self):
         hit = iy.find_by_title("Video Only Title")
