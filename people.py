@@ -247,6 +247,8 @@ def migrate(c):
     for col, typ in TPDB_COLS + FAV_COLS + GALLERY_COLS:  # nullable / default 0: existing rows untouched
         if col not in have: c.execute(f"ALTER TABLE people ADD COLUMN {col} {typ}")
     c.execute(REVIEW_SCHEMA)
+    import persongallery as _pg
+    c.execute(_pg.HIDE_SCHEMA)  # hidden photos in a performer gallery (files are never moved)
     c.commit()
 
 # Classic Porn people whose TMDB person could not be picked confidently (several candidates): listed, never guessed
@@ -1189,11 +1191,11 @@ def init(app, tmdb, posters_dir):
         c = C(); row = _pg_row(c, pid)
         if not row: return jsonify(error="Unknown person"), 404
         f = row["gallery_dir"]
-        if not f: return jsonify(folder=None, count=0, images=[], groups=[])
+        empty = dict(count=0, images=[], groups=[], hidden_images=[], hidden_count=0)
+        if not f: return jsonify(folder=None, **empty)
         if _pg_review(c, row): return jsonify(error="Gallery hidden: this person is in a title flagged for review by hand", folder=f, hidden=True), 403
-        if not os.path.isdir(f): return jsonify(folder=f, missing=True, count=0, images=[], groups=[])
-        names = gallerymod.images(f)
-        return jsonify(folder=f, count=len(names), images=names, groups=gallerymod.groups(names))
+        if not os.path.isdir(f): return jsonify(folder=f, missing=True, **empty)
+        return jsonify(folder=f, **pgmod.listing(gallerymod.images(f), pgmod.hidden_set(c, row["id"])))
 
     @app.get("/api/person/<int:pid>/gallery/thumb")
     def person_gallery_thumb(pid):
@@ -1225,6 +1227,29 @@ def init(app, tmdb, posters_dir):
             if not os.path.isdir(path): return jsonify(error="That folder doesn't exist: " + path), 400
         c.execute("UPDATE people SET gallery_dir=? WHERE id=?", (path or None, row["id"])); c.commit()
         return jsonify(ok=True, id=row["id"], gallery_dir=path or None, count=len(gallerymod.images(path)) if path else 0)
+
+    @app.post("/api/person/<int:pid>/gallery/hide")
+    def person_gallery_hide(pid):
+        """{name, hidden}: hide or unhide one photo in this person's gallery. The file is never moved, renamed or deleted.
+        hidden defaults to true. The hide list is keyed by person id + path relative to the gallery folder."""
+        c = C(); row = _pg_row(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        if _pg_review(c, row): return jsonify(error="Gallery hidden: this person is in a title flagged for review by hand"), 403
+        f = row["gallery_dir"]
+        if not f or not os.path.isdir(f): return jsonify(error="No gallery folder set for this person"), 400
+        d = request.json or {}
+        name = pgmod.rel_path(d.get("name"))
+        if not name or any(p in ("", ".", "..") for p in name.split("/")):
+            return jsonify(error="Invalid photo name"), 400
+        hide = d["hidden"] if "hidden" in d else True
+        hide = hide not in (False, 0, "0", "false", "False")
+        if hide:
+            if not gallerymod.safe_name(f, name): return jsonify(error="Photo not found in this gallery"), 404
+            pgmod.set_hidden(c, row["id"], name, True)
+        else:
+            pgmod.set_hidden(c, row["id"], name, False)
+        c.commit()
+        return jsonify(ok=True, folder=f, **pgmod.listing(gallerymod.images(f), pgmod.hidden_set(c, row["id"])))
 
     @app.post("/api/people/gallery_link")
     def people_gallery_link():

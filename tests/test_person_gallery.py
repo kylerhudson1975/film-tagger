@@ -1,4 +1,4 @@
-"""Performer galleries: folder matching (name/alias/ambiguous/none), linking, listing. Run: python tests/test_person_gallery.py"""
+"""Performer galleries: folder matching (name/alias/ambiguous/none), linking, listing, hide. Run: python tests/test_person_gallery.py"""
 import os, sys, json, tempfile
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +22,10 @@ assert r["Jo Main"]["kind"] == "alias" and r["Jo Main"]["person_id"] == 7      #
 assert r["Shared Name"]["kind"] == "ambiguous" and r["Shared Name"]["person_id"] is None
 assert r["Nobody Here"]["kind"] == "none" and r["Nobody Here"]["candidates"] == []
 assert pg.key(" Crystál_Clark. ") == "crystal clark"
+assert pg.rel_path("Sub\\photo.jpg") == "Sub/photo.jpg"
+assert pg.partition(["a.jpg", "b.jpg", "c.jpg"], {"b.jpg", "gone.jpg"}) == (["a.jpg", "c.jpg"], ["b.jpg"])
+assert pg.listing(["a.jpg", "b.jpg"], {"b.jpg"})["count"] == 1 and pg.listing(["a.jpg", "b.jpg"], {"b.jpg"})["hidden_images"] == ["b.jpg"]
+
 
 # --- API: survey + auto-link + gallery listing ---
 import app, db
@@ -64,4 +68,51 @@ r = cl.post("/api/people/gallery_link", json={"root": root, "apply": True}).json
 assert not {m["folder"]: m for m in r["folders"]}["Crystal Clark"]["linked"]
 assert cl.get(f"/api/person/{pid}").json["person"]["gallery_dir"] == other
 assert sorted(os.listdir(os.path.join(root, "Crystal Clark"))) == ["0000.jpg", "0001.jpg", "0002.jpg", "0003.jpg"]  # files untouched
+# --- hide from gallery: files never moved, hide list persists, leftover paths are harmless ---
+hid_pid = cl.get("/api/person/lookup?name=Hide Testers").json["id"]
+hroot = os.path.join(d, "Hide Gallery"); os.makedirs(hroot)
+for n in ("a.jpg", "b.jpg", "c.jpg", "d.jpg"):
+    open(os.path.join(hroot, n), "wb").write(b"x")
+assert cl.post(f"/api/person/{hid_pid}/gallery/folder", json={"path": hroot}).json["count"] == 4
+g = cl.get(f"/api/person/{hid_pid}/gallery").json
+assert g["count"] == 4 and g["images"] == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+assert g.get("hidden_images") == [] and g.get("hidden_count", 0) == 0
+r = cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "b.jpg", "hidden": True}).json
+assert r["count"] == 3 and r["images"] == ["a.jpg", "c.jpg", "d.jpg"]
+assert r["hidden_images"] == ["b.jpg"] and r["hidden_count"] == 1
+assert sorted(os.listdir(hroot)) == ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]  # file still there
+# persists across visits; a new file shows up; the hide remains
+open(os.path.join(hroot, "e.jpg"), "wb").write(b"x")
+g = cl.get(f"/api/person/{hid_pid}/gallery").json
+assert g["count"] == 4 and g["images"] == ["a.jpg", "c.jpg", "d.jpg", "e.jpg"] and g["hidden_images"] == ["b.jpg"]
+# unhide
+r = cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "b.jpg", "hidden": False}).json
+assert r["count"] == 5 and r["images"] == ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"] and r["hidden_count"] == 0
+# hide again, then switch folder: leftover hide path is harmless (no matching file)
+cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "b.jpg", "hidden": True})
+other2 = os.path.join(d, "OtherHide"); os.makedirs(other2)
+open(os.path.join(other2, "z.jpg"), "wb").write(b"x")
+cl.post(f"/api/person/{hid_pid}/gallery/folder", json={"path": other2})
+g = cl.get(f"/api/person/{hid_pid}/gallery").json
+assert g["count"] == 1 and g["images"] == ["z.jpg"] and g["hidden_images"] == [] and g["hidden_count"] == 0
+# original folder again: hide still applies
+cl.post(f"/api/person/{hid_pid}/gallery/folder", json={"path": hroot})
+g = cl.get(f"/api/person/{hid_pid}/gallery").json
+assert "b.jpg" in g["hidden_images"] and "b.jpg" not in g["images"] and g["count"] == 4
+# clear folder: hide list is harmless
+assert cl.post(f"/api/person/{hid_pid}/gallery/folder", json={"path": ""}).json["gallery_dir"] is None
+g = cl.get(f"/api/person/{hid_pid}/gallery").json
+assert g["folder"] is None and g["count"] == 0 and g["hidden_images"] == []
+# set back, traversal is rejected, files untouched
+cl.post(f"/api/person/{hid_pid}/gallery/folder", json={"path": hroot})
+assert cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "../Andi.jpg", "hidden": True}).status_code in (400, 404)
+assert cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "nope.jpg", "hidden": True}).status_code == 404
+assert sorted(os.listdir(hroot)) == ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]
+# hide a subfolder photo
+sub = os.path.join(hroot, "Shoot"); os.makedirs(sub)
+open(os.path.join(sub, "s.jpg"), "wb").write(b"x")
+r = cl.post(f"/api/person/{hid_pid}/gallery/hide", json={"name": "Shoot/s.jpg", "hidden": True}).json
+assert "Shoot/s.jpg" in r["hidden_images"] and "Shoot/s.jpg" not in r["images"]
+assert os.path.isfile(os.path.join(sub, "s.jpg"))
+
 print("ok")

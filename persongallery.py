@@ -5,7 +5,12 @@ images (thumbnails are cached under the app data folder); files are never moved,
 the folder later show up automatically because the folder is listed on every visit.
 
 match_folders() pairs a root's subfolder names (one folder per performer, e.g. 'Porn Stars\\Crystal Clark') with
-people by name or alias, case/accent/whitespace-insensitively. Only unambiguous matches are linked automatically."""
+people by name or alias, case/accent/whitespace-insensitively. Only unambiguous matches are linked automatically.
+
+Individual photos can be hidden from a person's gallery (person_gallery_hidden: person id + path relative to the
+folder). Hidden entries are skipped when listing; the image files are never moved, renamed or deleted. A hide list
+survives a folder re-read, and is harmless if the gallery folder is changed or cleared (only matching relative paths
+apply)."""
 import os, re, json
 import db, gallery as gallerymod
 
@@ -13,6 +18,38 @@ def key(s):
     """'  Crystal   CLARK ' / 'Crystál_Clark' -> 'crystal clark'."""
     s = re.sub(r"[_.]+", " ", s or "")
     return " ".join(db.fold(s).split())
+
+
+HIDE_SCHEMA = ("CREATE TABLE IF NOT EXISTS person_gallery_hidden("
+               "person_id INTEGER NOT NULL, path TEXT NOT NULL, "
+               "PRIMARY KEY (person_id, path))")
+
+def rel_path(name):
+    """Gallery-relative path as stored and listed ('photo.jpg' or 'Sub/photo.jpg')."""
+    return (name or "").replace("\\", "/").strip()
+
+def hidden_set(c, person_id):
+    return {r[0] for r in c.execute("SELECT path FROM person_gallery_hidden WHERE person_id=?", (person_id,))}
+
+def set_hidden(c, person_id, path, hidden):
+    """Record or clear a hide. The image file itself is never touched."""
+    path = rel_path(path)
+    if not path: return
+    if hidden:
+        c.execute("INSERT OR IGNORE INTO person_gallery_hidden(person_id, path) VALUES(?,?)", (person_id, path))
+    else:
+        c.execute("DELETE FROM person_gallery_hidden WHERE person_id=? AND path=?", (person_id, path))
+
+def partition(names, hidden):
+    """Split a folder listing into (visible, hidden-still-present) in listing order.
+    Hide paths that are not in the current folder are ignored (harmless leftovers after a folder change)."""
+    hid = set(hidden or ())
+    return [n for n in names if n not in hid], [n for n in names if n in hid]
+
+def listing(names, hidden):
+    """JSON fields for a person's gallery: visible images plus any hidden ones still in the folder."""
+    vis, hid = partition(names, hidden)
+    return dict(count=len(vis), images=vis, groups=gallerymod.groups(vis), hidden_images=hid, hidden_count=len(hid))
 
 def match_folders(folders, people):
     """folders: [name]; people: [{id, name, aliases: [str], adult: bool}] (merged people already left out).
