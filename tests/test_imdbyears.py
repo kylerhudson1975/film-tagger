@@ -283,7 +283,13 @@ class LibraryTests(unittest.TestCase):
             self.assertEqual(wrong[fid]["year"], year)
             self.assertEqual(wrong[fid]["imdb_year"], imdb_year)
             self.assertEqual(wrong[fid]["section"], "wrong_link")
+        # Titles actually match; the flag is the year gap / missing stored id, not a title typo
         self.assertEqual(wrong[agu]["library"], "Classic Porn")
+        self.assertIn("no_stored_imdb_id", wrong[agu]["reason"])
+        self.assertIn("year_gap", wrong[agu]["reason"])
+        self.assertNotIn("title_mismatch", wrong[agu]["reason"])
+        self.assertIn("year_gap", wrong[ayn]["reason"])
+        self.assertNotIn("title_mismatch", wrong[ayn]["reason"])
         # Apply must refuse these (no stored id / not a ±1 year fix)
         applied = self.cl.post("/api/imdb-years/apply", json={"film_ids": [agu, ayn, baby]}).get_json()
         self.assertEqual(applied["applied"], 0)

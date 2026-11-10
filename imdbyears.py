@@ -264,22 +264,19 @@ def _pick_match(rows, year=None):
             continue
         ids = {r["tconst"] for r in cand}
         if len(ids) == 1:
-            r = cand[0]
-            return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "unique_title"}
+            return _hit_from_row(cand[0], how="unique_title")
         if year is None:
             return None  # ambiguous at this preferred type; do not fall through to video/short
         exact = [r for r in cand if int(r["start_year"]) == year]
         eids = {r["tconst"] for r in exact}
         if len(eids) == 1:
-            r = exact[0]
-            return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "exact_year"}
+            return _hit_from_row(exact[0], how="exact_year")
         if len(eids) > 1:
             return None
         near = [r for r in cand if abs(int(r["start_year"]) - year) == 1]
         nids = {r["tconst"] for r in near}
         if len(nids) == 1:
-            r = near[0]
-            return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "year_plus_minus_1"}
+            return _hit_from_row(near[0], how="year_plus_minus_1")
         return None
     return None
 
