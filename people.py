@@ -228,6 +228,8 @@ RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "produce
 
 # Favorites (star on the person page): favorite=1 and when it was starred. Only ever changed by the star toggle.
 FAV_COLS = [("favorite", "INTEGER DEFAULT 0"), ("favorite_at", "REAL")]
+# Performer photo gallery (persongallery.py): a folder of the user's own images, linked in place. Only the gallery endpoints change it.
+GALLERY_COLS = [("gallery_dir", "TEXT")]
 
 def site_label(site):
     """ThePornDB parent / network name of a scene's site (e.g. 'Taboo Heat' -> 'Cory Chase Network'), or None."""
@@ -242,7 +244,7 @@ GROUP_MIN = 3  # Built profiles 'Group by': a performer is listed under a studio
 
 def migrate(c):
     have = {r[1] for r in c.execute("PRAGMA table_info(people)")}
-    for col, typ in TPDB_COLS + FAV_COLS:  # nullable / default 0: existing rows untouched
+    for col, typ in TPDB_COLS + FAV_COLS + GALLERY_COLS:  # nullable / default 0: existing rows untouched
         if col not in have: c.execute(f"ALTER TABLE people ADD COLUMN {col} {typ}")
     c.execute(REVIEW_SCHEMA)
     c.commit()
@@ -900,6 +902,7 @@ def init(app, tmdb, posters_dir):
             links=links, iafd=next((v for k, v in links.items() if k.lower() == "iafd"), None),
             edited=json.loads(row["edited_fields"] or "[]"), photo_cropped=bool(row["photo_orig"] and os.path.exists(os.path.join(PHOTO_DIR, row["photo_orig"]))),
             merged=[dict(id=r2["id"], name=r2["name"]) for r2 in c.execute("SELECT id, name FROM people WHERE merged_into=? ORDER BY name", (pid,))],
+            gallery_dir=row["gallery_dir"],
             tmdb_url=tp and f"https://www.themoviedb.org/person/{tp}", photo=photo_url(row), bio=row["bio"], birthday=row["birthday"], birth_date_source=row["birth_date_source"],
             deathday=row["deathday"], place=row["place"], fetched_at=row["fetched_at"], favorite=bool(row["favorite"] or c.execute("SELECT 1 FROM people WHERE merged_into=? AND favorite=1", (pid,)).fetchone()),
             known_for=row["known_for"] or (ROLE_DEPT[top_role(e)] if e["roles"] else None)),
@@ -1156,6 +1159,95 @@ def init(app, tmdb, posters_dir):
                         except Exception: pass  # table not created yet
         c.execute("UPDATE people SET edited_fields=? WHERE id=?", (json.dumps(sorted(edited)), pid)); c.commit()
         return jsonify(ok=True, edited=sorted(edited))
+
+    # ---------- performer photo galleries (persongallery.py): a folder linked in place, listed on every visit ----------
+    import persongallery as pgmod, gallery as gallerymod
+    PG_THUMBS = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "gallery_thumbs")
+
+    def _pg_row(c, pid):
+        row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone(); hops = 0
+        while row and row["merged_into"] and hops < 5:  # merged person: the gallery of the person it was merged into
+            row = c.execute("SELECT * FROM people WHERE id=?", (row["merged_into"],)).fetchone(); hops += 1
+        return row
+
+    def _pg_review(c, row):
+        """People credited in a title flagged 'review by hand': gallery hidden, like scene galleries and photos."""
+        try: return bool(set(person_entry(c, row)["films"]) & review_film_ids(c))
+        except Exception: return False
+
+    def _pg_folder(pid):
+        c = C(); row = _pg_row(c, pid)
+        if not row: return None, (jsonify(error="Unknown person"), 404)
+        if _pg_review(c, row): return None, (jsonify(error="Gallery hidden: this person is in a title flagged for review by hand"), 403)
+        f = row["gallery_dir"]
+        if not f: return None, (jsonify(error="No gallery folder set for this person"), 404)
+        if not os.path.isdir(f): return None, (jsonify(error="Gallery folder not found: " + f, folder=f, missing=True), 404)
+        return f, None
+
+    @app.get("/api/person/<int:pid>/gallery")
+    def person_gallery(pid):
+        c = C(); row = _pg_row(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        f = row["gallery_dir"]
+        if not f: return jsonify(folder=None, count=0, images=[], groups=[])
+        if _pg_review(c, row): return jsonify(error="Gallery hidden: this person is in a title flagged for review by hand", folder=f, hidden=True), 403
+        if not os.path.isdir(f): return jsonify(folder=f, missing=True, count=0, images=[], groups=[])
+        names = gallerymod.images(f)
+        return jsonify(folder=f, count=len(names), images=names, groups=gallerymod.groups(names))
+
+    @app.get("/api/person/<int:pid>/gallery/thumb")
+    def person_gallery_thumb(pid):
+        f, err = _pg_folder(pid)
+        if err: return err
+        p = gallerymod.safe_name(f, request.args.get("name"))
+        if not p: return jsonify(error="not found"), 404
+        from flask import send_file
+        t = gallerymod.thumb(p, PG_THUMBS)
+        return send_file(t or p, max_age=86400 * 30)
+
+    @app.get("/api/person/<int:pid>/gallery/image")
+    def person_gallery_image(pid):
+        f, err = _pg_folder(pid)
+        if err: return err
+        p = gallerymod.safe_name(f, request.args.get("name"))
+        if not p: return jsonify(error="not found"), 404
+        from flask import send_file
+        return send_file(p, max_age=86400)
+
+    @app.post("/api/person/<int:pid>/gallery/folder")
+    def person_gallery_set(pid):
+        """{path}: link that folder (in place, never changed) as the person's gallery; empty path clears it."""
+        c = C(); row = _pg_row(c, pid)
+        if not row: return jsonify(error="Unknown person"), 404
+        path = str((request.json or {}).get("path") or "").strip().strip('"').strip()
+        if path:
+            path = os.path.normpath(path)
+            if not os.path.isdir(path): return jsonify(error="That folder doesn't exist: " + path), 400
+        c.execute("UPDATE people SET gallery_dir=? WHERE id=?", (path or None, row["id"])); c.commit()
+        return jsonify(ok=True, id=row["id"], gallery_dir=path or None, count=len(gallerymod.images(path)) if path else 0)
+
+    @app.post("/api/people/gallery_link")
+    def people_gallery_link():
+        """{root, apply}: match the root's subfolders (one per performer) to people by name/alias. apply=true links every
+        exact/alias match whose person has no gallery yet; ambiguous and unmatched folders are only reported."""
+        d = request.json or {}; root = os.path.normpath(str(d.get("root") or "").strip().strip('"'))
+        if not d.get("root") or not os.path.isdir(root): return jsonify(error="Folder not found: " + root), 400
+        c = C(); subs, loose = pgmod.survey(root)
+        res = pgmod.match_folders([s["folder"] for s in subs], pgmod.people_for_match(c, adult_film_ids(c)))
+        info = {s["folder"]: s for s in subs}
+        for m in res:
+            s = info[m["folder"]]; m.update(path=s["path"], count=s["count"], linked=False)
+            if m["kind"] not in ("exact", "alias") or not d.get("apply"): continue
+            pid = m["person_id"]
+            if isinstance(pid, str): pid = ensure_row(c, m["candidates"][0]["name"])["id"]; m["person_id"] = pid
+            cur = c.execute("SELECT gallery_dir FROM people WHERE id=?", (pid,)).fetchone()
+            if cur and cur[0] and os.path.normcase(os.path.normpath(cur[0])) != os.path.normcase(s["path"]):
+                m["note"] = "already has another gallery folder: " + cur[0]; continue
+            c.execute("UPDATE people SET gallery_dir=? WHERE id=?", (s["path"], pid)); m["linked"] = True
+        c.commit()
+        return jsonify(root=root, folders=res, loose_images=loose,
+                       totals=dict(folders=len(res), linked=sum(m["linked"] for m in res),
+                                   **{k: sum(m["kind"] == k for m in res) for k in ("exact", "alias", "ambiguous", "none")}))
 
     @app.get("/api/person/<int:pid>/photo")
     def person_photo(pid):

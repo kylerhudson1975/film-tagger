@@ -832,20 +832,20 @@ async function mskGo(id){const n=+(document.querySelector('#stCount button.on')|
   if(j.error){toast('Make stills failed: '+j.error);return}
   try{const f=await api('/api/films/'+id);if($('posterBox'))$('posterBox').innerHTML=posterBoxHtml(f);const x=(S.films||[]).find(z=>z.id==f.id);if(x){x.gallery_count=f.gallery_count;render()}}catch(e){}
   const k=j.saved??j.done;toastHtml(`${k} still${k==1?'':'s'} saved in “${esc(j.dest)}” <button id=stOpen style="margin-left:8px" onclick="api('/api/films/${id}/gallery/open',{method:'POST'}).catch(()=>{})">📂 Open folder</button>`,10000);};setTimeout(tick,1500)}
-async function openGallery(id){let d;try{d=await api(`/api/films/${id}/gallery`)}catch(e){return}
+async function openGallery(id,opt={}){const base=opt.base||`/api/films/${id}/gallery`,poster=!opt.base;let d=opt.data;if(!d)try{d=await api(base)}catch(e){return}
  let o=$('galOv');if(!o){o=document.createElement('div');o.id='galOv';document.body.appendChild(o);
   document.addEventListener('keydown',e=>{const g=$('galOv');if(!g||g.style.display!='flex')return;if(e.target&&e.target.id=='galPct')return;  // typing a zoom %: no shortcuts
    
    if(e.key=='Escape'){e.stopImmediatePropagation();e.preventDefault();if(S.gal&&S.gal.i!=null)galGrid();else galClose()}
    else if(S.gal&&S.gal.i!=null&&'+=-_0'.includes(e.key)&&e.key&&!e.ctrlKey&&!e.metaKey&&!e.altKey){e.stopImmediatePropagation();e.preventDefault();if(e.key=='0')galFit();else galZoomBy(e.key=='+'||e.key=='='?1.25:1/1.25)}
    else if(S.gal&&S.gal.i!=null&&(e.key=='ArrowRight'||e.key=='ArrowLeft')){e.stopImmediatePropagation();e.preventDefault();galShow(S.gal.i+(e.key=='ArrowRight'?1:-1))}},true)}
- S.gal={id,names:d.images,i:null};const u=n=>`/api/films/${id}/gallery/thumb?name=${encodeURIComponent(n)}`;
- o.innerHTML=`<div class=gh><b>Gallery</b><span class=muted>${d.count} photo${d.count==1?'':'s'}</span><span style="flex:1"></span><button id=galBack style="display:none" onclick="galGrid()">▦ All photos</button><button onclick="galClose()">✕ Close</button></div>
+ S.gal={id,base,names:d.images,i:null};const u=n=>`${base}/thumb?name=${encodeURIComponent(n)}`;
+ o.innerHTML=`<div class=gh><b>${esc(opt.title||'Gallery')}</b><span class=muted>${d.count} photo${d.count==1?'':'s'}</span><span style="flex:1"></span><button id=galBack style="display:none" onclick="galGrid()">▦ All photos</button><button onclick="galClose()">✕ Close</button></div>
   <div class=gg id=galGrid>${d.images.map((n,i)=>{const k=n.indexOf('/'),g=k>0?n.slice(0,k):null,pg=i?(d.images[i-1].indexOf('/')>0?d.images[i-1].slice(0,d.images[i-1].indexOf('/')):null):null;
    return (g&&(i==0||g!==pg)?`<div class=ggh>${esc(g)} <span class=muted>(${d.images.filter(x=>x.startsWith(g+'/')).length})</span></div>`:'')+`<img loading=lazy src="${u(n)}" title="${esc(n)}" onclick="galShow(${i})">`}).join('')}</div>
   <div class=gv id=galView><button onclick="galShow(S.gal.i-1)" title="Previous (←)">‹</button><div class=gz id=galStage><img id=galImg alt="" draggable=false></div><div class=gzc onclick="event.stopPropagation()"><button onclick="galZoomBy(1/1.25)" title="Zoom out (−)">−</button><input id=galPct value="Fit" title="Zoom (% of the photo's actual pixels): type e.g. 125 and press Enter" onfocus="this.select()" onmouseup="event.preventDefault()" onkeydown="galPctKey(event)" onblur="galApply()"><button onclick="galZoomBy(1.25)" title="Zoom in (+)">+</button><button onclick="galFit()" title="Fit (0)">Fit</button></div><button onclick="galShow(S.gal.i+1)" title="Next (→)">›</button></div>
-  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span><button class=pri onclick="galPoster()">Use as poster</button></div>`;
- o.style.display='flex'}
+  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span>${poster?'<button class=pri onclick="galPoster()">Use as poster</button>':''}</div>`;
+ o.style.display='flex';if(opt.start!=null)galShow(opt.start)}
 (()=>{const st=document.createElement('style');st.textContent='#galOv .gg .ggh{grid-column:1/-1;font-weight:bold;margin:10px 0 2px;padding-bottom:3px;border-bottom:1px solid #8885;text-align:left}';document.head.appendChild(st)})();
 // ---- lightbox zoom/pan: CSS transform on the full-size image (s = scale over the fitted size, x/y = pan in px from centre)
 const galZ={s:1,x:0,y:0};
@@ -878,7 +878,7 @@ function galClose(){const o=$('galOv');if(o){o.style.display='none';o.innerHTML=
 function galGrid(){S.gal.i=null;$('galView').style.display='none';$('galBar').style.display='none';$('galBack').style.display='none';$('galGrid').style.display='grid'}
 function galShow(i){const g=S.gal,n=g.names.length;if(!n)return;i=(i+n)%n;g.i=i;
  $('galGrid').style.display='none';$('galView').style.display='flex';$('galBar').style.display='flex';$('galBack').style.display='';
- galZ.s=1;galZ.x=0;galZ.y=0;galApply();galZoomInit();$('galImg').src=`/api/films/${g.id}/gallery/image?name=${encodeURIComponent(g.names[i])}`;$('galName').textContent=`${i+1} / ${n} · ${g.names[i]}`}
+ galZ.s=1;galZ.x=0;galZ.y=0;galApply();galZoomInit();$('galImg').src=`${g.base}/image?name=${encodeURIComponent(g.names[i])}`;$('galName').textContent=`${i+1} / ${n} · ${g.names[i]}`}
 async function galPoster(){const g=S.gal;if(!g||g.i==null)return;let f;try{f=await api(`/api/films/${g.id}/gallery/poster`,{method:'POST',body:{name:g.names[g.i]}})}catch(e){return}
  galClose();if($('posterBox'))posterShow(f);else reload();toast('Poster set from the gallery')}
 async function uploadPoster(id,file){if(!file)return;if(!/^image\/(jpeg|png|webp)$/.test(file.type))return toast('Use a JPG, PNG or WebP image');
@@ -1138,6 +1138,7 @@ const FTS={cur:null,hist:[],P:{},
 async function pickFolderInto(id, title){const b=event.target;b.disabled=true;const old=b.textContent;b.textContent='Choose in the dialog…';
  try{const r=await api('/api/pick-folder',{method:'POST',body:{title}});if(r.path){const t=$(id);const l=t.value.split('\n').map(s=>s.trim()).filter(Boolean);const p=r.path.replace(/[\\/]+$/,'');if(!l.some(x=>x.replace(/[\\/]+$/,'')===p))l.push(r.path);t.value=l.join('\n')}else if(r.error)toast(r.error)}
  finally{b.disabled=false;b.textContent=old}}
+async function ppGalPick(){const b=event.target;b.disabled=true;try{const r=await api('/api/pick-folder',{method:'POST',body:{title:'Choose the gallery folder'}});if(r.path)$('ppe_gal').value=r.path;else if(r.error)toast(r.error)}finally{b.disabled=false}}
 async function browseFolder(){return pickFolderInto('s_roots','Choose a film folder')}
 async function browseSceneFolder(){return pickFolderInto('s_scene_roots','Choose a scenes folder')}
 let pt,ptFast=false;
@@ -1554,7 +1555,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;S.ppYear=null;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;S.ppYear=null;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;if(!opt.keep&&S.ppGal&&S.ppGal.pid===pid)S.ppGal.at=0;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -1579,6 +1580,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
  <span class=muted>TMDB person:</span><input id=ppTmdb placeholder="id or TMDB URL" value="${p.tmdb_person_id||''}" style="width:170px"><button onclick="setPersonTmdb(${p.id})">Set</button>${p.manual?`<button onclick="setPersonTmdb(${p.id},true)" title="Forget the manual id and auto-detect again">Auto</button>`:''}<button id=ppRef onclick="ppRefresh(${p.id})" title="Re-fetch the profile (ThePornDB / TMDB)">↻ Refresh</button><span id=ppRefMsg class=muted style="margin-left:6px"></span></div>
  <div class=muted style="font-size:.85em">${p.fetched_at?`Last updated: ${new Date(p.fetched_at*1000).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}`:'Last updated: never (not fetched yet)'}</div>
  </div></div>`;
+ h+=`<div id=ppGal data-pid=${p.id}>${ppGalHtml(p)}</div>`;
  h+=ppInsHtml(p.id)+ppYearChip(d);const PY=S.ppYear,yOk=y=>!PY||+String(y||'').slice(0,4)===PY;
  if(d.groups&&d.groups.length){
   h+=`<div class=ppbar><b>You have ${d.owned} of ${d.total}</b><span class=seg><button class="${S.ppOnly?'':'on'}" onclick="ppOnly(0)">All films</button><button class="${S.ppOnly?'on':''}" onclick="ppOnly(1)">Only films I have</button></span>
@@ -1604,7 +1606,19 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
    +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
 }
  const oe=$('ppEdit'),keepE=oe&&oe.style.display=='block'&&+oe.dataset.pid===d.person.id?oe:null;
- c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppPollStart(d)}
+ c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppPollStart(d);ppGalLoad(p)}
+/* Performer gallery: the person's linked folder of photos (Edit profile → Gallery folder), listed on every visit, thumbnails lazy-loaded */
+function ppGalHtml(p){const g=S.ppGal;if(!p.gallery_dir)return '';if(!g||g.pid!==p.id||g.dir!==p.gallery_dir)return `<h3 class=ppdept>Gallery <span class=muted>— loading…</span></h3>`;const d=g.data;
+ if(d.hidden)return `<h3 class=ppdept>Gallery</h3><p class=muted>Hidden: this person is in a title flagged for review by hand.</p>`;
+ if(!d.images)return '';
+ if(d.missing)return `<h3 class=ppdept>Gallery</h3><p class=muted>⚠ The gallery folder “${esc(d.folder)}” isn't there (drive unplugged, moved or renamed?). Change it under ✎ Edit profile.</p>`;
+ const lim=g.lim||60,u=n=>`/api/person/${p.id}/gallery/thumb?name=${encodeURIComponent(n)}`;
+ return `<h3 class=ppdept>Gallery <span class=muted>— ${d.count} photo${d.count==1?'':'s'}</span><button title="${esc(d.folder)}" onclick="ppGalOpen(0)">⛶ View all</button></h3>`+(d.count?`<div class=ppgal>${d.images.slice(0,lim).map((n,i)=>`<img loading=lazy src="${u(n)}" title="${esc(n)}" onclick="ppGalOpen(${i})">`).join('')}</div>`+(d.count>lim?`<button onclick="S.ppGal.lim=1e9;$('ppGal').innerHTML=ppGalHtml(S.ppData.person)">Show all ${d.count}</button>`:''):`<p class=muted>No images in “${esc(d.folder)}” yet. Images added to the folder show up here automatically.</p>`)}
+async function ppGalLoad(p,force){if(!p.gallery_dir){S.ppGal=null;return}const g=S.ppGal;if(!force&&g&&g.pid===p.id&&g.dir===p.gallery_dir&&Date.now()-g.at<30000)return;
+ let d;try{const r=await fetch(`/api/person/${p.id}/gallery`);d=await r.json()}catch(e){return}if(!S.ppData||S.ppData.person.id!==p.id)return;
+ S.ppGal={pid:p.id,dir:p.gallery_dir,data:d,at:Date.now(),lim:g&&g.pid===p.id?g.lim:60};const x=$('ppGal');if(x)x.innerHTML=ppGalHtml(S.ppData.person)}
+function ppGalOpen(i){const g=S.ppGal;if(!g||!g.data.count)return;openGallery(g.pid,{base:`/api/person/${g.pid}/gallery`,data:g.data,start:i,title:S.ppData.person.name+' — Gallery'})}
+(()=>{const st=document.createElement('style');st.textContent='.ppgal{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px;margin:6px 0 10px}.ppgal img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:zoom-in;background:#8882}';document.head.appendChild(st)})();
 /* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
 function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
  if(S.ppPoll){if(S.ppPoll.pid===pid)return;clearTimeout(S.ppPoll.t);S.ppPoll=null}  // one poll per person: an old person's timer never blocks this one
@@ -1636,10 +1650,11 @@ function ethKey(g){return g==='Jewish'?'J':String(ETHNICITIES.filter(x=>x!=='Jew
 function ethByKey(k){if(k==='j'||k==='J')return 'Jewish';if(/^[1-9]$/.test(k)){const gs=ETHNICITIES.filter(x=>x!=='Jewish');return gs[+k-1]||null}return null}
 const PPF=[['links','Links (one per line, "IAFD: https://…" or just the URL)'],['bio','Bio'],['birthday','Birthdate (YYYY-MM-DD)'],['place','Birthplace'],['nationality','Nationality'],['ethnicity','Ethnicity (as a source lists it, or your own)'],['gender','Gender'],['deathday','Death date (YYYY-MM-DD)'],['height','Height'],['measurements','Measurements'],['career','Career years'],['aliases','Aliases (comma-separated)']];
 function editPerson(){const p=S.ppData.person,e=$('ppEdit');if(e.style.display=='block'){e.style.display='none';return}e.dataset.pid=p.id;
- e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:k=='gender'?`<select id=ppe_gender><option value="">(not set)</option>${GENDERS.map(g=>`<option${v==g?' selected':''}>${g}</option>`).join('')}</select>`:k=='ethnicity'?`<input id=ppe_ethnicity list=ppeEthL value="${esc(v)}" style="width:100%" autocomplete=off><datalist id=ppeEthL>${ETHNICITIES.map(x=>`<option value="${x}">`).join('')}</datalist>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+`<button class=fb-btn id=ppeFindBirth onclick="findBirth([${p.id}])">Find birth date</button>`+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <button onclick="$('ppEdit').style.display='none'">Close</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
+ e.innerHTML=PPF.map(([k,l])=>{const v=ppVal(p,k);return `<label style="display:block;margin:4px 0">${l}<br>${k=='links'?`<textarea id=ppe_${k} rows=3 style="width:100%">${esc(v)}</textarea>`:k=='bio'?`<textarea id=ppe_${k} rows=4 style="width:100%">${esc(v)}</textarea>`:k=='gender'?`<select id=ppe_gender><option value="">(not set)</option>${GENDERS.map(g=>`<option${v==g?' selected':''}>${g}</option>`).join('')}</select>`:k=='ethnicity'?`<input id=ppe_ethnicity list=ppeEthL value="${esc(v)}" style="width:100%" autocomplete=off><datalist id=ppeEthL>${ETHNICITIES.map(x=>`<option value="${x}">`).join('')}</datalist>`:`<input id=ppe_${k} value="${esc(v)}" style="width:100%">`}</label>`}).join('')+`<label style="display:block;margin:4px 0">Gallery folder (your photos of this person; linked in place, never changed)<br><span style="display:flex;gap:6px"><input id=ppe_gal value="${esc(p.gallery_dir||'')}" placeholder="e.g. C:\\Pictures\\Porn Stars\\${esc(p.name)}" style="flex:1"><button type=button onclick="ppGalPick()">Browse…</button><button type=button onclick="$('ppe_gal').value=''" title="Unlink the folder (the files are not touched)">Clear</button></span></label>`+`<button class=fb-btn id=ppeFindBirth onclick="findBirth([${p.id}])">Find birth date</button>`+PHOTO_IN+`<button onclick="savePerson(${p.id})">Save</button> <button onclick="$('ppEdit').style.display='none'">Close</button> <span class=muted>Edited fields are kept when the profile is refreshed.</span>`;e.style.display='block'}
 async function savePerson(pid){const p=S.ppData.person,b={};PPF.forEach(([k])=>{const v=$('ppe_'+k).value;if(v!==ppVal(p,k))b[k]=v});
  S.ppGen=(S.ppGen||0)+1;
  if(Object.keys(b).length){try{await api('/api/person/'+pid+'/edit',{method:'POST',body:b})}catch(e){toast(e.message||String(e));return}}
+ {const gv=$('ppe_gal').value.trim();if(gv!==(p.gallery_dir||'')){try{await api('/api/person/'+pid+'/gallery/folder',{method:'POST',body:{path:gv}})}catch(e){toast(e.message||String(e));return}S.ppGal=null}}
  const fd=new FormData(),f=$('ppe_photo').files[0],u=$('ppe_photo_url').value.trim();if(f)fd.append('photo',f);else if(u)fd.append('photo_url',u);
  if(f||u){try{await api('/api/person/'+pid+'/photo/upload',{method:'POST',body:fd})}catch(e){toast(e.message||String(e));return}}
  S.ppGen++;const e=$('ppEdit');if(e)e.style.display='none';showPerson(pid,{keep:true,nohist:true})}
