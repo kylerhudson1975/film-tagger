@@ -4073,12 +4073,17 @@ def imdb_years_cancel():
 
 @app.get("/api/imdb-years/mismatches")
 def imdb_years_mismatches():
-    """List existing films whose year differs from IMDb. Does not change films.db."""
+    """Year fixes (stored IMDb id, matching title, year ±1) and suspected wrong IMDb links. Read-only."""
     st = imdbmod.status()
     if not st.get("ready"):
-        return jsonify(mismatches=[], count=0, by_library={}, status=st, error=st.get("error") or "IMDb year data is not ready yet")
-    rows = imdbmod.find_mismatches(C())
-    return jsonify(mismatches=rows, count=len(rows), by_library=imdbmod.counts_by_library(rows), status=st)
+        return jsonify(mismatches=[], wrong_links=[], count=0, wrong_link_count=0, by_library={},
+                       wrong_links_by_library={}, status=st,
+                       error=st.get("error") or "IMDb year data is not ready yet")
+    d = imdbmod.classify_films(C())
+    fixes, wrong = d["year_fixes"], d["wrong_links"]
+    return jsonify(mismatches=fixes, wrong_links=wrong, count=len(fixes), wrong_link_count=len(wrong),
+                   by_library=imdbmod.counts_by_library(fixes),
+                   wrong_links_by_library=imdbmod.counts_by_library(wrong), status=st)
 
 def _imdb_ids_from_body():
     d = request.get_json(silent=True) or {}
@@ -4195,9 +4200,12 @@ def imdb_years_export():
     st = imdbmod.status()
     if not st.get("ready"):
         return jsonify(error="IMDb year data is not ready yet", status=st), 409
-    rows = imdbmod.find_mismatches(C())
+    d = imdbmod.classify_films(C())
+    rows = (d["year_fixes"] + d["wrong_links"])
     written = imdbmod.write_csv(path, rows)
-    return jsonify(ok=True, path=written, count=len(rows), by_library=imdbmod.counts_by_library(rows))
+    return jsonify(ok=True, path=written, count=len(d["year_fixes"]), wrong_link_count=len(d["wrong_links"]),
+                   by_library=imdbmod.counts_by_library(d["year_fixes"]),
+                   wrong_links_by_library=imdbmod.counts_by_library(d["wrong_links"]))
 
 def kick_gallery(fid):
     """Refresh one film's gallery_path/count off the request thread (deduped while in flight)."""

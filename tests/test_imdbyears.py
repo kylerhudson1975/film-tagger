@@ -31,6 +31,9 @@ FAKE = [
     ("tt0086879", "movie", "Amadeus", "Amadeus", 1984),
     ("tt0229208", "tvMovie", "Amadeus", "Amadeus", 1984),
     ("tt7938570", "video", "Amadeus", "Amadeus", 2018),
+    ("tt8765432", "movie", "All Grown Up", "All Grown Up", 2018),
+    ("tt0118662", "movie", "Ayn Rand: A Sense of Life", "Ayn Rand: A Sense of Life", 1996),
+    ("tt0131867", "movie", "Baby Sister", "Baby Sister", 1971),
 ]
 
 
@@ -65,7 +68,7 @@ class FakeDataset(unittest.TestCase):
         self.assertTrue(st["ready"])
         self.assertEqual(st["source_date"], "2026-11-10")
         # tvSeries and \N year are dropped; 10 usable rows in FAKE
-        self.assertEqual(st["rows"], 13)
+        self.assertEqual(st["rows"], 16)
         self.assertFalse(st["stale"])
         self.assertIsNone(iy.year_for("tt0000001"))
         self.assertIsNone(iy.year_for("tt0999999"))
@@ -180,38 +183,38 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(row["imdb_id"], "tt0443701")  # id is still stored
 
     def test_mismatch_scan_does_not_change_existing(self):
+        # Isolate from earlier tests in this class that may have stored an imdb_id via apply_movie
+        self.c.execute("UPDATE films SET imdb_id=NULL")
+        self.c.commit()
         before = {r["id"]: (r["year"], r["release_date"], r["imdb_id"])
                   for r in self.c.execute("SELECT id, year, release_date, imdb_id FROM films")}
-        rows = iy.find_mismatches(self.c)
+        classified = iy.classify_films(self.c)
         after = {r["id"]: (r["year"], r["release_date"], r["imdb_id"])
                  for r in self.c.execute("SELECT id, year, release_date, imdb_id FROM films")}
         self.assertEqual(before, after)
-        by_id = {r["film_id"]: r for r in rows}
-        self.assertIn(self.splice, by_id)
-        self.assertEqual(by_id[self.splice]["year"], 2010)
-        self.assertEqual(by_id[self.splice]["imdb_year"], 2009)
-        self.assertEqual(by_id[self.splice]["imdb_id"], "tt0443701")
-        self.assertEqual(by_id[self.splice]["library"], "Movies")
-        self.assertFalse(by_id[self.splice]["hand_edited"])
-        # hand-edited year is listed but flagged
-        self.assertIn(self.hand, by_id)
-        self.assertTrue(by_id[self.hand]["hand_edited"])
-        # remake ±1
-        self.assertEqual(by_id[self.gift]["imdb_year"], 2015)
-        self.assertEqual(by_id[self.gift]["year"], 2014)
-        # matching year is not listed
-        self.assertNotIn(self.matrix, by_id)
-        # Classic Porn unique title is included
-        self.assertEqual(by_id[self.classic]["library"], "Classic Porn")
-        self.assertEqual(by_id[self.classic]["imdb_year"], 1972)
+        # No stored IMDb ids: nothing is an apply-able year fix
+        self.assertEqual(classified["year_fixes"], [])
+        wrong = {r["film_id"]: r for r in classified["wrong_links"]}
+        self.assertIn(self.splice, wrong)
+        self.assertEqual(wrong[self.splice]["section"], "wrong_link")
+        self.assertEqual(wrong[self.splice]["imdb_year"], 2009)
+        self.assertEqual(wrong[self.splice]["library"], "Movies")
+        self.assertIn(self.hand, wrong)
+        self.assertTrue(wrong[self.hand]["hand_edited"])
+        self.assertEqual(wrong[self.gift]["imdb_year"], 2015)
+        self.assertNotIn(self.matrix, wrong)
+        self.assertEqual(wrong[self.classic]["library"], "Classic Porn")
         # scene without an IMDb id is not title-matched
-        self.assertNotIn(self.scene, by_id)
+        self.assertNotIn(self.scene, wrong)
 
     def test_mismatch_api_and_apply_selected(self):
+        self.c.execute("UPDATE films SET imdb_id=NULL")
+        self.c.commit()
         r = self.cl.get("/api/imdb-years/mismatches").get_json()
-        self.assertGreaterEqual(r["count"], 3)
-        self.assertIn("Movies", r["by_library"])
-        self.assertIn("Classic Porn", r["by_library"])
+        self.assertEqual(r["count"], 0)
+        self.assertGreaterEqual(r["wrong_link_count"], 3)
+        self.assertIn("Movies", r["wrong_links_by_library"])
+        self.assertIn("Classic Porn", r["wrong_links_by_library"])
         # Splice's file is not on disk here: Apply must skip and leave the year alone
         applied = self.cl.post("/api/imdb-years/apply", json={"film_ids": [self.splice]}).get_json()
         self.assertTrue(applied["ok"])
@@ -228,9 +231,11 @@ class LibraryTests(unittest.TestCase):
         self.assertTrue(os.path.isfile(path))
         with open(path, newline="", encoding="utf-8-sig") as f:
             rows = list(csv.DictReader(f))
-        self.assertEqual(len(rows), r["count"])
+        self.assertEqual(len(rows), (r["count"] or 0) + (r.get("wrong_link_count") or 0))
+        self.assertIn("section", rows[0])
         titles = {row["title"] for row in rows}
         self.assertIn("Splice", titles)
+        self.assertTrue(any(row["title"] == "Splice" and row["section"] == "wrong_link" for row in rows))
         self.assertNotIn("The Matrix", titles)
 
     def test_status_api(self):
@@ -243,12 +248,58 @@ class LibraryTests(unittest.TestCase):
                          path=rf"D:\Porn Scenes\Studio\with-id-{self.uid}.mp4",
                          imdb_id="tt0443701")
         self.c.commit()
-        rows = {r["film_id"]: r for r in iy.find_mismatches(self.c)}
-        self.assertIn(sid, rows)
-        self.assertEqual(rows[sid]["library"], "Porn Scenes")
-        self.assertEqual(rows[sid]["imdb_year"], 2009)
-        # scan still did not write
+        d = iy.classify_films(self.c)
+        fixes = {r["film_id"]: r for r in d["year_fixes"]}
+        wrong = {r["film_id"]: r for r in d["wrong_links"]}
+        # Scene title does not match Splice: this stored id is a wrong link, not a year fix
+        self.assertNotIn(sid, fixes)
+        self.assertIn(sid, wrong)
+        self.assertEqual(wrong[sid]["library"], "Porn Scenes")
+        self.assertIn("title_mismatch", wrong[sid]["reason"])
         self.assertEqual(self.c.execute("SELECT year FROM films WHERE id=?", (sid,)).fetchone()[0], 2010)
+
+    def test_stored_id_close_year_is_a_year_fix(self):
+        self.c.execute("UPDATE films SET imdb_id=? WHERE id=?", ("tt0443701", self.splice))
+        self.c.commit()
+        d = iy.classify_films(self.c)
+        fixes = {r["film_id"]: r for r in d["year_fixes"]}
+        wrong = {r["film_id"]: r for r in d["wrong_links"]}
+        self.assertIn(self.splice, fixes)
+        self.assertEqual(fixes[self.splice]["section"], "year_fix")
+        self.assertEqual(fixes[self.splice]["imdb_year"], 2009)
+        self.assertNotIn(self.splice, wrong)
+
+    def test_same_title_different_film_is_wrong_link_not_year_fix(self):
+        agu = self._film("All Grown Up", 1995, path=rf"D:\Classic Porn\All Grown Up\agu-{self.uid}.mkv")
+        ayn = self._film("Ayn Rand: A Sense of Life", 1998, path=rf"D:\Movies\Ayn Rand\ayn-{self.uid}.mkv")
+        baby = self._film("Baby Sister", 1983, path=rf"D:\Movies\Baby Sister\bs-{self.uid}.mkv")
+        self.c.commit()
+        d = iy.classify_films(self.c)
+        fixes = {r["film_id"]: r for r in d["year_fixes"]}
+        wrong = {r["film_id"]: r for r in d["wrong_links"]}
+        for fid, year, imdb_year in ((agu, 1995, 2018), (ayn, 1998, 1996), (baby, 1983, 1971)):
+            self.assertNotIn(fid, fixes)
+            self.assertIn(fid, wrong)
+            self.assertEqual(wrong[fid]["year"], year)
+            self.assertEqual(wrong[fid]["imdb_year"], imdb_year)
+            self.assertEqual(wrong[fid]["section"], "wrong_link")
+        self.assertEqual(wrong[agu]["library"], "Classic Porn")
+        # Apply must refuse these (no stored id / not a ±1 year fix)
+        applied = self.cl.post("/api/imdb-years/apply", json={"film_ids": [agu, ayn, baby]}).get_json()
+        self.assertEqual(applied["applied"], 0)
+        self.assertEqual(self.c.execute("SELECT year FROM films WHERE id=?", (agu,)).fetchone()[0], 1995)
+
+    def test_apply_movie_does_not_auto_change_a_large_year_gap(self):
+        fid = self._film("All Grown Up", 1995, path=rf"D:\Classic Porn\All Grown Up 2\agu2-{self.uid}.mkv")
+        self.c.commit()
+        A.apply_movie(self.c, fid, {
+            "id": 1, "title": "All Grown Up", "imdb_id": "tt8765432",
+            "release_date": "1995-01-01", "credits": {},
+        })
+        self.c.commit()
+        row = self.c.execute("SELECT year, imdb_id FROM films WHERE id=?", (fid,)).fetchone()
+        self.assertEqual(row["year"], 1995)  # not jumped to 2018
+        self.assertEqual(row["imdb_id"], "tt8765432")  # id is still stored
 
     def test_refresh_does_not_hit_network_when_not_stale(self):
         with mock.patch.object(iy, "_download", side_effect=AssertionError("should not download")):

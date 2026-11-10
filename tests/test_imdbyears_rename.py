@@ -49,7 +49,7 @@ class MovieYearRename(unittest.TestCase):
         try: self.c.close()
         except Exception: pass
 
-    def movie(self, title, year, sidecars=None, folder=None, filename=None, ed=None, imdb_id=None):
+    def movie(self, title, year, sidecars=None, folder=None, filename=None, ed=None, imdb_id=None, **_rest):
         folder = folder or f"{title} ({year})"
         filename = filename or f"{title} ({year}).mkv"
         d = os.path.join(self.root, folder)
@@ -60,6 +60,9 @@ class MovieYearRename(unittest.TestCase):
             p = os.path.join(d, name)
             touch(p, "1\n00:00:01,000 --> 00:00:02,000\nHi\n" if name.lower().endswith(".srt") else "x")
             rels.append(p)
+        ids = {"Insidious": "tt1591095", "Frailty": "tt0264616", "Splice": "tt0443701"}
+        if imdb_id is None:
+            imdb_id = ids.get(title)
         fid = self.c.execute(
             "INSERT INTO films(title,year,kind,release_date,imdb_id,edited_fields,added_at) VALUES(?,?,?,?,?,?,?)",
             (title, year, None, f"{year}-06-03", imdb_id, ed, time.time()),

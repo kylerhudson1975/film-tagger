@@ -12,6 +12,8 @@ import db
 
 BASICS_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
 TITLE_TYPES = frozenset(("movie", "tvMovie", "video", "short"))
+YEAR_FIX_DELTA = 1  # existing-film year fixes and new-movie auto-fix: only ±1
+SUSPECT_TYPES = frozenset(("tvMovie", "tvSeries", "tvEpisode", "tvSpecial", "tvMiniSeries", "tvShort"))
 # Prefer a theatrical movie over a TV movie, and never fall through to video/short
 # once a higher type group had any candidates (avoids "Amadeus" 1984 matching a 2018 video).
 TYPE_GROUPS = (("movie",), ("tvMovie",), ("video",), ("short",))
@@ -191,14 +193,60 @@ def lookup(tconst):
     c = _connect(create=False)
     if c is None: return None
     try:
-        r = c.execute("SELECT tconst, start_year, title_type FROM titles WHERE tconst=?", (iid,)).fetchone()
+        r = c.execute(
+            "SELECT tconst, start_year, title_type, title_key, orig_key FROM titles WHERE tconst=?",
+            (iid,),
+        ).fetchone()
         if not r: return None
-        return {"tconst": r["tconst"], "year": int(r["start_year"]), "title_type": r["title_type"], "how": "imdb_id"}
+        return _hit_from_row(r, how="imdb_id")
     except Exception:
         return None
     finally:
         try: c.close()
         except Exception: pass
+
+
+def _hit_from_row(r, how="imdb_id"):
+    keys = set(r.keys()) if hasattr(r, "keys") else set()
+    d = {
+        "tconst": r["tconst"],
+        "year": int(r["start_year"]),
+        "title_type": r["title_type"],
+        "how": how,
+        "title_key": r["title_key"] if "title_key" in keys else None,
+        "orig_key": r["orig_key"] if "orig_key" in keys else None,
+    }
+    for k in ("primary_title", "original_title", "genres"):
+        if k in keys:
+            d[k] = r[k]
+    return d
+
+
+def titles_agree(film_title, original, hit):
+    """True when the library title matches IMDb primaryTitle or originalTitle (folded keys)."""
+    if not hit:
+        return False
+    keys = []
+    for s in (film_title, original):
+        k = title_key(s)
+        if k and k not in keys:
+            keys.append(k)
+    if not keys:
+        return False
+    return (hit.get("title_key") in keys) or (hit.get("orig_key") in keys)
+
+
+def type_mismatch(hit, is_classic=False):
+    """True when the IMDb title is probably not this library film (TV movie, or a documentary vs Classic Porn)."""
+    typ = (hit or {}).get("title_type") or ""
+    genres = ((hit or {}).get("genres") or "").lower()
+    if typ in SUSPECT_TYPES:
+        return True
+    if is_classic and typ not in ("movie", "video"):
+        return True
+    if is_classic and "documentary" in genres:
+        return True
+    return False
 
 
 def _pick_match(rows, year=None):
@@ -278,14 +326,22 @@ def enrich_tmdb_apply(upd, lock, movie):
         upd["imdb_id"] = iid
     if lock & {"year", "release_date"}:
         return False
-    y = year_for(iid)
-    if not y:
+    hit = lookup(iid)
+    if not hit:
         return False
+    # Only auto-fix a close year on this film's own IMDb id, never a cross-title match
+    if not titles_agree((movie or {}).get("title"), (movie or {}).get("original_title"), hit):
+        return False
+    y = int(hit["year"])
     try:
         cur = int(upd["year"]) if upd.get("year") not in (None, "") else None
     except (TypeError, ValueError):
         cur = None
     if cur == y:
+        return False
+    if cur is None or abs(cur - y) > YEAR_FIX_DELTA:
+        return False
+    if type_mismatch(hit, is_classic=False):
         return False
     upd["year"] = y
     upd["release_date"] = adjust_release_date(upd.get("release_date"), y)
@@ -326,13 +382,34 @@ def _hand_edited_year(edited_fields):
     return bool(ed & {"year", "release_date"})
 
 
-def find_mismatches(c):
-    """Compare existing films to IMDb years. Read-only on films.db (never writes).
-    Porn Scenes are included only when they already have an imdb_id. Movies and
-    Classic Porn also try a unique title match when no id is stored."""
-    import json as _json
+def _entry(r, hit, is_classic, section, reason=""):
+    cur = _film_year(r["year"])
+    iy = int(hit["year"]) if hit and hit.get("year") is not None else None
+    return {
+        "film_id": r["id"],
+        "title": r["title"] or "",
+        "year": cur,
+        "imdb_year": iy,
+        "imdb_id": (hit or {}).get("tconst") or parse_imdb_id(r["imdb_id"]) or "",
+        "imdb_title": (hit or {}).get("primary_title") or "",
+        "library": library_name(r["kind"] or "", r["path"], is_classic),
+        "hand_edited": _hand_edited_year(r["edited_fields"]),
+        "how": (hit or {}).get("how") or "",
+        "title_type": (hit or {}).get("title_type") or "",
+        "section": section,
+        "reason": reason,
+    }
+
+
+def classify_films(c):
+    """Split the library into apply-able year fixes vs suspected wrong IMDb links.
+    Year fixes require the film's own stored imdb_id, a matching IMDb title, and a year
+    off by at most YEAR_FIX_DELTA (±1). Title-only fallback is never a year fix.
+    Same-title / large-gap / type-mismatch hits go in wrong_links (info only).
+    Read-only on films.db. Porn Scenes are only considered when they already have an imdb_id."""
+    year_fixes, wrong_links = [], []
     if not status().get("ready"):
-        return []
+        return {"year_fixes": [], "wrong_links": []}
     rows = c.execute(
         "SELECT f.id, f.title, f.original_title, f.year, f.imdb_id, f.kind, f.edited_fields, "
         "(SELECT path FROM files WHERE film_id=f.id ORDER BY id LIMIT 1) AS path "
@@ -341,34 +418,63 @@ def find_mismatches(c):
     classic_ids = {r[0] for r in c.execute(
         "SELECT DISTINCT film_id FROM files WHERE " + db.CLASSIC_PORN_SQL
     )}
-    out = []
     for r in rows:
         fid = r["id"]
         kind = r["kind"] or ""
         iid = parse_imdb_id(r["imdb_id"])
-        if kind == "scene" and not iid:
+        is_classic = fid in classic_ids or "classic porn" in ((r["path"] or "").lower())
+        cur = _film_year(r["year"])
+        if iid:
+            hit = lookup(iid)
+            if not hit:
+                wrong_links.append(_entry(r, {"tconst": iid, "year": None, "title_type": "", "how": "imdb_id"},
+                                          is_classic, "wrong_link", "imdb_id_not_in_dataset"))
+                continue
+            agree = titles_agree(r["title"], r["original_title"], hit)
+            typ_bad = type_mismatch(hit, is_classic)
+            gap = None if cur is None or hit.get("year") is None else abs(cur - int(hit["year"]))
+            if agree and not typ_bad and gap == 0:
+                continue
+            if agree and not typ_bad and gap is not None and 1 <= gap <= YEAR_FIX_DELTA:
+                year_fixes.append(_entry(r, hit, is_classic, "year_fix", "stored_imdb_id"))
+                continue
+            reasons = []
+            if not agree:
+                reasons.append("title_mismatch")
+            if typ_bad:
+                reasons.append("type_mismatch")
+            if gap is None or gap > YEAR_FIX_DELTA:
+                reasons.append("year_gap")
+            wrong_links.append(_entry(r, hit, is_classic, "wrong_link", ",".join(reasons) or "mismatch"))
             continue
-        hit = resolve_film(r["title"], r["original_title"], r["year"], iid)
+        # No stored IMDb id: never a year fix. Same-title hits are listed as possible different films.
+        if kind == "scene":
+            continue
+        hit = find_by_title(r["title"], r["original_title"], r["year"])
         if not hit:
             continue
-        cur = _film_year(r["year"])
         iy = int(hit["year"])
         if cur == iy:
             continue
-        is_classic = fid in classic_ids or "classic porn" in ((r["path"] or "").lower())
-        out.append({
-            "film_id": fid,
-            "title": r["title"] or "",
-            "year": cur,
-            "imdb_year": iy,
-            "imdb_id": hit["tconst"],
-            "library": library_name(kind, r["path"], is_classic),
-            "hand_edited": _hand_edited_year(r["edited_fields"]),
-            "how": hit.get("how") or "",
-            "title_type": hit.get("title_type") or "",
-        })
-    out.sort(key=lambda x: ((x["title"] or "").casefold(), x["film_id"]))
-    return out
+        reasons = ["no_stored_imdb_id"]
+        if not titles_agree(r["title"], r["original_title"], hit):
+            reasons.append("title_mismatch")
+        if type_mismatch(hit, is_classic):
+            reasons.append("type_mismatch")
+        if cur is None or abs(cur - iy) > YEAR_FIX_DELTA:
+            reasons.append("year_gap")
+        else:
+            reasons.append("close_year_but_no_imdb_id")
+        wrong_links.append(_entry(r, hit, is_classic, "wrong_link", ",".join(reasons)))
+    key = lambda x: ((x["title"] or "").casefold(), x["film_id"])
+    year_fixes.sort(key=key)
+    wrong_links.sort(key=key)
+    return {"year_fixes": year_fixes, "wrong_links": wrong_links}
+
+
+def find_mismatches(c):
+    """Apply-able year fixes only (stored IMDb id, matching title, year ±1)."""
+    return classify_films(c)["year_fixes"]
 
 
 def counts_by_library(rows):
@@ -381,18 +487,22 @@ def counts_by_library(rows):
 def write_csv(path, rows):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=["title", "current_year", "imdb_year", "imdb_id", "library", "film_id", "hand_edited", "how"])
+        w = csv.DictWriter(f, fieldnames=["section", "title", "current_year", "imdb_year", "imdb_id", "imdb_title", "title_type", "library", "film_id", "hand_edited", "how", "reason"])
         w.writeheader()
         for r in rows:
             w.writerow({
+                "section": r.get("section") or "",
                 "title": r.get("title") or "",
                 "current_year": r.get("year") if r.get("year") is not None else "",
                 "imdb_year": r.get("imdb_year") if r.get("imdb_year") is not None else "",
                 "imdb_id": r.get("imdb_id") or "",
+                "imdb_title": r.get("imdb_title") or "",
+                "title_type": r.get("title_type") or "",
                 "library": r.get("library") or "",
                 "film_id": r.get("film_id") or "",
                 "hand_edited": "yes" if r.get("hand_edited") else "",
                 "how": r.get("how") or "",
+                "reason": r.get("reason") or "",
             })
     return path
 
@@ -417,15 +527,23 @@ def apply_fixes(c, film_ids, now=None):
             continue
         kind = r["kind"] or ""
         iid = parse_imdb_id(r["imdb_id"])
-        if kind == "scene" and not iid:
+        if not iid:
             skipped += 1
             continue
-        hit = resolve_film(r["title"], r["original_title"], r["year"], iid)
-        if not hit:
+        hit = lookup(iid)
+        if not hit or not titles_agree(r["title"], r["original_title"], hit):
+            skipped += 1
+            continue
+        path = (c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone() or [None])[0]
+        is_classic = "classic porn" in ((path or "").lower()) or (kind != "scene" and db.is_classic_porn(c, fid))
+        if type_mismatch(hit, is_classic):
             skipped += 1
             continue
         iy = int(hit["year"])
         cur = _film_year(r["year"])
+        if cur is None or abs(cur - iy) > YEAR_FIX_DELTA:
+            skipped += 1
+            continue
         new_rd = adjust_release_date(r["release_date"], iy)
         sets = {"imdb_id": hit["tconst"], "updated_at": now}
         year_changed = cur != iy
