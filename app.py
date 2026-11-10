@@ -906,6 +906,7 @@ def update_film(fid):
     c.commit()
     if "poster" in changed and old["kind"] == "scene": kick_focus()
     rename_note = mkv = None
+    if old["kind"] == "scene" and not changed & set(SCENE_NAME_FIELDS): relink_standard_named(c, fid)  # clears a stuck soft match on any Save
     if old["kind"] == "scene" and changed & set(SCENE_NAME_FIELDS):  # Rename on Save (an .mkv also gets the edited title)
         try: _, rename_note, mkv = rename_scene_file(c, fid)
         except OSError as e: rename_note = f"Saved, but the file could not be renamed: {e}"
@@ -3179,9 +3180,38 @@ def rename_held(c, fid):
     r = c.execute("SELECT COALESCE(notes,'') FROM films WHERE id=?", (fid,)).fetchone()
     return bool(r) and HOLD_RENAME.lower() in r[0].lower()
 
+def relink_standard_named(c, fid):
+    """A scene file renamed/replaced outside the app (e.g. re-encoded, so the scan can't match it by size+fingerprint)
+    that already sits at the scene's standard name: point its missing files row there. Only when the stored path is gone,
+    exactly one unclaimed standard-named video exists (any video extension) and the film has one missing row for it.
+    Returns the number of rows relinked."""
+    f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
+    if not f or not all((f[k] or "").strip() for k in ("studio", "release_date", "title")): return 0
+    rows = [x for x in c.execute("SELECT id, path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall()
+            if x["path"] and not os.path.exists(x["path"])]
+    if len(rows) != 1: return 0
+    old = rows[0]["path"]; root = next((r for r in db.scene_roots(c) if db.under(old, r)), None)
+    if not root: return 0
+    base = os.path.join(root, _safe(f["studio"], 60), scene_file_name(f))
+    cands = [base + e for e in sorted(db.VIDEO_EXT) if os.path.isfile(base + e)]
+    cands = [p for p in cands if not c.execute("SELECT 1 FROM files WHERE path=? AND id<>?", (p, rows[0]["id"])).fetchone()]
+    if len(cands) != 1: return 0
+    new = cands[0]
+    try: size = os.path.getsize(new)
+    except OSError: return 0
+    c.execute("UPDATE files SET path=?, size=?, oshash=NULL, missing=0 WHERE id=?", (new, size, rows[0]["id"]))
+    c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (new, old))
+    c.execute("UPDATE films SET missing=0 WHERE id=?", (fid,)); c.commit()
+    try:
+        with open(os.path.join(root, "_filmtagger_relinks.csv"), "a", newline="", encoding="utf-8-sig") as fh:
+            csv.writer(fh).writerow([time.strftime("%Y-%m-%d %H:%M:%S"), fid, old, new])
+    except OSError: pass
+    return 1
+
 def plan_scene_rename(c, fid):
     """Planned moves for one scene: ([dict(file_id, old, new, root, sidecars=[(a, b)])], note or None).
     Target: <scenes root>/<Studio>/<Studio> - YYYY-MM-DD - <Performers> - <Title>.<ext>; never overwrites (' (2)')."""
+    relink_standard_named(c, fid)  # file already at its standard name but stored under an old path (stuck soft match)
     f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
     if not f: return [], "not found"
     miss = [n for k, n in (("studio", "studio"), ("release_date", "date"), ("title", "title")) if not (f[k] or "").strip()]
