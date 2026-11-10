@@ -1186,8 +1186,8 @@ S.libs=[];S.libOpen=new Set(JSON.parse(localStorage.libOpen||'[]'));
 async function loadLibs(){S.libs=await api('/api/libraries');setLib($('f_lib').value||'',true);if($('libPop').classList.contains('open'))renderLibTree()}
 function libLabel(v){if(!v)return 'All libraries';for(const l of S.libs){if(l.path==v)return `${l.path} (${l.count})`;const s=l.subfolders.find(s=>s.path==v);if(s)return `${l.path} › ${s.name} (${s.count})`}return v+' (not configured)'}
 function setLib(v,quiet){$('f_lib').value=v;localStorage.lib=v;$('libBtn').textContent='📁 '+libLabel(v)+' ▾';$('libBtn').title=v||'All libraries'}
-function pickLib(v){setLib(v);$('sort').value=/porn scenes/i.test(v||'')?'studio':'title';S.order='asc';$('ord').textContent='↑';$('libPop').classList.remove('open');load()}
-function toggleLibPop(){const p=$('libPop');p.classList.toggle('open');if(p.classList.contains('open')){$('libSearch').value='';renderLibTree();$('libSearch').focus()}}
+function pickLib(v){setLib(v);$('sort').value=/porn scenes/i.test(v||'')?'studio':'title';S.order='asc';$('ord').textContent='↑';$('libPop').classList.remove('open');$('content').scrollTop=0;load()}
+function toggleLibPop(){const p=$('libPop');p.classList.toggle('open');if(p.classList.contains('open')){$('libSearch').value='';renderLibTree();$('libTree').scrollTop=0;$('libSearch').focus()}}
 function toggleRoot(i){const p=S.libs[i].path;S.libOpen.has(p)?S.libOpen.delete(p):S.libOpen.add(p);localStorage.libOpen=JSON.stringify([...S.libOpen]);renderLibTree()}
 const LIBMAX=500;
 function renderLibTree(){const q=$('libSearch').value.trim().toLowerCase(),cur=$('f_lib').value,out=[];
