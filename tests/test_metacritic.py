@@ -118,7 +118,54 @@ class Lookup(unittest.TestCase):
         self.assertIn(r["reason"], ("not_found", "error"))
 
 
+    def test_year_plus_or_minus_one(self):
+        """Festival vs theatrical: exact title in an adjacent year is accepted."""
+        def http(url, accept="*/*"):
+            if "/search/" in url:
+                return 200, url, json.dumps({"data": {"items": [
+                    {"title": "Splice", "type": "movie", "slug": "splice", "premiereYear": 2009},
+                    {"title": "Splice Here: A Projected Odyssey", "type": "movie", "slug": "splice-here-a-projected-odyssey", "premiereYear": 2022},
+                ]}})
+            return _http(url, accept)
+        with mock.patch.object(mc, "http_get", side_effect=http):
+            r = mc.lookup("Splice", 2010)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["slug"], "splice")
+
+    def test_exact_year_beats_adjacent(self):
+        def http(url, accept="*/*"):
+            if "/search/" in url:
+                return 200, url, json.dumps({"data": {"items": [
+                    {"title": "Dune", "type": "movie", "slug": "dune-1984", "premiereYear": 1984},
+                    {"title": "Dune", "type": "movie", "slug": "dune-2021", "premiereYear": 2021},
+                ]}})
+            if "/stats/" in url and "dune-2021" in url:
+                return 200, url, json.dumps({"data": {"item": {"score": 74 if "/critic/" in url else 7.6, "reviewCount": 10}}})
+            if "/stats/" in url:
+                return 200, url, json.dumps({"data": {"item": {"score": 1, "reviewCount": 1}}})
+            return 404, url, ""
+        with mock.patch.object(mc, "http_get", side_effect=http):
+            r = mc.lookup("Dune", 2021)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["slug"], "dune-2021")
+        self.assertEqual(r["metascore"], 74)
+
+    def test_ambiguous_plus_or_minus_one_does_not_guess(self):
+        def http(url, accept="*/*"):
+            if "/search/" in url:
+                return 200, url, json.dumps({"data": {"items": [
+                    {"title": "The Tourist", "type": "movie", "slug": "the-tourist-2009", "premiereYear": 2009},
+                    {"title": "The Tourist", "type": "movie", "slug": "the-tourist-2011", "premiereYear": 2011},
+                ]}})
+            raise AssertionError("stats should not be called when the year is ambiguous")
+        with mock.patch.object(mc, "http_get", side_effect=http):
+            r = mc.lookup("The Tourist", 2010)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "not_found")
+
+
 class Api(unittest.TestCase):
+
     def setUp(self):
         mc.set_rate_gap(0)
         self._kick = A.kick_metacritic
@@ -282,6 +329,58 @@ class Api(unittest.TestCase):
         self.assertEqual(row["mc_metascore"], 77)
         self.assertAlmostEqual(row["mc_user_score"], 8.2)
 
+
+
+    def test_cached_miss_retries_when_match_version_changes(self):
+        mc.lookup = lambda *a, **k: {"ok": False, "reason": "not_found"}
+        A.refresh_metacritic(self.c, self.movie, force=True)
+        row = self.c.execute("SELECT mc_fetched_at, mc_match_ver, mc_metascore FROM films WHERE id=?", (self.movie,)).fetchone()
+        self.assertIsNotNone(row["mc_fetched_at"])
+        self.assertIsNone(row["mc_metascore"])
+        self.assertEqual(row["mc_match_ver"], A.MC_MATCH_VER)
+        # same version, just fetched: still cached
+        calls = {"n": 0}
+        mc.lookup = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {"ok": False, "reason": "not_found"}
+        r = A.refresh_metacritic(self.c, self.movie, force=False)
+        self.assertTrue(r.get("cached"))
+        self.assertEqual(calls["n"], 0)
+        # matcher bump (as after this fix ships): retry even a minutes-old miss
+        self.c.execute("UPDATE films SET mc_match_ver=? WHERE id=?", (A.MC_MATCH_VER - 1, self.movie))
+        self.c.commit()
+        mc.lookup = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {
+            "ok": True, "slug": "splice", "metascore": 66, "critic_count": 35, "user_score": 5.7, "user_count": 184, "methods": ["search"],
+        }
+        r = A.refresh_metacritic(self.c, self.movie, force=False)
+        self.assertEqual(calls["n"], 1)
+        self.assertTrue(r.get("ok"))
+        self.assertEqual(r.get("slug"), "splice")
+        row = self.c.execute("SELECT mc_metascore, mc_user_score, mc_match_ver FROM films WHERE id=?", (self.movie,)).fetchone()
+        self.assertEqual(row["mc_metascore"], 66)
+        self.assertAlmostEqual(row["mc_user_score"], 5.7)
+        self.assertEqual(row["mc_match_ver"], A.MC_MATCH_VER)
+
+    def test_cached_miss_retries_after_a_day(self):
+        mc.lookup = lambda *a, **k: {"ok": False, "reason": "not_found"}
+        A.refresh_metacritic(self.c, self.movie, force=True)
+        self.c.execute("UPDATE films SET mc_fetched_at=? WHERE id=?", (time.time() - A.MC_MISS_CACHE_SEC - 10, self.movie))
+        self.c.commit()
+        calls = {"n": 0}
+        mc.lookup = lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or {
+            "ok": True, "slug": "splice", "metascore": 66, "critic_count": 35, "user_score": 5.7, "user_count": 184, "methods": ["search"],
+        }
+        A.refresh_metacritic(self.c, self.movie, force=False)
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(self.c.execute("SELECT mc_slug FROM films WHERE id=?", (self.movie,)).fetchone()[0], "splice")
+
+    def test_retry_misses_endpoint(self):
+        mc.lookup = lambda *a, **k: {"ok": False, "reason": "not_found"}
+        A.refresh_metacritic(self.c, self.movie, force=True)
+        ids = A._mc_eligible_ids(self.c, retry_misses=True)
+        self.assertIn(self.movie, ids)
+        self.assertNotIn(self.scene, ids)
+        self.assertNotIn(self.classic, ids)
+        # not included in the regular "fill missing" list (already fetched)
+        self.assertNotIn(self.movie, A._mc_eligible_ids(self.c))
 
 if __name__ == "__main__":
     unittest.main()

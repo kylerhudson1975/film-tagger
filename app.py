@@ -925,7 +925,7 @@ def update_film(fid):
     elif changed & {"title", "year", "release_date"} and "mc_slug" not in set(json.loads(old["edited_fields"] or "[]")):
         # title/year changed and the slug was not set by hand: drop the auto match and look it up again
         if db.is_metacritic_film(c, fid):
-            c.execute("UPDATE films SET mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL WHERE id=?", (fid,))
+            c.execute("UPDATE films SET mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL, mc_match_ver=NULL WHERE id=?", (fid,))
             c.commit(); kick_metacritic(fid, force=True)
     if "poster" in changed and old["kind"] == "scene": kick_focus()
     rename_note = mkv = None
@@ -1880,7 +1880,7 @@ POSTER_NEVER = {"custom_poster"}  # the user's own poster: only the poster endpo
                                   # editor, Remove custom poster, Restore previous) ever write it; no job or refresh does
 TMDB_NEVER = {"kind", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
               "aznude_status", "aznude_checked", "aznude_url", "aznude_note",
-              "mc_slug", "mc_metascore", "mc_critic_count", "mc_user_score", "mc_user_count", "mc_fetched_at"}
+              "mc_slug", "mc_metascore", "mc_critic_count", "mc_user_score", "mc_user_count", "mc_fetched_at", "mc_match_ver"}
 
 def tmdb_date(d):
     """TMDB date -> stored release date; TMDB's placeholder 'YYYY-01-01' (only the year known) is stored as 'YYYY'."""
@@ -3616,24 +3616,36 @@ _GAL_BG, _GAL_BG_LOCK = set(), threading.Lock()
 
 # ---------- Metacritic scores (mainstream Movies only; never Porn Scenes or Classic Porn) ----------
 MC_CACHE_SEC = 30 * 24 * 3600
-MC_CLEAR = "mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL"
+MC_MISS_CACHE_SEC = 24 * 3600  # a "not found" is retried after a day, not locked for 30
+MC_MATCH_VER = 2  # bump when search/matching rules change so cached misses are retried on open
+MC_CLEAR = "mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL, mc_match_ver=NULL"
 _MC_BG, _MC_BG_LOCK, _MC_ERR_UNTIL = set(), threading.Lock(), {}
 
-def mc_is_fresh(fetched_at, force=False):
+def mc_is_fresh(fetched_at, ttl=MC_CACHE_SEC, force=False):
     if force or not fetched_at: return False
-    try: return (time.time() - float(fetched_at)) < MC_CACHE_SEC
+    try: return (time.time() - float(fetched_at)) < ttl
     except (TypeError, ValueError): return False
 
+def mc_is_miss(row):
+    """Cached lookup that found no Metascore and no User score."""
+    if not row or not row["mc_fetched_at"]: return False
+    return row["mc_metascore"] is None and row["mc_user_score"] is None
+
 def mc_needs_fetch(row, force=False):
-    """True when this film should be looked up now (cache miss or stale)."""
-    if force: return True
-    return not mc_is_fresh(row["mc_fetched_at"] if row else None)
+    """True when this film should be looked up now (never fetched, stale, or a miss that should be retried)."""
+    if force or not row: return True
+    if not row["mc_fetched_at"]: return True
+    if mc_is_miss(row):
+        ver = row["mc_match_ver"] if "mc_match_ver" in row.keys() else None
+        if ver != MC_MATCH_VER: return True  # matcher changed, or an old cache from before versions
+        return not mc_is_fresh(row["mc_fetched_at"], ttl=MC_MISS_CACHE_SEC)
+    return not mc_is_fresh(row["mc_fetched_at"], ttl=MC_CACHE_SEC)
 
 def kick_metacritic(fid, force=False):
     """Start a background Metacritic lookup if this film is eligible and the cache is stale.
     Returns True if a fetch was started (or is already in flight), so the UI can poll."""
     fid = int(fid)
-    c = C(); row = c.execute("SELECT id, kind, title, year, mc_slug, mc_fetched_at, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    c = C(); row = c.execute("SELECT id, kind, title, year, mc_slug, mc_metascore, mc_user_score, mc_fetched_at, mc_match_ver, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
     if not row or not db.is_metacritic_film(c, fid): return False
     if not mc_needs_fetch(row, force): return False
     now = time.monotonic()
@@ -3653,7 +3665,7 @@ def kick_metacritic(fid, force=False):
 
 def refresh_metacritic(c, fid, force=False):
     """Look up and store Metacritic scores for one film. Never raises to the caller. Returns a result dict."""
-    row = c.execute("SELECT title, year, mc_slug, mc_fetched_at, edited_fields, kind FROM films WHERE id=?", (fid,)).fetchone()
+    row = c.execute("SELECT title, year, mc_slug, mc_metascore, mc_user_score, mc_fetched_at, mc_match_ver, edited_fields, kind FROM films WHERE id=?", (fid,)).fetchone()
     if not row: return {"ok": False, "reason": "not_found"}
     if not db.is_metacritic_film(c, fid): return {"ok": False, "reason": "skipped"}
     if not mc_needs_fetch(row, force):
@@ -3664,7 +3676,7 @@ def refresh_metacritic(c, fid, force=False):
     if not manual: slug = (row["mc_slug"] or "").strip() or None
     title, year = (row["title"] or "").strip(), row["year"]
     if not slug and not title:  # nothing to search with
-        c.execute("UPDATE films SET mc_fetched_at=? WHERE id=?", (time.time(), fid)); c.commit()
+        c.execute("UPDATE films SET mc_fetched_at=?, mc_match_ver=? WHERE id=?", (time.time(), MC_MATCH_VER, fid)); c.commit()
         return {"ok": False, "reason": "not_found"}
     result = mcmod.lookup(title, year, slug=slug)
     if result.get("reason") == "error":
@@ -3674,25 +3686,28 @@ def refresh_metacritic(c, fid, force=False):
     if result.get("ok"):
         new_slug = result.get("slug") or slug
         if manual and slug: new_slug = slug  # never overwrite a hand-set slug
-        c.execute("UPDATE films SET mc_slug=?, mc_metascore=?, mc_critic_count=?, mc_user_score=?, mc_user_count=?, mc_fetched_at=? WHERE id=?",
-                  (new_slug, result.get("metascore"), result.get("critic_count"), result.get("user_score"), result.get("user_count"), now, fid))
+        c.execute("UPDATE films SET mc_slug=?, mc_metascore=?, mc_critic_count=?, mc_user_score=?, mc_user_count=?, mc_fetched_at=?, mc_match_ver=? WHERE id=?",
+                  (new_slug, result.get("metascore"), result.get("critic_count"), result.get("user_score"), result.get("user_count"), now, MC_MATCH_VER, fid))
         c.commit(); return result
     # not found: remember the miss (and keep a hand-set slug so the user can see what was tried)
     keep_slug = slug if manual else (result.get("slug") if result.get("slug") and slug else None)
-    # For a miss with no manual slug, store nothing so the chips stay hidden; fetched_at stops retries for 30 days.
-    c.execute("UPDATE films SET mc_slug=?, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=? WHERE id=?",
-              (keep_slug, now, fid))
+    # fetched_at + current match version: retried after a day, or sooner if MC_MATCH_VER is bumped
+    c.execute("UPDATE films SET mc_slug=?, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=?, mc_match_ver=? WHERE id=?",
+              (keep_slug, now, MC_MATCH_VER, fid))
     c.commit(); return result
 
-def _mc_eligible_ids(c, retry=False, film_ids=None, limit=None):
-    """Mainstream movies that still need a lookup. retry also includes stale (30-day) rows."""
+def _mc_eligible_ids(c, retry=False, retry_misses=False, film_ids=None, limit=None):
+    """Mainstream movies that still need a lookup. retry also includes stale (30-day) rows.
+    retry_misses: films that were looked up but got no scores (re-check after a matcher change)."""
     where = "WHERE " + db.MC_ELIGIBLE_SQL
     args = []
     if film_ids:
         ids = [int(i) for i in film_ids]
         where += f" AND id IN ({','.join('?' * len(ids))})"
         args.extend(ids)
-    if retry:
+    if retry_misses:
+        where += " AND mc_fetched_at IS NOT NULL AND mc_metascore IS NULL AND mc_user_score IS NULL"
+    elif retry:
         where += " AND (mc_fetched_at IS NULL OR mc_fetched_at < ?)"
         args.append(time.time() - MC_CACHE_SEC)
     else:
@@ -3727,7 +3742,7 @@ def metacritic_start():
     c = C()
     with JOB_LOCK:
         if JOB.get("running"): return jsonify(error="Another job is already running"), 409
-        ids = _mc_eligible_ids(c, retry=bool(d.get("retry") or d.get("retry_checked")), film_ids=d.get("film_ids"), limit=d.get("limit"))
+        ids = _mc_eligible_ids(c, retry=bool(d.get("retry") or d.get("retry_checked")), retry_misses=bool(d.get("retry_misses")), film_ids=d.get("film_ids"), limit=d.get("limit"))
         JOB.clear(); JOB.update(running=True, kind="metacritic", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
         threading.Thread(target=run_metacritic_job, args=(ids,), daemon=True).start()
     return jsonify(JOB)

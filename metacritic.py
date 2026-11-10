@@ -162,15 +162,29 @@ def search_movie(title: str, year: Optional[int] = None) -> Optional[dict]:
             year = int(year)
         except (TypeError, ValueError):
             year = None
-    year_exact = [i for i in exact if year is not None and i.get("premiereYear") == year]
-    if year_exact:
-        return year_exact[0] if len(year_exact) == 1 or year_exact[0].get("slug") else year_exact[0]
-    if exact and year is None and len(exact) == 1:
-        return exact[0]
-    # Same title, no unique year match: do not guess (remakes).
-    if exact and year is not None and not year_exact:
+    def _year_of(i):
+        y = i.get("premiereYear")
+        try: return int(y) if y is not None else None
+        except (TypeError, ValueError): return None
+    def _unique(hits):
+        """One hit, or several with the same slug; None if the slugs disagree."""
+        if not hits: return None
+        slugs = {h.get("slug") for h in hits}
+        return hits[0] if len(slugs) == 1 else None
+    if year is not None:
+        year_exact = [i for i in exact if _year_of(i) == year]
+        hit = _unique(year_exact)
+        if hit: return hit
+        # Festival vs theatrical often differs by a year. Prefer exact year above; accept a
+        # unique exact-title hit one year away; if two ±1 titles exist, do not guess.
+        year_close = [i for i in exact if _year_of(i) is not None and abs(_year_of(i) - year) == 1]
+        hit = _unique(year_close)
+        if hit: return hit
+        if year_close: return None
         return None
-    if not exact and year is None and len(movies) == 1:
+    if exact and len(exact) == 1:
+        return exact[0]
+    if not exact and len(movies) == 1:
         return movies[0]
     return None
 

@@ -475,7 +475,8 @@ def connect():
     if "cast_roles" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles TEXT")
     if "cast_roles_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles_checked INTEGER")  # backfill tried
     for col, typ in (("mc_slug", "TEXT"), ("mc_metascore", "INTEGER"), ("mc_critic_count", "INTEGER"),
-                     ("mc_user_score", "REAL"), ("mc_user_count", "INTEGER"), ("mc_fetched_at", "REAL")):
+                     ("mc_user_score", "REAL"), ("mc_user_count", "INTEGER"), ("mc_fetched_at", "REAL"),
+                     ("mc_match_ver", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # Metacritic scores; cached ~30 days
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
