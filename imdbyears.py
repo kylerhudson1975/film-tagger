@@ -56,6 +56,11 @@ def default_csv_path():
     return os.path.join(home, "Desktop", "Film Tagger stuff", "imdb_year_mismatches.csv")
 
 
+def default_backfill_csv_path():
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    return os.path.join(home, "Desktop", "Film Tagger stuff", "imdb_id_backfill.csv")
+
+
 def title_key(s):
     """Equality key: fold accents/case, drop punctuation, collapse spaces."""
     s = db.fold(s or "")
@@ -71,6 +76,83 @@ def parse_imdb_id(val):
     if m: return m.group(1).lower()
     if s.isdigit() and len(s) >= 5: return "tt" + s.zfill(7)
     return None
+
+
+def imdb_id_from_tmdb(movie):
+    """IMDb id from a TMDB movie payload (top-level imdb_id or external_ids). Never searches by title."""
+    movie = movie or {}
+    ext = movie.get("external_ids") if isinstance(movie.get("external_ids"), dict) else {}
+    return parse_imdb_id(movie.get("imdb_id") or (ext or {}).get("imdb_id"))
+
+
+def _tmdb_year(movie):
+    d = str((movie or {}).get("release_date") or "")
+    return int(d[:4]) if len(d) >= 4 and d[:4].isdigit() else None
+
+
+def titles_agree_names(film_title, film_original, other_title, other_original=None):
+    """True when the film title/original matches another work's title or original title (folded keys)."""
+    return titles_agree(film_title, film_original, {
+        "title_key": title_key(other_title) if other_title else None,
+        "orig_key": title_key(other_original) if other_original else None,
+    })
+
+
+def decide_imdb_id(film, movie=None, *, require_close_year=True):
+    """Decide whether to store an IMDb id from a TMDB movie record. Never uses a title-only IMDb search.
+
+    film: mapping with title, original_title, year, tmdb_id, imdb_id, edited_fields, kind.
+    movie: TMDB /movie/{id} (or /external_ids) payload for that stored tmdb_id, or None if not fetched.
+    require_close_year: backfill requires the TMDB year to be within ±1 of the film's year (a solid match).
+
+    Returns dict action ('fill' or 'skip'), imdb_id, reason.
+    """
+    film = film or {}
+    try:
+        ed = film.get("edited_fields")
+        edited = set(ed if isinstance(ed, (list, set, tuple)) else (__import__("json").loads(ed or "[]") or []))
+    except Exception:
+        edited = set()
+    existing = parse_imdb_id(film.get("imdb_id"))
+    if "imdb_id" in edited and existing:
+        return {"action": "skip", "imdb_id": existing, "reason": "user_set"}
+    if existing:
+        return {"action": "skip", "imdb_id": existing, "reason": "already_has_imdb_id"}
+    if (film.get("kind") or "") == "scene":
+        return {"action": "skip", "imdb_id": "", "reason": "scene"}
+    if not film.get("tmdb_id"):
+        return {"action": "skip", "imdb_id": "", "reason": "no_tmdb_id"}
+    if movie is None:
+        return {"action": "skip", "imdb_id": "", "reason": "tmdb_not_fetched"}
+    if not titles_agree_names(film.get("title"), film.get("original_title"),
+                              movie.get("title"), movie.get("original_title")):
+        return {"action": "skip", "imdb_id": "", "reason": "tmdb_title_mismatch"}
+    if require_close_year:
+        fy, ty = _film_year(film.get("year")), _tmdb_year(movie)
+        if fy is not None and ty is not None and abs(fy - ty) > YEAR_FIX_DELTA:
+            return {"action": "skip", "imdb_id": "", "reason": "tmdb_year_mismatch"}
+    iid = imdb_id_from_tmdb(movie)
+    if not iid:
+        return {"action": "skip", "imdb_id": "", "reason": "tmdb_has_no_imdb_id"}
+    hit = lookup(iid)
+    if not hit:
+        return {"action": "skip", "imdb_id": "", "reason": "imdb_id_not_in_dataset"}
+    if not titles_agree(film.get("title"), film.get("original_title"), hit):
+        return {"action": "skip", "imdb_id": "", "reason": "imdb_title_mismatch"}
+    return {"action": "fill", "imdb_id": iid, "reason": "tmdb_external_ids"}
+
+
+BACKFILL_CSV_FIELDS = ["film_id", "title", "year", "library", "tmdb_id", "imdb_id", "action", "reason"]
+
+
+def write_backfill_csv(path, rows):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=BACKFILL_CSV_FIELDS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: ("" if r.get(k) is None else r.get(k)) for k in BACKFILL_CSV_FIELDS})
+    return path
 
 
 def adjust_release_date(rd, year):
@@ -312,22 +394,28 @@ def resolve_film(title, original=None, year=None, imdb_id=None):
     return find_by_title(title, original, year)
 
 
-def enrich_tmdb_apply(upd, lock, movie):
+def enrich_tmdb_apply(upd, lock, movie, film_title=None, film_original=None):
     """Mutate a TMDB apply_movie update with imdb_id and IMDb year. Soft-fail if the dataset is missing.
-    Does not override year/release_date when those fields are locked (hand-edited or keep=)."""
+    Stores the IMDb id only when the IMDb title matches this film (or the TMDB title if the film
+    title is not available). Never looks the id up by title. Does not override year/release_date
+    when those fields are locked (hand-edited or keep=), and never overwrites a user-set imdb_id."""
     lock = set(lock or ())
-    iid = parse_imdb_id((movie or {}).get("imdb_id"))
+    iid = imdb_id_from_tmdb(movie)
     if not iid:
         return False
-    if "imdb_id" not in lock:
-        upd["imdb_id"] = iid
-    if lock & {"year", "release_date"}:
-        return False
     hit = lookup(iid)
-    if not hit:
+    # Prefer the library title; fall back to the TMDB title when this is a brand-new apply
+    agree = False
+    if hit:
+        if film_title or film_original:
+            agree = titles_agree(film_title, film_original, hit)
+        else:
+            agree = titles_agree((movie or {}).get("title"), (movie or {}).get("original_title"), hit)
+    if agree and "imdb_id" not in lock:
+        upd["imdb_id"] = iid
+    if not agree:
         return False
-    # Only auto-fix a close year on this film's own IMDb id, never a cross-title match
-    if not titles_agree((movie or {}).get("title"), (movie or {}).get("original_title"), hit):
+    if lock & {"year", "release_date"}:
         return False
     y = int(hit["year"])
     try:

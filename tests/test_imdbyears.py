@@ -307,6 +307,100 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(row["year"], 1995)  # not jumped to 2018
         self.assertEqual(row["imdb_id"], "tt8765432")  # id is still stored
 
+    def test_update_film_saves_and_locks_hand_set_imdb_id(self):
+        r = self.cl.put(f"/api/films/{self.matrix}", json={"imdb_id": "https://www.imdb.com/title/tt0133093/"})
+        self.assertEqual(r.status_code, 200)
+        row = self.c.execute("SELECT imdb_id, edited_fields FROM films WHERE id=?", (self.matrix,)).fetchone()
+        self.assertEqual(row["imdb_id"], "tt0133093")
+        self.assertIn("imdb_id", json.loads(row["edited_fields"] or "[]"))
+        # Automation must not overwrite a user-set id
+        A.apply_movie(self.c, self.matrix, {
+            "id": 603, "title": "The Matrix", "imdb_id": "tt0443701",
+            "release_date": "1999-03-31", "credits": {},
+        })
+        self.c.commit()
+        row = self.c.execute("SELECT imdb_id, year FROM films WHERE id=?", (self.matrix,)).fetchone()
+        self.assertEqual(row["imdb_id"], "tt0133093")
+        self.assertEqual(row["year"], 1999)
+
+    def test_update_film_rejects_invalid_imdb_id(self):
+        r = self.cl.put(f"/api/films/{self.matrix}", json={"imdb_id": "not-an-id"})
+        self.assertEqual(r.status_code, 400)
+        self.assertIsNone(self.c.execute("SELECT imdb_id FROM films WHERE id=?", (self.matrix,)).fetchone()[0])
+
+    def test_apply_movie_stores_imdb_id_from_external_ids(self):
+        A.apply_movie(self.c, self.matrix, {
+            "id": 603, "title": "The Matrix",
+            "external_ids": {"imdb_id": "tt0133093"},
+            "release_date": "1999-03-31", "credits": {},
+        })
+        self.c.commit()
+        self.assertEqual(self.c.execute("SELECT imdb_id FROM films WHERE id=?", (self.matrix,)).fetchone()[0], "tt0133093")
+
+    def test_apply_movie_does_not_store_imdb_id_when_titles_disagree(self):
+        A.apply_movie(self.c, self.matrix, {
+            "id": 13827, "title": "Splice", "imdb_id": "tt0443701",
+            "release_date": "2009-01-01", "credits": {},
+        })
+        self.c.commit()
+        # Library title is The Matrix; IMDb record is Splice — do not stamp the wrong id
+        self.assertIsNone(self.c.execute("SELECT imdb_id FROM films WHERE id=?", (self.matrix,)).fetchone()[0])
+
+    def test_decide_imdb_id_backfill_rules(self):
+        solid = {"title": "Splice", "original_title": "Splice", "release_date": "2009-06-04", "imdb_id": "tt0443701"}
+        film = {"title": "Splice", "original_title": None, "year": 2010, "tmdb_id": 13827, "imdb_id": None, "kind": None}
+        d = iy.decide_imdb_id(film, solid)
+        self.assertEqual(d["action"], "fill")
+        self.assertEqual(d["imdb_id"], "tt0443701")
+        # No title-only IMDb search even when TMDB has no id
+        with mock.patch.object(iy, "find_by_title", side_effect=AssertionError("must not title-search IMDb")):
+            d = iy.decide_imdb_id({**film, "tmdb_id": None}, None)
+            self.assertEqual(d["reason"], "no_tmdb_id")
+            d = iy.decide_imdb_id(film, {**solid, "title": "Other Film", "original_title": "Other Film", "imdb_id": "tt0443701"})
+            self.assertEqual(d["reason"], "tmdb_title_mismatch")
+            d = iy.decide_imdb_id({**film, "year": 1995}, {"title": "Splice", "original_title": "Splice", "release_date": "2018-01-01", "imdb_id": "tt0443701"})
+            self.assertEqual(d["reason"], "tmdb_year_mismatch")
+            d = iy.decide_imdb_id({**film, "imdb_id": "tt0443701", "edited_fields": json.dumps(["imdb_id"])}, solid)
+            self.assertEqual(d["reason"], "user_set")
+            d = iy.decide_imdb_id({"title": "All Grown Up", "year": 1995, "kind": None}, None)
+            self.assertEqual(d["reason"], "no_tmdb_id")  # Classic Porn without a TMDB id stays blank
+
+    def test_backfill_job_fills_solid_matches_only_and_writes_csv(self):
+        self.c.execute("UPDATE films SET tmdb_id=? WHERE id=?", (13827, self.splice))
+        self.c.execute("UPDATE films SET tmdb_id=? WHERE id=?", (365262, self.classic))  # wrong year / title vs dataset
+        self.c.commit()
+        db.set_setting(self.c, "tmdb_key", "test-key")
+        self.c.commit()
+        movies = {
+            13827: {"id": 13827, "title": "Splice", "original_title": "Splice", "release_date": "2009-06-04", "imdb_id": "tt0443701"},
+            365262: {"id": 365262, "title": "Classic Example", "original_title": "Classic Example", "release_date": "2018-01-01", "imdb_id": "tt3333333"},
+        }
+        def fake_tmdb(path, key, **params):
+            self.assertIn("movie/", path)
+            tid = int(path.split("/")[1])
+            return movies[tid]
+        path = os.path.join(_TMP, f"backfill-{self.uid}.csv")
+        with mock.patch.object(A, "tmdb", side_effect=fake_tmdb):
+            mine = {self.splice, self.classic, self.gift, self.matrix, self.hand}
+            rows = [r for r in A._imdb_id_backfill_candidates(self.c) if r["id"] in mine]
+            A.JOB.clear(); A.JOB.update(running=True, kind="imdbids", done=0, total=len(rows),
+                                        matched=0, skipped=0, errors=0, error=None, cancel=False)
+            A.run_imdb_id_job("test-key", rows, path)
+        splice = self.c.execute("SELECT imdb_id, year FROM films WHERE id=?", (self.splice,)).fetchone()
+        self.assertEqual(splice["imdb_id"], "tt0443701")
+        self.assertEqual(splice["year"], 2010)  # year is not changed by the backfill
+        self.assertIsNone(self.c.execute("SELECT imdb_id FROM films WHERE id=?", (self.classic,)).fetchone()[0])
+        self.assertTrue(os.path.isfile(path))
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            log = list(csv.DictReader(f))
+        by = {int(r["film_id"]): r for r in log}
+        self.assertEqual(by[self.splice]["action"], "fill")
+        self.assertEqual(by[self.classic]["action"], "skip")
+        self.assertEqual(by[self.classic]["reason"], "tmdb_year_mismatch")
+        # Films with no TMDB id were logged, not title-searched
+        self.assertEqual(by[self.gift]["reason"], "no_tmdb_id")
+        self.assertEqual(A.JOB["matched"], 1)
+
     def test_refresh_does_not_hit_network_when_not_stale(self):
         with mock.patch.object(iy, "_download", side_effect=AssertionError("should not download")):
             st = iy.refresh(force=False)

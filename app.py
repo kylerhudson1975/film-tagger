@@ -841,6 +841,16 @@ def clean(d):
         if k in d:
             v = d[k]
             if k == "tmdb_id": out[k] = parse_tmdb_id(v); continue
+            if k == "imdb_id":
+                s = "" if v is None else str(v).strip()
+                if not s:
+                    out[k] = None
+                    continue
+                iid = imdbmod.parse_imdb_id(s)
+                if not iid:
+                    raise ValueError(f"Not an IMDb id or imdb.com/title/… link: {s}")
+                out[k] = iid
+                continue
             if k in ("year", "runtime", "rating"):
                 v = int(v) if v not in (None, "") else None
                 if k == "rating" and v is not None: v = max(1, min(10, v))
@@ -897,6 +907,8 @@ def update_film(fid):
     if changed & {"year", "release_date"}: changed |= {"year", "release_date"}  # date and year are protected together
     if "mc_slug" in changed and not f.get("mc_slug"):
         ed.discard("mc_slug"); changed.discard("mc_slug")  # clearing the slug lets auto-search run again
+    if "imdb_id" in changed and not f.get("imdb_id"):
+        ed.discard("imdb_id"); changed.discard("imdb_id")  # clearing the id lets backfill / TMDB fill it again
     ed |= changed
     if "subtitles" in changed: f["subs_manual"] = 1  # hand-edited subtitles: scans never overwrite until Re-detect
     if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports
@@ -2103,8 +2115,10 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     upd["updated_at"] = time.time()
     gnames = [g.get("name") for g in m.get("genres", []) if g.get("name")]
     if "genres" in m: upd["tmdb_genres"] = json.dumps(gnames, ensure_ascii=False)
-    prev = c.execute("SELECT year FROM films WHERE id=?", (fid,)).fetchone()
-    imdbmod.enrich_tmdb_apply(upd, lock, m)  # IMDb year wins over TMDB unless year was typed by hand
+    prev = c.execute("SELECT year, title, original_title FROM films WHERE id=?", (fid,)).fetchone()
+    imdbmod.enrich_tmdb_apply(upd, lock, m,
+                              film_title=prev["title"] if prev else None,
+                              film_original=prev["original_title"] if prev else None)
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
     if "year" in upd and (prev["year"] if prev else None) != upd.get("year"):
         invalidate_metacritic_for_year(c, fid)
@@ -2359,6 +2373,160 @@ def studio_status():
     return jsonify(job=j, eta_seconds=eta, with_studio=q("studio IS NOT NULL AND studio<>''"),
                    remaining=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked IS NULL"),
                    no_tmdb_studio=q("tmdb_id IS NOT NULL AND (studio IS NULL OR studio='') AND studio_checked=1"))
+
+
+def _imdb_id_backfill_candidates(c):
+    """Non-scene films that do not yet have an IMDb id (Classic Porn included when they have a TMDB id)."""
+    like = '%"imdb_id"%'
+    return list(c.execute(
+        "SELECT f.id, f.title, f.original_title, f.year, f.tmdb_id, f.imdb_id, f.kind, f.edited_fields, "
+        "(SELECT path FROM files WHERE film_id=f.id ORDER BY id LIMIT 1) AS path "
+        "FROM films f WHERE COALESCE(f.kind,'')<>'scene' AND (f.imdb_id IS NULL OR TRIM(f.imdb_id)='') "
+        "AND COALESCE(f.edited_fields,'') NOT LIKE ? ORDER BY f.id",
+        (like,),
+    ).fetchall())
+
+
+def run_imdb_id_job(key, ids, csv_path):
+    """Fill missing IMDb ids from each film's stored TMDB match (external_ids / movie.imdb_id).
+    Never searches IMDb by title, never overwrites a user-set id, never changes year or file names."""
+    rl = RateLimiter(4)
+    c = C()
+    log = []
+    classic_ids = {r[0] for r in c.execute("SELECT DISTINCT film_id FROM files WHERE " + db.CLASSIC_PORN_SQL)}
+    try:
+        for row in ids:
+            if JOB["cancel"]:
+                break
+            film = dict(row)
+            is_classic = film["id"] in classic_ids or "classic porn" in ((film.get("path") or "").lower())
+            rec = {
+                "film_id": film["id"], "title": film.get("title") or "", "year": film.get("year") or "",
+                "library": imdbmod.library_name(film.get("kind") or "", film.get("path"), is_classic),
+                "tmdb_id": film.get("tmdb_id") or "", "imdb_id": "", "action": "skip", "reason": "",
+            }
+            try:
+                decision = imdbmod.decide_imdb_id(film, None, require_close_year=True)
+                movie = None
+                if decision["reason"] == "tmdb_not_fetched" and film.get("tmdb_id"):
+                    for attempt in range(4):
+                        try:
+                            rl.wait()
+                            movie = tmdb(f"movie/{int(film['tmdb_id'])}", key, include_adult="true")
+                            break
+                        except urllib.error.HTTPError as e:
+                            if e.code == 429:
+                                time.sleep(5 * (attempt + 1))
+                                continue
+                            if e.code == 401:
+                                JOB["error"] = "TMDB rejected the API key (401)"
+                                rec["reason"] = "tmdb_unauthorized"
+                                log.append(rec)
+                                JOB["errors"] += 1
+                                JOB["done"] += 1
+                                imdbmod.write_backfill_csv(csv_path, log)
+                                return
+                            if e.code == 404:
+                                movie = None
+                                decision = {"action": "skip", "imdb_id": "", "reason": "tmdb_not_found"}
+                                break
+                            raise
+                    else:
+                        decision = {"action": "skip", "imdb_id": "", "reason": "tmdb_rate_limited"}
+                    if movie is not None:
+                        decision = imdbmod.decide_imdb_id(film, movie, require_close_year=True)
+                rec["imdb_id"] = decision.get("imdb_id") or ""
+                rec["action"] = decision["action"]
+                rec["reason"] = decision["reason"]
+                if decision["action"] == "fill" and decision.get("imdb_id"):
+                    # Re-check we still have no id and it is not user-set, then write only imdb_id
+                    cur = c.execute(
+                        "UPDATE films SET imdb_id=?, updated_at=? WHERE id=? AND (imdb_id IS NULL OR TRIM(imdb_id)='') "
+                        "AND COALESCE(edited_fields,'') NOT LIKE ?",
+                        (decision["imdb_id"], time.time(), film["id"], '%"imdb_id"%'),
+                    )
+                    c.commit()
+                    if cur.rowcount:
+                        JOB["matched"] += 1
+                    else:
+                        rec["action"] = "skip"
+                        rec["reason"] = "already_has_imdb_id"
+                        JOB["skipped"] += 1
+                else:
+                    JOB["skipped"] += 1
+            except urllib.error.HTTPError as e:
+                rec["reason"] = f"tmdb_http_{e.code}"
+                JOB["errors"] += 1
+                JOB["skipped"] += 1
+                if e.code == 401:
+                    JOB["error"] = "TMDB rejected the API key (401)"
+                    log.append(rec)
+                    JOB["done"] += 1
+                    break
+            except Exception as e:
+                rec["reason"] = f"error:{type(e).__name__}"
+                JOB["errors"] += 1
+                JOB["skipped"] += 1
+                if JOB["errors"] >= 8 and JOB["matched"] == 0:
+                    JOB["error"] = f"Stopped after repeated failures: {type(e).__name__}"
+                    log.append(rec)
+                    JOB["done"] += 1
+                    break
+            log.append(rec)
+            JOB["done"] += 1
+            if len(log) % 25 == 0 or JOB["done"] == JOB["total"]:
+                imdbmod.write_backfill_csv(csv_path, log)
+                JOB["csv"] = csv_path
+        imdbmod.write_backfill_csv(csv_path, log)
+        JOB["csv"] = csv_path
+        JOB["log_rows"] = len(log)
+    finally:
+        JOB["running"] = False
+        JOB["finished_at"] = time.time()
+        try:
+            imdbmod.write_backfill_csv(csv_path, log)
+            JOB["csv"] = csv_path
+        except Exception:
+            pass
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+@app.post("/api/imdb-ids/start")
+def imdb_ids_start():
+    """Backfill missing IMDb ids from each film's stored TMDB match. Does not change years or file names."""
+    c = C()
+    key = db.get_setting(c, "tmdb_key", "")
+    if not key:
+        return jsonify(error="No TMDB API key set in Settings"), 400
+    d = request.json or {} if request.is_json else {}
+    csv_path = (d.get("path") or "").strip() or imdbmod.default_backfill_csv_path()
+    with JOB_LOCK:
+        if JOB["running"]:
+            return jsonify(error="Another TMDB job is already running"), 409
+        rows = _imdb_id_backfill_candidates(c)
+        JOB.clear()
+        JOB.update(running=True, kind="imdbids", done=0, total=len(rows), matched=0, skipped=0,
+                   errors=0, error=None, cancel=False, started_at=time.time(), csv=csv_path)
+        threading.Thread(target=run_imdb_id_job, args=(key, rows, csv_path), daemon=True).start()
+    return jsonify(JOB)
+
+
+@app.get("/api/imdb-ids/status")
+def imdb_ids_status():
+    c = C()
+    q = lambda w: c.execute("SELECT COUNT(*) FROM films WHERE " + w).fetchone()[0]
+    j = dict(JOB)
+    return jsonify(
+        job=j,
+        with_imdb_id=q("imdb_id IS NOT NULL AND TRIM(imdb_id)<>''"),
+        no_imdb_id=q("(imdb_id IS NULL OR TRIM(imdb_id)='') AND COALESCE(kind,'')<>'scene'"),
+        no_tmdb_id=q("(imdb_id IS NULL OR TRIM(imdb_id)='') AND tmdb_id IS NULL AND COALESCE(kind,'')<>'scene'"),
+        user_set=q("""COALESCE(edited_fields,'') LIKE '%"imdb_id"%'""")
+    )
+
 
 PG_BLANK = "COALESCE(primary_genre,'')='' AND COALESCE(edited_fields,'') NOT LIKE '%\"primary_genre\"%'"
 PG_CLASSIC = "id IN (SELECT film_id FROM files WHERE " + db.CLASSIC_PORN_SQL + ")"
