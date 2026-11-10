@@ -14,6 +14,7 @@ Jewish ethnicity, safer Delete files, and cast character names on hover — ever
 
 ### 👥 People
 - **Jewish** is in the Ethnicity dropdown and Needs ethnicity quick-tag (press **J**). Wikidata values such as Jewish people, Ashkenazi, Sephardi and Mizrahi map to Jewish on fill; hand edits stay untouched.
+- **Ancestry fold:** Wikidata heritage labels such as Irish Americans, Korean Americans or Cherokee fold into a main Ethnicity group on fill (and on existing unlocked values). Nationality-style labels (French people, Americans, Irish people) stay as published. If two or more main groups remain, the person is not auto-assigned: they appear in Needs ethnicity with the Wikidata listings next to the photo, and a tag you pick there is a locked hand edit. Somali, Ethiopian, Eritrean, Nubian and other Horn of Africa groups map to Black.
 
 ### 🗑 Delete files
 - **Delete files and remove from library** now removes the film's whole folder and everything in it (videos, Poster.jpg, nfo, stills, extras, subfolders), permanently. The confirm dialog names the folder first.

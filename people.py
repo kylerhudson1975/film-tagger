@@ -1,5 +1,5 @@
 """Person pages: library people index, TMDB person resolution/caching, filmography with owned-film matching."""
-import os, re, json, time, datetime, threading, urllib.request, urllib.error, urllib.parse
+import os, re, json, time, datetime, threading, unicodedata, urllib.request, urllib.error, urllib.parse
 from collections import Counter as Counter_
 from flask import request, jsonify, send_from_directory
 import db
@@ -63,7 +63,8 @@ TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", 
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
              ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT"),
              ("ethnicity", "TEXT"), ("ethnicity_source", "TEXT"), ("ethnicity_checked_at", "REAL"),
-             ("eth_name_checked_at", "REAL"), ("eth_ext_checked_at", "REAL"), ("ethnicity_skipped_at", "REAL")]
+             ("eth_name_checked_at", "REAL"), ("eth_ext_checked_at", "REAL"), ("ethnicity_skipped_at", "REAL"),
+             ("ethnicity_listings", "TEXT")]
 EDITABLE = ("bio", "birthday", "place", "nationality", "measurements", "height", "career", "aliases", "links", "gender", "deathday", "ethnicity")
 # Gender values: ThePornDB's wording (what the library already holds) plus 'Unknown' (set by hand: checked, not known).
 GENDERS = ("Female", "Male", "Non Binary", "Transgender Female", "Transgender Male", "Unknown")
@@ -100,18 +101,127 @@ _ETH_ALIAS = {"asian": "Asian", "asianpeople": "Asian", "asians": "Asian", "east
               "indian": "South Asian", "southasian": "South Asian", "southasians": "South Asian", "desi": "South Asian",
               "white": "White", "caucasian": "White", "caucasians": "White", "european": "White", "europeanpeople": "White", "europeans": "White", "whitepeople": "White",
               "whiteamericans": "White", "whitebritish": "White", "whitebritishpeople": "White", "europeanamericans": "White"}
+# Ancestry / heritage values from Wikidata P172 (and the same wording typed by hand) fold into the main groups.
+# Nationality-style labels (French people, Americans, Irish people, …) and a short list Kyle is still deciding
+# (Armenians, Spanish Americans, Brazilian Americans, Galicians, Russians, Bahamian Americans, Puerto Ricans,
+# Berbers, Métis, Louisiana Creole people, Scandinavians) are left as published. Horn of Africa / East African
+# ethnic groups fold to Black, never White.
+_ETH_ALIAS.update({
+    "japaneseamericans": "Asian", "chineseamericans": "Asian", "filipinoamericans": "Asian",
+    "britishchinese": "Asian", "koreanamericans": "Asian", "minangkabau": "Asian",
+    "africanbrazilians": "Black", "afrobrazilian": "Black", "afrobrazilians": "Black",
+    "somali": "Black", "somalis": "Black", "somalipeople": "Black", "somaliamericans": "Black",
+    "somalian": "Black", "somalians": "Black",
+    "ethiopian": "Black", "ethiopians": "Black", "ethiopianpeople": "Black", "ethiopianamericans": "Black",
+    "eritrean": "Black", "eritreans": "Black", "eritreanpeople": "Black", "eritreanamericans": "Black",
+    "nubian": "Black", "nubians": "Black", "nubianpeople": "Black",
+    "amhara": "Black", "amharas": "Black", "amharapeople": "Black",
+    "oromo": "Black", "oromos": "Black", "oromopeople": "Black",
+    "tigray": "Black", "tigrayan": "Black", "tigrayans": "Black", "tigrinya": "Black", "tigrinyapeople": "Black",
+    "habesha": "Black", "habeshas": "Black", "afarpeople": "Black", "afar": "Black",
+    "djiboutian": "Black", "djiboutians": "Black",
+    "statesidepuertoricans": "Latina/Latino", "cubanamericans": "Latina/Latino",
+    "dominicanamericans": "Latina/Latino", "mexicanamericans": "Latina/Latino",
+    "guatemalanamericans": "Latina/Latino", "honduranamericans": "Latina/Latino",
+    "peruvianamericans": "Latina/Latino",
+    "lebaneseamericans": "Middle Eastern", "arabmexican": "Middle Eastern", "arabmexicans": "Middle Eastern",
+    "lebanesemexicans": "Middle Eastern", "moroccanamericans": "Middle Eastern",
+    "moroccancanadians": "Middle Eastern", "palestinians": "Middle Eastern", "palestinian": "Middle Eastern",
+    "eurasian": "Mixed", "eurasians": "Mixed",
+    "cherokee": "Native American", "dene": "Native American", "cayugapeople": "Native American", "cayuga": "Native American",
+    "chipewyanpeople": "Native American", "chipewyan": "Native American", "cree": "Native American",
+    "dakotapeople": "Native American", "dakota": "Native American", "menominee": "Native American",
+    "mohawk": "Native American", "muscogee": "Native American", "nakota": "Native American",
+    "navajo": "Native American", "omahatribeofnebraska": "Native American", "omaha": "Native American",
+    "oneida": "Native American", "pawneenation": "Native American", "pawnee": "Native American",
+    "purepecha": "Native American", "saulteaux": "Native American",
+    "tainopeople": "Native American", "taino": "Native American",
+    "tsleilwaututhfirstnation": "Native American", "tsleilwaututh": "Native American",
+    "maori": "Pacific Islander", "maoris": "Pacific Islander", "maoripeople": "Pacific Islander",
+    "nativehawaiians": "Pacific Islander", "nativehawaiian": "Pacific Islander",
+    "ngatihaua": "Pacific Islander",
+    "indianamericans": "South Asian", "punjabis": "South Asian", "punjabi": "South Asian",
+    "irishamericans": "White", "germanamericans": "White", "italianamericans": "White",
+    "dutchamericans": "White", "englishamericans": "White", "scottishamericans": "White",
+    "frenchamericans": "White", "norwegianamericans": "White", "polishamericans": "White",
+    "swedishamericans": "White", "swissamericans": "White", "greekamericans": "White",
+    "finnishamericans": "White", "serbianamericans": "White", "sicilianamericans": "White",
+    "albanianamericans": "White", "arbereshe": "White", "azoreancanadians": "White",
+    "belgianamericans": "White", "cornishamericans": "White", "cornishcanadians": "White",
+    "danishamericans": "White", "dutchcanadians": "White", "germancanadians": "White",
+    "irishcanadians": "White", "ladins": "White", "lemkos": "White",
+    "luxembourgishcanadians": "White", "portuguesecanadians": "White", "russianamericans": "White",
+    "sudetengermans": "White", "ukrainianamericans": "White", "welshamericans": "White",
+})
+# Groups that count when deciding a single auto-assignment (Mixed can be saved when it is the only mapped
+# value, but it does not compete with these nine).
+ETH_DECIDE = ("Asian", "Black", "Jewish", "Latina/Latino", "Middle Eastern", "Native American", "Pacific Islander", "South Asian", "White")
 _ETH_NONE = {"", "other", "unknown", "na", "none", "notapplicable", "notlisted"}
+def _eth_key(v):
+    """Lowercased letters only, diacritics stripped (Māori -> maori), for alias lookup."""
+    t = " ".join(str(v or "").split())
+    t = "".join(ch for ch in unicodedata.normalize("NFKD", t) if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z]", "", t.lower())
 def norm_ethnicity(v, keep=True):
     """A source / hand-typed ethnicity -> one of ETHNICITIES; an unmapped value is kept as written (keep=True) or None.
     'Other' / 'Unknown' / '' -> None (nothing published)."""
     t = " ".join(str(v or "").split())
-    k = re.sub(r"[^a-z]", "", t.lower())
+    k = _eth_key(t)
     if k in _ETH_NONE: return None
     if k in _ETH_ALIAS: return _ETH_ALIAS[k]
     return t[:60] if keep else None
 def eth_parts(v):
     """A stored ethnicity -> its values ('Irish Americans, White' -> ['Irish Americans', 'White']; several = several sources' groups)."""
     return [x.strip() for x in str(v or "").split(",") if x.strip()]
+def resolve_ethnicity(parts):
+    """Fold source labels (Wikidata P172, etc.) into at most one main group.
+    If exactly one of ETH_DECIDE is present (unmapped / undecided labels ignored), return that group.
+    If two or more of those groups remain, it is a conflict (no auto-assignment; Needs ethnicity review).
+    Mixed is saved only when it is the only mapped value. Unmapped-only lists are kept as published.
+    Returns (value_or_None, conflict, listings)."""
+    listings = list(dict.fromkeys(x.strip() for x in parts if str(x).strip()))
+    decisive, mixed = [], False
+    for lab in listings:
+        n = norm_ethnicity(lab, keep=True)
+        if n in ETH_DECIDE:
+            if n not in decisive: decisive.append(n)
+        elif n == "Mixed":
+            mixed = True
+    if len(decisive) == 1: return decisive[0], False, listings
+    if len(decisive) >= 2: return None, True, listings
+    if mixed: return "Mixed", False, listings
+    return (", ".join(listings) if listings else None), False, listings
+def eth_locked(row):
+    """True when ethnicity is a protected hand edit (never overwritten by a fill or ancestry fold)."""
+    if (row["ethnicity_source"] or "") in ("manual", "hand edit"): return True
+    try: return "ethnicity" in json.loads(row["edited_fields"] or "[]")
+    except Exception: return False
+def apply_ancestry_fold(c):
+    """One pass over unlocked source ethnicities: fold ancestry labels into a main group, or move conflicts
+    to the Needs ethnicity queue (listings kept, ethnicity cleared). Hand edits are never touched. Idempotent."""
+    folded = conflict = 0
+    for r in c.execute("SELECT id, ethnicity, ethnicity_source, edited_fields FROM people WHERE merged_into IS NULL AND COALESCE(ethnicity,'')<>''"):
+        if eth_locked(r): continue
+        value, is_conflict, listings = resolve_ethnicity(eth_parts(r["ethnicity"]))
+        if is_conflict:
+            c.execute("UPDATE people SET ethnicity=NULL, ethnicity_listings=? WHERE id=?",
+                      (json.dumps(listings, ensure_ascii=False), r["id"]))
+            conflict += 1
+        elif value and value != r["ethnicity"]:
+            c.execute("UPDATE people SET ethnicity=? WHERE id=?", (value, r["id"]))
+            folded += 1
+    c.commit()
+    return folded, conflict
+def parse_eth_listings(row):
+    """Wikidata P172 labels stored for review, or []."""
+    raw = row["ethnicity_listings"] if "ethnicity_listings" in row.keys() else None
+    if not raw: return []
+    try:
+        v = json.loads(raw)
+        if isinstance(v, list): return [str(x).strip() for x in v if str(x).strip()]
+    except Exception:
+        pass
+    return eth_parts(raw)
 ADULT_HINT = re.compile(r"porn|xxx|adult", re.I)
 COCREDIT = {}  # "ids": fn(conn, [person ids]) -> library film ids credited to all of them (app.build_query cocredit=)
 RLBL_CO = {"director": "Director", "cast": "Actor", "writer": "Writer", "producer": "Producer", "cinematographer": "Cinematographer", "composer": "Composer"}
@@ -2205,17 +2315,35 @@ def init(app, tmdb, posters_dir):
             k = b["k"]["value"].rsplit("/", 1)[-1]; lab = (b.get("eLabel") or {}).get("value") or ""
             if not lab or re.fullmatch(r"Q\d+", lab): continue  # no English label: skip rather than store an id
             qid = b["p"]["value"].rsplit("/", 1)[-1]
-            res.setdefault(k, {}).setdefault(qid, set()).add(norm_ethnicity(lab))
+            res.setdefault(k, {}).setdefault(qid, set()).add(lab)  # original label; fold happens in resolve_ethnicity
         out = {}
         for k, items in res.items():
             if len(items) != 1: continue  # several Wikidata items for one TMDB id: ambiguous, skip
-            qid, vals_ = next(iter(items.items())); vals_ = sorted(v for v in vals_ if v)
-            if vals_: out[k] = (", ".join(vals_), f"wikidata {qid}")
+            qid, labs = next(iter(items.items())); labs = sorted(v for v in labs if v)
+            value, conflict, listings = resolve_ethnicity(labs)
+            if listings: out[k] = dict(value=value, source=f"wikidata {qid}", listings=listings, conflict=conflict)
         return out
-    def _save_eth(c, pid, v, src):
-        n = c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, ethnicity_checked_at=? WHERE id=? AND COALESCE(ethnicity,'')='' "
-                      "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'", (v, src, time.time(), pid)).rowcount
+    def _save_eth(c, pid, v, src, listings=None):
+        if listings is not None:
+            n = c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, ethnicity_checked_at=?, ethnicity_listings=? WHERE id=? AND COALESCE(ethnicity,'')='' "
+                          "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'",
+                          (v, src, time.time(), json.dumps(listings, ensure_ascii=False), pid)).rowcount
+        else:
+            n = c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, ethnicity_checked_at=? WHERE id=? AND COALESCE(ethnicity,'')='' "
+                          "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'", (v, src, time.time(), pid)).rowcount
         c.commit(); return n
+    def _apply_p172(c, pid, hit, src_suffix=""):
+        """Save a resolved P172 hit (single group, raw labels, or a conflict queued for Needs ethnicity). Never over a hand edit."""
+        src = hit["source"] + src_suffix
+        listings = hit.get("listings") or []
+        if hit.get("conflict"):
+            n = c.execute("UPDATE people SET ethnicity_listings=?, ethnicity_source=?, ethnicity_checked_at=? WHERE id=? AND COALESCE(ethnicity,'')='' "
+                          "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'",
+                          (json.dumps(listings, ensure_ascii=False), src, time.time(), pid)).rowcount
+            c.commit(); return "conflict" if n else None
+        if hit.get("value") and _save_eth(c, pid, hit["value"], src, listings=listings):
+            return "filled"
+        return None
     def eth_wikidata(ids, gap=1.0, st=None, mark=()):
         """Wikidata P172 pass for people ids (batched SPARQL). `mark`: ids to flag as checked when their batch had nothing."""
         c = C(); filled = 0; mark = set(mark)
@@ -2233,8 +2361,8 @@ def init(app, tmdb, posters_dir):
                     except Exception:
                         if st is not None: st["errors"] += 1
                         time.sleep(10); continue
-                    for k, (v, src) in got.items():
-                        if _save_eth(c, by[k], v, src):
+                    for k, hit in got.items():
+                        if _apply_p172(c, by[k], hit) == "filled":
                             filled += 1
                             if st is not None: st["wikidata"] += 1
                     left = [by[k] for k in chunk if k not in got and by[k] in mark]
@@ -2294,8 +2422,9 @@ def init(app, tmdb, posters_dir):
                 if not keys: continue
                 try: got = _p172(" ".join(("wd:" + k) if not tm else f'"{k}"' for k in keys), tm)
                 except Exception: EJ["errors"] += 1; time.sleep(10); continue
-                for k, (v, src) in got.items():
-                    if _save_eth(c, by[k], v, src + (" (via IMDb id)" if tm else " (via TMDB)")): EJ["ext_found"] += 1; EJ["wikidata"] += 1
+                for k, hit in got.items():
+                    if _apply_p172(c, by[k], hit, " (via IMDb id)" if tm else " (via TMDB)") == "filled":
+                        EJ["ext_found"] += 1; EJ["wikidata"] += 1
                 time.sleep(1.0)
             c.execute("UPDATE people SET eth_ext_checked_at=? WHERE id IN (%s)" % ",".join("?" * len(chunk)), [time.time()] + [r["id"] for r in chunk]); c.commit()
     def eth_job(wait=0, tpdb_gap=1.5):
@@ -2330,11 +2459,7 @@ def init(app, tmdb, posters_dir):
         EJ.update(running=True, error=None); threading.Thread(target=work, daemon=True).start()
     if "pytest" not in __import__("sys").modules:
         _c = C()  # a backfill cut short by a restart picks up where it stopped (already-checked people are skipped)
-        for r in _c.execute("SELECT id, ethnicity FROM people WHERE COALESCE(ethnicity,'')<>'' AND COALESCE(ethnicity_source,'') NOT IN ('hand edit','manual') "
-                            "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'").fetchall():
-            v = ", ".join(dict.fromkeys(x for x in map(norm_ethnicity, eth_parts(r["ethnicity"])) if x)) or None  # newer variant mapping
-            if v and v != r["ethnicity"]: _c.execute("UPDATE people SET ethnicity=? WHERE id=?", (v, r["id"]))
-        _c.commit()
+        apply_ancestry_fold(_c)
         if db.get_setting(_c, "ethnicity_backfill_started", None) and not db.get_setting(_c, "ethnicity_backfill_done_v2", None): eth_job(wait=150)
     COV = {}
     def eth_counts(c):
@@ -2367,8 +2492,9 @@ def init(app, tmdb, posters_dir):
         return jsonify(dict(EJ, with_ethnicity=known, unknown=unknown, sources=srcs, coverage=dict(COV)))
 
     # ---------- Needs ethnicity (People → Mainstream / Porn): quick hand tagging, one person at a time ----------
-    # People with no ethnicity and no hand edit, photo first, then most library credits. Tagging goes through Edit profile
-    # (a protected hand edit, source 'manual'); Skip is remembered (ethnicity_skipped_at) until reset. Nothing is guessed.
+    # People with no ethnicity and no hand edit, plus Wikidata conflicts (several main groups: listings shown, not auto-assigned).
+    # Conflicts first, then photo, then most library credits. Tagging goes through Edit profile (a protected hand edit,
+    # source 'manual'); Skip is remembered (ethnicity_skipped_at) until reset. Nothing is guessed.
     @app.get("/api/people/needs_ethnicity")
     def needs_ethnicity():
         c = C(); cat = "mainstream" if request.args.get("cat") == "mainstream" else "porn"
@@ -2380,8 +2506,10 @@ def init(app, tmdb, posters_dir):
             if "ethnicity" in json.loads(row["edited_fields"] or "[]"): continue  # cleared by hand on purpose
             if row["ethnicity_skipped_at"]: skipped += 1; continue
             n = len(e["films"] & adult) if cat == "porn" else len(e["films"])
-            out.append(dict(id=row["id"], name=row["name"], photo=photo_url(row), nationality=row["nationality"], n=n, fav=bool(row["favorite"])))
-        out.sort(key=lambda p: (not p["photo"], not p["fav"], -p["n"], db.fold_key(p["name"])))
+            listings = parse_eth_listings(row)
+            out.append(dict(id=row["id"], name=row["name"], photo=photo_url(row), nationality=row["nationality"], n=n, fav=bool(row["favorite"]),
+                            listings=listings, conflict=bool(listings)))
+        out.sort(key=lambda p: (not p["conflict"], not p["photo"], not p["fav"], -p["n"], db.fold_key(p["name"])))
         return jsonify(people=out[:lim], remaining=len(out), skipped=skipped, cat=cat, groups=ETHNICITIES)
 
     @app.post("/api/people/<int:pid>/eth_skip")

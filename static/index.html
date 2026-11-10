@@ -1439,8 +1439,9 @@ async function pfFetch(){const t=S.pfTab,cat=S.pfCat,jobs=[];pfRecentLoad();pfRo
  await Promise.allSettled(jobs)}
 async function pfAllSearch(){const q=($('pfQ')?$('pfQ').value:'').trim(),eth=S.pfEth||'';if(!q&&!eth){S.pfAll={q:'',people:[],total:0};return}
  try{const a={q,limit:eth&&!q?1000:120};if(eth)a.eth=eth;const j=await api('/api/people/search?'+new URLSearchParams(a));if((($('pfQ')||{}).value||'').trim()===q&&(S.pfEth||'')===eth)S.pfAll={q,eth,people:j.people,total:j.total??j.people.length}}catch(e){S.pfAll={q,eth,people:[],total:0,error:true}}}
-/* Needs ethnicity (People → Mainstream / Porn): tag people with no ethnicity by hand, photo and most credits first. One at a
-   time (keys 1-9 = the groups, J = Jewish, O = Other, S = Skip, U = Undo) or a grid. A tag is a normal Edit profile save (protected,
+/* Needs ethnicity (People → Mainstream / Porn): tag people with no ethnicity by hand, photo and most credits first. Wikidata
+   conflicts (several main groups) are included, with their P172 listings shown next to the photo. One at a time
+   (keys 1-9 = the groups, J = Jewish, O = Other, S = Skip, U = Undo) or a grid. A tag is a normal Edit profile save (protected,
    source 'manual'); Skip is remembered until 'Reset skips'. Nothing is suggested or guessed. */
 S.neth={};S.nethMode=localStorage.nethMode=='grid'?'grid':'one';S.nethUndo=[];
 async function pfNethLoad(cat){try{const j=await api('/api/people/needs_ethnicity?'+new URLSearchParams({cat,limit:S.nethMode=='grid'?120:40}));S.neth[cat]=j}catch(e){S.neth[cat]=S.neth[cat]||{people:[],remaining:0,skipped:0,error:true}}}
@@ -1463,12 +1464,13 @@ function pfNethList(){const d=S.neth[S.pfCat];if(!d)return '<div id=pfNeth class
  const last=S.nethUndo[S.nethUndo.length-1];
  const bar=`<div class=muted style="margin:0 0 8px" id=nethBar><b id=nethLeft>${dN(d.remaining)}</b> ${d.remaining==1?'person':'people'} with no ethnicity here${d.skipped?` · ${dN(d.skipped)} skipped <a href="#" id=nethReset onclick="nethReset();return false">Reset skips</a>`:''} · <a href="#" onclick="nethMode('${S.nethMode=='one'?'grid':'one'}');return false">${S.nethMode=='one'?'Show as a grid':'One at a time'}</a>${last?` · <a href="#" id=nethUndoL onclick="nethUndo();return false">Undo ${esc(last.p.name)} (U)</a>`:''}</div>`;
  if(!d.people.length)return `<div id=pfNeth>${bar}<p class=muted>${d.remaining?'Loading more…':'Nobody left to tag here.'}</p></div>`;
- if(S.nethMode=='grid')return `<div id=pfNeth class=neth-grid>${bar}<div class=pcards>${d.people.map(p=>`<div class=pcard data-pid="${p.id}"><div class=pph onclick="pfOpen(${p.id})">${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0"><b onclick="pfOpen(${p.id})">${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.nationality?esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]}</div>
+ if(S.nethMode=='grid')return `<div id=pfNeth class=neth-grid>${bar}<div class=pcards>${d.people.map(p=>`<div class=pcard data-pid="${p.id}"><div class=pph onclick="pfOpen(${p.id})">${p.photo?`<img loading=lazy src="${esc(p.photo)}">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0"><b onclick="pfOpen(${p.id})">${esc(p.name)}</b>${favStar(p)}<div class=muted>${p.nationality?esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]}</div>${p.listings&&p.listings.length?`<div class=muted id=nethListings-${p.id} style="font-size:12px">Wikidata lists: ${p.listings.map(esc).join(', ')}</div>`:''}
   <select onchange="if(this.value=='~'){const v=prompt('Ethnicity for ${jsq(p.name)}');if(v)nethTag(${p.id},v);else this.value=''}else nethTag(${p.id},this.value)"><option value="">Ethnicity…</option>${ETHNICITIES.map(g=>`<option>${g}</option>`).join('')}<option value="~">Other…</option></select> <a href="#" onclick="nethSkip(${p.id});return false">Skip</a></div></div>`).join('')}</div></div>`;
  const p=d.people[0];
  return `<div id=pfNeth>${bar}<div class=neth-one data-pid="${p.id}"><div class=neth-ph>${p.photo?`<img src="${esc(p.photo)}" alt="">`:`<span>${initials(p.name)}</span>`}</div><div style="min-width:0;flex:1">
  <h2 style="margin:0 0 4px"><a href="#" onclick="pfOpen(${p.id});return false" id=nethName>${esc(p.name)}</a>${favStar(p)}</h2>
  <div class=muted>${p.nationality?'Nationality: '+esc(p.nationality)+' · ':''}${dN(p.n)} ${p.n==1?u[0]:u[1]} in your library</div>
+ ${p.listings&&p.listings.length?`<div id=nethListings style="margin:6px 0 8px;font-size:13px">Wikidata lists: ${p.listings.map(esc).join(', ')}</div>`:''}
  <div class=neth-btns id=nethBtns>${ETHNICITIES.map(g=>`<button data-g="${g}" onclick="nethTag(${p.id},'${jsq(g)}')"><span class=neth-k>${ethKey(g)}</span>${g}</button>`).join('')}</div>
  <div><input id=nethOther placeholder="Other (O)…" style="width:220px" onkeydown="if(event.key=='Enter'){event.preventDefault();nethOther(${p.id})}else if(event.key=='Escape')this.blur()"> <button onclick="nethOther(${p.id})">Save other</button> <button id=nethSkipB onclick="nethSkip(${p.id})"><span class=neth-k>S</span>Skip</button></div>
  <p class=muted style="font-size:12px;margin-top:10px">Keys: 1–9 pick a group · J Jewish · O type another · S skip · U undo. Saved as your own edit, so no automatic fill ever changes it.</p></div></div>

@@ -15,7 +15,7 @@ assert {"ethnicity", "ethnicity_source", "ethnicity_checked_at"} <= cols, cols
 N = P.norm_ethnicity
 assert N("Caucasian") == N("white") == "White" and N("Latin") == N("Latina") == N("latino") == N("Hispanic") == "Latina/Latino"
 assert N("African American") == "Black" and N("Indian") == "South Asian" and N("Asian") == "Asian"
-assert N("Other") is None and N("") is None and N("Irish Americans") == "Irish Americans" and N("Irish Americans", keep=False) is None
+assert N("Other") is None and N("") is None and N("Irish Americans") == "White" and N("Armenians") == "Armenians" and N("Armenians", keep=False) is None
 assert "Jewish" in P.ETHNICITIES and P.ETHNICITIES.index("Jewish") == P.ETHNICITIES.index("Black") + 1
 assert N("Jewish people") == N("Ashkenazi Jews") == N("ashkenazi") == N("Sephardi") == N("Jewish Americans") == "Jewish"
 assert N("jew") == N("Jews") == N("Israeli Jews") == N("Russian Jews") == N("Polish Jews") == "Jewish"
@@ -89,25 +89,32 @@ assert S(eth="White") == ["Bea White", "Cy Hand"] and S(q="cy", eth="White") == 
 v = cl.get("/api/people/ethnicities").json
 assert {x["value"]: x["n"] for x in v["values"]} == {"White": 2, "Latina/Latino": 1, "Black": 1}, v
 assert v["unknown"] == 2 and v["people_with"] == 4 and v["sources"] == {"theporndb": 2, "manual": 1, "wikidata": 1}, v
-# several values (Wikidata lists ancestry groups): each counts, the filter and a known word find the person
-cl.post(f"/api/person/{ids['Flo Ruiz']}/edit", json={"ethnicity": "Irish Americans, white"})
-assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Irish Americans, White"
-assert "Flo Ruiz" in S(q="white") and "Flo Ruiz" in S(eth="White") and S(eth="Irish Americans") == ["Flo Ruiz"] and S(q="irish") == ["Flo Ruiz"]
+# several values: a hand edit can keep a still-unmapped label plus a main group; each counts
+cl.post(f"/api/person/{ids['Flo Ruiz']}/edit", json={"ethnicity": "Armenians, white"})
+assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Armenians, White"
+assert "Flo Ruiz" in S(q="white") and "Flo Ruiz" in S(eth="White") and S(eth="Armenians") == ["Flo Ruiz"] and S(q="armenian") == ["Flo Ruiz"]
 v = {x["value"]: x["n"] for x in cl.get("/api/people/ethnicities").json["values"]}
-assert v["White"] == 3 and v["Irish Americans"] == 1, v
-# start-up remapping folds source variants (hand edits / manual stay untouched)
+assert v["White"] == 3 and v["Armenians"] == 1, v
+# ancestry fold: two main groups become a Needs ethnicity conflict; a hand edit is never touched
 c.execute("UPDATE people SET ethnicity=?, ethnicity_source=? WHERE id=?", ("Jewish people, White", "wikidata Qx", ids["Ed None"]))
 c.execute("UPDATE people SET ethnicity=?, ethnicity_source=?, edited_fields=? WHERE id=?",
           ("Ashkenazi Jews", "manual", json.dumps(["ethnicity"]), ids["Flo Ruiz"]))
 c.commit()
-for r in c.execute("SELECT id, ethnicity FROM people WHERE COALESCE(ethnicity,'')<>'' AND COALESCE(ethnicity_source,'') NOT IN ('hand edit','manual') "
-                   "AND COALESCE(edited_fields,'') NOT LIKE '%\"ethnicity\"%'").fetchall():
-    v = ", ".join(dict.fromkeys(x for x in map(P.norm_ethnicity, P.eth_parts(r["ethnicity"])) if x)) or None
-    if v and v != r["ethnicity"]: c.execute("UPDATE people SET ethnicity=? WHERE id=?", (v, r["id"]))
-c.commit()
-assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Ed None"],)).fetchone()[0] == "Jewish, White"
+folded, conflict = P.apply_ancestry_fold(c)
+assert conflict >= 1
+ed = c.execute("SELECT ethnicity, ethnicity_listings, ethnicity_source FROM people WHERE id=?", (ids["Ed None"],)).fetchone()
+assert ed["ethnicity"] is None and json.loads(ed["ethnicity_listings"]) == ["Jewish people", "White"] and ed["ethnicity_source"] == "wikidata Qx", tuple(ed)
 assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Flo Ruiz"],)).fetchone()[0] == "Ashkenazi Jews"  # manual locked
-assert "Ed None" in S(eth="Jewish") and "Ed None" in S(q="jewish")
+neth = cl.get("/api/people/needs_ethnicity?cat=porn").json
+ed_hit = [p for p in neth["people"] if p["id"] == ids["Ed None"]]
+assert ed_hit and ed_hit[0]["conflict"] and ed_hit[0]["listings"] == ["Jewish people", "White"], ed_hit
+# tagging a conflict is a locked hand edit; automatic fill cannot overwrite it
+assert cl.post(f"/api/person/{ids['Ed None']}/edit", json={"ethnicity": "White"}).json["ok"]
+assert tuple(c.execute("SELECT ethnicity, ethnicity_source FROM people WHERE id=?", (ids["Ed None"],)).fetchone()) == ("White", "manual")
+assert ids["Ed None"] not in [p["id"] for p in cl.get("/api/people/needs_ethnicity?cat=porn").json["people"]]
+row = c.execute("SELECT * FROM people WHERE id=?", (ids["Ed None"],)).fetchone()
+P.apply_tpdb(c, row, {"id": "tpE2", "extras": {"ethnicity": "Asian"}})
+assert c.execute("SELECT ethnicity FROM people WHERE id=?", (ids["Ed None"],)).fetchone()[0] == "White"
 # summary panel carries it
 assert cl.get(f"/api/people/{ids['Di Wiki']}/summary").json["ethnicity"] == "Black"
 print("ok")

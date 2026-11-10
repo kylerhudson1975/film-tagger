@@ -63,7 +63,7 @@ assert E("Gia Name") == ("Asian", "theporndb g1 (name match)"), E("Gia Name")
 assert E("Hal Twin") == (None, None) and E("Ivy Born") == (None, None)  # two exact matches / birth date disagrees
 assert E("Kim Many") == ("Middle Eastern", "theporndb k1 (name match)"), E("Kim Many")  # alias match, short result -> performer read
 assert E("Jo Ext") == ("Asian", "wikidata Q61 (via IMDb id)"), E("Jo Ext")
-assert E("Lu Qid") == ("Irish Americans", "wikidata Q62 (via TMDB)"), E("Lu Qid")
+assert E("Lu Qid") == ("White", "wikidata Q62 (via TMDB)"), E("Lu Qid")
 assert E("Mo None") == (None, None)
 assert st["name_found"] == 2 and st["ext_found"] == 2 and st["error"] is None, st
 assert st["coverage"] == {"porn": {"with": 2, "without": 2}, "mainstream": {"with": 2, "without": 1}}, st["coverage"]
