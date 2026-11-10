@@ -474,6 +474,9 @@ def connect():
     # Cast character names (TMDB cast[].character / NFO <actor><role>); JSON {actor name: character}
     if "cast_roles" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles TEXT")
     if "cast_roles_checked" not in cols: c.execute("ALTER TABLE films ADD COLUMN cast_roles_checked INTEGER")  # backfill tried
+    for col, typ in (("mc_slug", "TEXT"), ("mc_metascore", "INTEGER"), ("mc_critic_count", "INTEGER"),
+                     ("mc_user_score", "REAL"), ("mc_user_count", "INTEGER"), ("mc_fetched_at", "REAL")):
+        if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # Metacritic scores; cached ~30 days
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
@@ -897,6 +900,15 @@ def is_classic_porn(c, fid):
 def is_nc17(cert):
     """True for NC-17 in any common casing/spacing/dash variant (NC-17, nc17, NC 17, NC_17...)."""
     return bool(cert) and re.sub(r"[\s\-_]+", "", str(cert)).upper() == "NC17"
+
+
+MC_ELIGIBLE_SQL = "COALESCE(kind,'')<>'scene' AND id NOT IN (SELECT film_id FROM files WHERE " + CLASSIC_PORN_SQL + ")"
+
+def is_metacritic_film(c, fid):
+    """Mainstream Movies library only: not a porn scene, and not under a Classic Porn folder."""
+    r = c.execute("SELECT kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not r or (r["kind"] or "") == "scene": return False
+    return not is_classic_porn(c, fid)
 
 def classic_porn_mpaa(c, fid, cert):
     """Classic Porn standing rule: NC-17 becomes X. Other certs (and non-Classic-Porn films) unchanged."""

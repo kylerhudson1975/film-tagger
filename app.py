@@ -8,13 +8,14 @@ import tpdb
 import focus as focusmod
 import gallery as gallerymod
 import mkvtag
+import metacritic as mcmod
 
 APP_VERSION = "1.3.5"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id", "mc_slug"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -250,6 +251,11 @@ def attach(c, films, full=False):
             except Exception: f["cast_roles"] = {}
         elif not isinstance(raw, dict):
             f["cast_roles"] = {}
+        slug = (f.get("mc_slug") or "").strip()
+        f["mc_url"] = mcmod.page_url(slug) if slug else None
+        f["mc_critic_url"] = mcmod.page_url(slug, "critic") if slug else None
+        f["mc_user_url"] = mcmod.page_url(slug, "user") if slug else None
+        f["mc_eligible"] = (f.get("kind") or "") != "scene"  # Classic Porn is refined in get_film (needs file paths)
     return films
 
 def soft_match_ids(c, ids=None):
@@ -798,7 +804,13 @@ def get_film(fid):
     # Serve the cached gallery_path/count immediately; refresh one film in the background.
     if request.method == "GET" and request.endpoint == "get_film":
         kick_gallery(fid)
-    return jsonify(attach(c, [dict(r)])[0])
+    pending = False
+    if request.method == "GET" and request.endpoint == "get_film":
+        pending = kick_metacritic(fid)
+    j = attach(c, [dict(r)])[0]
+    j["mc_eligible"] = db.is_metacritic_film(c, fid)
+    j["mc_pending"] = bool(pending)
+    return jsonify(j)
 
 def parse_tmdb_id(v):
     """Accepts 595334, '595334', or a TMDB URL like https://www.themoviedb.org/movie/595334-some-title."""
@@ -838,6 +850,7 @@ def clean(d):
             if k == "aznude_status": v = db.norm_aznude_status(v)
             if k == "subtitles": v = " ".join((v or "").split()) or None
             if k == "tpdb_id": v = tpdb.parse_id(v if isinstance(v, str) else str(v or ""))
+            if k == "mc_slug": v = mcmod.parse_slug(v)
             if k == "release_date": v = norm_release_date(v)
             if k == "resolution": v = resmod.normalize(v if isinstance(v, str) else "")
             if k == "user_akas":  # one title per line (semicolons also split); titles may contain commas
@@ -881,6 +894,8 @@ def update_film(fid):
     if "release_date" in f and not f["release_date"] and "year" not in d: f.pop("year", None)  # clearing the date keeps the year
     changed = {k for k, v in f.items() if k != "tmdb_id" and (v or None) != (old[k] or None)}
     if changed & {"year", "release_date"}: changed |= {"year", "release_date"}  # date and year are protected together
+    if "mc_slug" in changed and not f.get("mc_slug"):
+        ed.discard("mc_slug"); changed.discard("mc_slug")  # clearing the slug lets auto-search run again
     ed |= changed
     if "subtitles" in changed: f["subs_manual"] = 1  # hand-edited subtitles: scans never overwrite until Re-detect
     if "aznude_status" in changed: f["aznude_checked"] = time.time()  # hand-set AZNude Status: protected from imports
@@ -904,6 +919,14 @@ def update_film(fid):
             t = {"name": t} if isinstance(t, str) else t
             db.add_tag(c, fid, t.get("name"), t.get("category"))
     c.commit()
+    slug_changed = "mc_slug" in f and (f.get("mc_slug") or None) != (old["mc_slug"] or None)
+    if slug_changed:
+        kick_metacritic(fid, force=True)
+    elif changed & {"title", "year", "release_date"} and "mc_slug" not in set(json.loads(old["edited_fields"] or "[]")):
+        # title/year changed and the slug was not set by hand: drop the auto match and look it up again
+        if db.is_metacritic_film(c, fid):
+            c.execute("UPDATE films SET mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL WHERE id=?", (fid,))
+            c.commit(); kick_metacritic(fid, force=True)
     if "poster" in changed and old["kind"] == "scene": kick_focus()
     rename_note = mkv = None
     if old["kind"] == "scene" and not changed & set(SCENE_NAME_FIELDS): relink_standard_named(c, fid)  # clears a stuck soft match on any Save
@@ -1856,7 +1879,8 @@ def studios_of(m):
 POSTER_NEVER = {"custom_poster"}  # the user's own poster: only the poster endpoints (upload, URL, gallery, Find Posters,
                                   # editor, Remove custom poster, Restore previous) ever write it; no job or refresh does
 TMDB_NEVER = {"kind", "tpdb_id", "tpdb_checked", "rating", "watched", "notes", "custom_poster", "storage", "user_akas", "resolution", "subtitles", "subs_manual", "subs_checked", "edited_fields",
-              "aznude_status", "aznude_checked", "aznude_url", "aznude_note"}
+              "aznude_status", "aznude_checked", "aznude_url", "aznude_note",
+              "mc_slug", "mc_metascore", "mc_critic_count", "mc_user_score", "mc_user_count", "mc_fetched_at"}
 
 def tmdb_date(d):
     """TMDB date -> stored release date; TMDB's placeholder 'YYYY-01-01' (only the year known) is stored as 'YYYY'."""
@@ -3588,6 +3612,135 @@ def scenes_rename_apply():
 GALLERY_THUMBS = os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "gallery_thumbs")
 
 _GAL_BG, _GAL_BG_LOCK = set(), threading.Lock()
+
+
+# ---------- Metacritic scores (mainstream Movies only; never Porn Scenes or Classic Porn) ----------
+MC_CACHE_SEC = 30 * 24 * 3600
+MC_CLEAR = "mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL"
+_MC_BG, _MC_BG_LOCK, _MC_ERR_UNTIL = set(), threading.Lock(), {}
+
+def mc_is_fresh(fetched_at, force=False):
+    if force or not fetched_at: return False
+    try: return (time.time() - float(fetched_at)) < MC_CACHE_SEC
+    except (TypeError, ValueError): return False
+
+def mc_needs_fetch(row, force=False):
+    """True when this film should be looked up now (cache miss or stale)."""
+    if force: return True
+    return not mc_is_fresh(row["mc_fetched_at"] if row else None)
+
+def kick_metacritic(fid, force=False):
+    """Start a background Metacritic lookup if this film is eligible and the cache is stale.
+    Returns True if a fetch was started (or is already in flight), so the UI can poll."""
+    fid = int(fid)
+    c = C(); row = c.execute("SELECT id, kind, title, year, mc_slug, mc_fetched_at, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    if not row or not db.is_metacritic_film(c, fid): return False
+    if not mc_needs_fetch(row, force): return False
+    now = time.monotonic()
+    if not force and _MC_ERR_UNTIL.get(fid, 0) > now: return False
+    with _MC_BG_LOCK:
+        if fid in _MC_BG: return True
+        _MC_BG.add(fid)
+    def work():
+        try:
+            refresh_metacritic(C(), fid, force=force)
+        except Exception:
+            _MC_ERR_UNTIL[fid] = time.monotonic() + 600  # 10 min cooldown after an unexpected error
+        finally:
+            with _MC_BG_LOCK: _MC_BG.discard(fid)
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+def refresh_metacritic(c, fid, force=False):
+    """Look up and store Metacritic scores for one film. Never raises to the caller. Returns a result dict."""
+    row = c.execute("SELECT title, year, mc_slug, mc_fetched_at, edited_fields, kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not row: return {"ok": False, "reason": "not_found"}
+    if not db.is_metacritic_film(c, fid): return {"ok": False, "reason": "skipped"}
+    if not mc_needs_fetch(row, force):
+        return {"ok": True, "cached": True, "slug": row["mc_slug"], "metascore": None}
+    manual = "mc_slug" in set(json.loads(row["edited_fields"] or "[]"))
+    slug = (row["mc_slug"] or "").strip() or None if manual or row["mc_slug"] else None
+    # A hand-set slug is always used; an auto slug is reused until title/year changes (cleared in update_film).
+    if not manual: slug = (row["mc_slug"] or "").strip() or None
+    title, year = (row["title"] or "").strip(), row["year"]
+    if not slug and not title:  # nothing to search with
+        c.execute("UPDATE films SET mc_fetched_at=? WHERE id=?", (time.time(), fid)); c.commit()
+        return {"ok": False, "reason": "not_found"}
+    result = mcmod.lookup(title, year, slug=slug)
+    if result.get("reason") == "error":
+        _MC_ERR_UNTIL[fid] = time.monotonic() + 600
+        return result
+    now = time.time()
+    if result.get("ok"):
+        new_slug = result.get("slug") or slug
+        if manual and slug: new_slug = slug  # never overwrite a hand-set slug
+        c.execute("UPDATE films SET mc_slug=?, mc_metascore=?, mc_critic_count=?, mc_user_score=?, mc_user_count=?, mc_fetched_at=? WHERE id=?",
+                  (new_slug, result.get("metascore"), result.get("critic_count"), result.get("user_score"), result.get("user_count"), now, fid))
+        c.commit(); return result
+    # not found: remember the miss (and keep a hand-set slug so the user can see what was tried)
+    keep_slug = slug if manual else (result.get("slug") if result.get("slug") and slug else None)
+    # For a miss with no manual slug, store nothing so the chips stay hidden; fetched_at stops retries for 30 days.
+    c.execute("UPDATE films SET mc_slug=?, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=? WHERE id=?",
+              (keep_slug, now, fid))
+    c.commit(); return result
+
+def _mc_eligible_ids(c, retry=False, film_ids=None, limit=None):
+    """Mainstream movies that still need a lookup. retry also includes stale (30-day) rows."""
+    where = "WHERE " + db.MC_ELIGIBLE_SQL
+    args = []
+    if film_ids:
+        ids = [int(i) for i in film_ids]
+        where += f" AND id IN ({','.join('?' * len(ids))})"
+        args.extend(ids)
+    if retry:
+        where += " AND (mc_fetched_at IS NULL OR mc_fetched_at < ?)"
+        args.append(time.time() - MC_CACHE_SEC)
+    else:
+        where += " AND mc_fetched_at IS NULL"
+    sql = "SELECT id FROM films " + where + " ORDER BY title COLLATE FOLD, id"
+    if limit: sql += " LIMIT ?"; args.append(int(limit))
+    return [r[0] for r in c.execute(sql, args)]
+
+def run_metacritic_job(ids):
+    c = C()
+    try:
+        for fid in ids:
+            if JOB["cancel"]: break
+            try:
+                r = refresh_metacritic(c, fid, force=False)
+                if r.get("ok") and not r.get("cached"): JOB["matched"] += 1
+                else: JOB["skipped"] += 1
+            except Exception as e:
+                JOB["errors"] += 1; JOB["error"] = str(e)
+                if JOB["errors"] >= 5 and JOB["matched"] == 0:
+                    JOB["error"] += " (stopped after repeated failures)"; break
+            JOB["done"] += 1
+    finally:
+        JOB["running"] = False; JOB["finished_at"] = time.time(); c.close()
+
+@app.post("/api/metacritic/start")
+def metacritic_start():
+    """Backfill Metacritic scores for mainstream Movies only (skips Porn Scenes and Classic Porn).
+    Body: {retry: bool, limit: int, film_ids: [..]}. Default is films never fetched. Does not start a
+    second job if one is already running."""
+    d = request.get_json(silent=True) or {}
+    c = C()
+    with JOB_LOCK:
+        if JOB.get("running"): return jsonify(error="Another job is already running"), 409
+        ids = _mc_eligible_ids(c, retry=bool(d.get("retry") or d.get("retry_checked")), film_ids=d.get("film_ids"), limit=d.get("limit"))
+        JOB.clear(); JOB.update(running=True, kind="metacritic", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
+        threading.Thread(target=run_metacritic_job, args=(ids,), daemon=True).start()
+    return jsonify(JOB)
+
+@app.post("/api/films/<int:fid>/metacritic")
+def film_metacritic(fid):
+    """Fetch (or refresh) Metacritic scores for one mainstream movie. Scenes and Classic Porn are skipped."""
+    c = C()
+    if not c.execute("SELECT 1 FROM films WHERE id=?", (fid,)).fetchone(): return jsonify(error="not found"), 404
+    if not db.is_metacritic_film(c, fid):
+        return jsonify(ok=False, skipped=True, reason="not a mainstream movie")
+    refresh_metacritic(c, fid, force=True)
+    return get_film(fid)
 
 def kick_gallery(fid):
     """Refresh one film's gallery_path/count off the request thread (deduped while in flight)."""
