@@ -478,6 +478,7 @@ def connect():
                      ("mc_user_score", "REAL"), ("mc_user_count", "INTEGER"), ("mc_fetched_at", "REAL"),
                      ("mc_match_ver", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # Metacritic scores; cached ~30 days
+    if "imdb_id" not in cols: c.execute("ALTER TABLE films ADD COLUMN imdb_id TEXT")  # tt…; from TMDB or an applied IMDb year fix
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():

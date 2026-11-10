@@ -9,13 +9,14 @@ import focus as focusmod
 import gallery as gallerymod
 import mkvtag
 import metacritic as mcmod
+import imdbyears as imdbmod
 
 APP_VERSION = "1.3.5"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id", "mc_slug"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id", "mc_slug", "imdb_id"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -1659,7 +1660,7 @@ def libraries():
     return jsonify(out)
 
 @app.get("/api/jobs")
-def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES, subs=SUBS, tpdb=TP)
+def jobs(): return jsonify(job=JOB, scan=SCAN, res=RES, subs=SUBS, tpdb=TP, imdb=imdbmod.STATE)
 
 @app.get("/api/searches")
 def searches(): return jsonify([dict(id=r[0], name=r[1], query=json.loads(r[2])) for r in C().execute("SELECT * FROM saved_searches ORDER BY name COLLATE FOLD")])
@@ -2098,7 +2099,11 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     upd["updated_at"] = time.time()
     gnames = [g.get("name") for g in m.get("genres", []) if g.get("name")]
     if "genres" in m: upd["tmdb_genres"] = json.dumps(gnames, ensure_ascii=False)
+    prev = c.execute("SELECT year FROM films WHERE id=?", (fid,)).fetchone()
+    imdbmod.enrich_tmdb_apply(upd, lock, m)  # IMDb year wins over TMDB unless year was typed by hand
     c.execute(f"UPDATE films SET {','.join(k+'=?' for k in upd)} WHERE id=?", list(upd.values()) + [fid])
+    if "year" in upd and (prev["year"] if prev else None) != upd.get("year"):
+        invalidate_metacritic_for_year(c, fid)
     if genres:
         for g in m.get("genres", []): db.add_tag_if_absent(c, fid, g.get("name"), "Genre", source="tmdb")
     if "primary_genre" not in ed and "primary_genre" not in set(keep):  # only fills an empty value
@@ -3641,6 +3646,17 @@ def mc_needs_fetch(row, force=False):
         return not mc_is_fresh(row["mc_fetched_at"], ttl=MC_MISS_CACHE_SEC)
     return not mc_is_fresh(row["mc_fetched_at"], ttl=MC_CACHE_SEC)
 
+def invalidate_metacritic_for_year(c, fid):
+    """Drop cached Metacritic scores so a year change is looked up again. Keeps a slug the user set by hand."""
+    if not db.is_metacritic_film(c, fid):
+        return False
+    ed = set(json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] or "[]"))
+    if "mc_slug" in ed:
+        c.execute("UPDATE films SET mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL, mc_match_ver=NULL WHERE id=?", (fid,))
+    else:
+        c.execute("UPDATE films SET mc_slug=NULL, mc_metascore=NULL, mc_critic_count=NULL, mc_user_score=NULL, mc_user_count=NULL, mc_fetched_at=NULL, mc_match_ver=NULL WHERE id=?", (fid,))
+    return True
+
 def kick_metacritic(fid, force=False):
     """Start a background Metacritic lookup if this film is eligible and the cache is stale.
     Returns True if a fetch was started (or is already in flight), so the UI can poll."""
@@ -3756,6 +3772,69 @@ def film_metacritic(fid):
         return jsonify(ok=False, skipped=True, reason="not a mainstream movie")
     refresh_metacritic(c, fid, force=True)
     return get_film(fid)
+
+@app.get("/api/imdb-years/status")
+def imdb_years_status():
+    return jsonify(imdbmod.status())
+
+@app.post("/api/imdb-years/refresh")
+def imdb_years_refresh():
+    """Start a background download/rebuild of title.basics. Body: {force: bool}. Soft-fails; does not block."""
+    d = request.get_json(silent=True) or {}
+    started = imdbmod.kick_refresh(force=bool(d.get("force", True)))
+    st = imdbmod.status()
+    st["started"] = started
+    return jsonify(st)
+
+@app.post("/api/imdb-years/cancel")
+def imdb_years_cancel():
+    imdbmod.STATE["cancel"] = True
+    return jsonify(ok=True)
+
+@app.get("/api/imdb-years/mismatches")
+def imdb_years_mismatches():
+    """List existing films whose year differs from IMDb. Does not change films.db."""
+    st = imdbmod.status()
+    if not st.get("ready"):
+        return jsonify(mismatches=[], count=0, by_library={}, status=st, error=st.get("error") or "IMDb year data is not ready yet")
+    rows = imdbmod.find_mismatches(C())
+    return jsonify(mismatches=rows, count=len(rows), by_library=imdbmod.counts_by_library(rows), status=st)
+
+@app.post("/api/imdb-years/apply")
+def imdb_years_apply():
+    """Apply IMDb years to the selected film ids. Invalidates Metacritic cache when a year changes."""
+    d = request.get_json(silent=True) or {}
+    ids = d.get("film_ids") or d.get("ids") or []
+    try:
+        ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        return jsonify(error="film_ids must be a list of ids"), 400
+    if not ids:
+        return jsonify(error="No films selected"), 400
+    st = imdbmod.status()
+    if not st.get("ready"):
+        return jsonify(error="IMDb year data is not ready yet", status=st), 409
+    c = C()
+    result = imdbmod.apply_fixes(c, ids)
+    for ch in result["changed"]:
+        invalidate_metacritic_for_year(c, ch["film_id"])
+    c.commit()
+    for ch in result["changed"]:
+        kick_metacritic(ch["film_id"], force=True)
+    result["ok"] = True
+    return jsonify(result)
+
+@app.post("/api/imdb-years/export")
+def imdb_years_export():
+    """Write the current mismatch list to a CSV. Default path: Desktop/Film Tagger stuff/imdb_year_mismatches.csv."""
+    d = request.get_json(silent=True) or {}
+    path = (d.get("path") or "").strip() or imdbmod.default_csv_path()
+    st = imdbmod.status()
+    if not st.get("ready"):
+        return jsonify(error="IMDb year data is not ready yet", status=st), 409
+    rows = imdbmod.find_mismatches(C())
+    written = imdbmod.write_csv(path, rows)
+    return jsonify(ok=True, path=written, count=len(rows), by_library=imdbmod.counts_by_library(rows))
 
 def kick_gallery(fid):
     """Refresh one film's gallery_path/count off the request thread (deduped while in flight)."""
@@ -4568,7 +4647,7 @@ def about():
     return jsonify(name="Film Tagger", version=APP_VERSION, author="Kyle R. Hudson",
                    description="A local catalogue and tagger for your film and scene library.",
                    repo_url=f"https://github.com/{REPO}", releases_url=f"https://github.com/{REPO}/releases",
-                   credits="Film data from TMDB (this product uses the TMDB API but is not endorsed or certified by TMDB). Scene data from ThePornDB.")
+                   credits="Film data from TMDB (this product uses the TMDB API but is not endorsed or certified by TMDB). Scene data from ThePornDB. Release years can be checked against IMDb Non-Commercial Datasets (datasets.imdbws.com); Film Tagger is not endorsed or certified by IMDb.")
 
 @app.get("/api/updates/check")
 def updates_check():
@@ -4578,4 +4657,6 @@ def updates_check():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5050))
     print(f"Film Tagger running: open http://localhost:{port}   (database: {db.DB_PATH})")
+    # IMDb title.basics: refresh in the background if the local lookup is missing or older than 7 days (fails softly)
+    threading.Thread(target=lambda: (time.sleep(2), imdbmod.kick_refresh(force=False)), daemon=True).start()
     app.run(host="127.0.0.1", port=port, debug=False, threaded=True)
