@@ -551,7 +551,7 @@ def test_link_mode_retries_only_failed(monkeypatch, tmp_path):
               " open(os.path.join(d,'%d.jpg'%i),'wb').write(bytes([i+1])*20000)\n"
               "open(e,'w').write('\\n'.join(bad)+('\\n' if bad else ''))\nsys.exit(4 if bad else 0)\n")
     runs = []
-    def lc(path, dest, err, slow=False): runs.append(len(open(path).read().split())); return [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path] + (["--sleep-request", "1"] if slow else [])
+    def lc(path, dest, err, slow=False, **kw): runs.append(len(open(path).read().split())); return [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path] + (["--sleep-request", "1"] if slow else [])
     monkeypatch.setattr(fg, "links_cmd", lc)
     fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
     assert runs == [75, 40, 3, 3]  # (2nd retry still recovers nothing here, but the 1st did)  # all, then only the failed ones, then the other upload for the 3 still missing
@@ -566,7 +566,7 @@ def test_stuck_retry_stops_and_title_caps(monkeypatch, tmp_path):
               "[open(os.path.join(d,u.rsplit('/',1)[1][1:]+'.jpg'),'wb').write(b'q'*20000+u.encode()) for u in urls if u not in bad]\n"
               "open(e,'w').write('\\n'.join(bad)+'\\n')\n")
     runs = []
-    monkeypatch.setattr(fg, "links_cmd", lambda path, dest, err, slow=False: runs.append(len(open(path).read().split())) or [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path])
+    monkeypatch.setattr(fg, "links_cmd", lambda path, dest, err, slow=False, **kw: runs.append(len(open(path).read().split())) or [sys.executable, "-c", script, "-D", dest, "-e", err, "-i", path])
     fg.run_download("https://vipergirls.to/threads/7285707", str(tmp_path / "g"), timeout=60)
     assert runs == [76, 3, 2] and fg.DL["files"] == 74 and fg.DL["error"] == "1 failed (image removed from host)"
 
@@ -700,3 +700,141 @@ def test_resolve_all_empty_with_host_removed_is_deleted(monkeypatch, tmp_path):
     fg.prepare()
     fg.run_download("https://vipergirls.to/threads/1", str(tmp_path / "h"), popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError()), timeout=30, fresh=False)
     assert fg.DL["error"] == fg.MISSING_MSG
+
+
+def test_direct_from_thumb_rewrites_common_hosts():
+    """URL-string only: verified thumb->full patterns (imx, pixhost, imagetwist, vipr.im) and already-direct hrefs."""
+    assert fg.direct_from_thumb(
+        "https://imx.to/i/3udroa", "https://image.imx.to/u/t/2023/04/11/3udroa.jpg"
+    ) == "https://image.imx.to/u/i/2023/04/11/3udroa.jpg"
+    assert fg.direct_from_thumb(
+        "https://pixhost.cc/show/7059/802458240_teenpornstorage-cover.jpg",
+        "https://t3.pixhost.cc/thumbs/7059/802458240_teenpornstorage-cover.jpg",
+    ) == "https://img3.pixhost.cc/images/7059/802458240_teenpornstorage-cover.jpg"
+    assert fg.direct_from_thumb(
+        "https://pixhost.to/show/7059/802458240_teenpornstorage-cover.jpg",
+        "https://t3.pixhost.to/thumbs/7059/802458240_teenpornstorage-cover.jpg",
+    ) == "https://img3.pixhost.to/images/7059/802458240_teenpornstorage-cover.jpg"
+    # imagetwist: /i/{dir}/{id}.jpg — never /i/{dir}/{id}/{name}.jpg (that path is the 8183-byte placeholder)
+    assert fg.direct_from_thumb(
+        "http://imagetwist.com/8n6ri2l4r8f4/sveta0053.jpg",
+        "http://img65.imagetwist.com/th/21510/8n6ri2l4r8f4.jpg",
+    ) == "https://img65.imagetwist.com/i/21510/8n6ri2l4r8f4.jpg"
+    assert fg.direct_from_thumb(
+        "https://vipr.im/7s25wp11fcer",
+        "https://i7.vipr.im/th/13605/7s25wp11fcer.jpg",
+    ) == "https://i7.vipr.im/i/13605/7s25wp11fcer.jpg"
+    # imagevenue href is already the full file (cdn path differs from the thumb — do not rewrite the thumb)
+    venue = "https://cdn-images.imagevenue.com/7f/02/d7/ME1AFGWZ_o.jpg"
+    assert fg.direct_from_thumb(venue, "https://cdn-thumbs.imagevenue.com/99/ca/3f/ME1AFGWZ_t.jpg") == venue
+    # mismatched ids must not rewrite
+    assert fg.direct_from_thumb("https://imx.to/i/other", "https://image.imx.to/u/t/2023/04/11/3udroa.jpg") is None
+    assert fg.direct_from_thumb(
+        "https://vipr.im/otherid", "https://i7.vipr.im/th/13605/7s25wp11fcer.jpg") is None
+    # turboimagehost: no derivable full-size URL (the old /t1/ -> /sp/ rewrite 404s)
+    assert fg.turbo_full_from_thumb(
+        "https://www.turboimagehost.com/p/131823392/emm0044629667_1.jpg.html",
+        "https://s8d10.turboimg.net/t1/131823392_emm0044629667_1.jpg",
+    ) is None
+    assert fg.direct_from_thumb(
+        "https://www.turboimagehost.com/p/131823392/emm0044629667_1.jpg.html",
+        "https://s8d10.turboimg.net/t1/131823392_emm0044629667_1.jpg",
+    ) is None
+
+
+def test_parse_posts_rewrites_pixhost_imagetwist_vipr_and_keeps_imagevenue():
+    body = (
+        '<div id="post_message_1">'
+        '<a href="https://pixhost.cc/show/7059/802458240_cover.jpg">'
+        '<img src="https://t3.pixhost.cc/thumbs/7059/802458240_cover.jpg"></a>'
+        '<a href="http://imagetwist.com/8n6ri2l4r8f4/sveta0053.jpg">'
+        '<img src="http://img65.imagetwist.com/th/21510/8n6ri2l4r8f4.jpg"></a>'
+        '<a href="https://vipr.im/7s25wp11fcer">'
+        '<img src="https://i7.vipr.im/th/13605/7s25wp11fcer.jpg"></a>'
+        '<a href="https://cdn-images.imagevenue.com/7f/02/d7/ME1AFGWZ_o.jpg">'
+        '<img src="https://cdn-thumbs.imagevenue.com/99/ca/3f/ME1AFGWZ_t.jpg"></a>'
+        '</blockquote>'
+    )
+    posts = fg.parse_posts(body)
+    assert posts[0][1] == [
+        "https://img3.pixhost.cc/images/7059/802458240_cover.jpg",
+        "https://img65.imagetwist.com/i/21510/8n6ri2l4r8f4.jpg",
+        "https://i7.vipr.im/i/13605/7s25wp11fcer.jpg",
+        "https://cdn-images.imagevenue.com/7f/02/d7/ME1AFGWZ_o.jpg",
+    ]
+
+
+def test_elena_lux_imx_thumbs_still_rewrite_from_url_strings():
+    """Teen Fidelity Elena Lux (thread 8088710): /u/t/ -> /u/i/ still works. URL strings only; do not download."""
+    href = "https://imx.to/i/3udroa"
+    thumb = "https://image.imx.to/u/t/2023/04/11/3udroa.jpg"
+    assert fg.imx_full_from_thumb(href, thumb) == "https://image.imx.to/u/i/2023/04/11/3udroa.jpg"
+    body = (
+        '<div id="post_message_1">'
+        '<a href="https://imx.to/i/3udroa"><img src="https://image.imx.to/u/t/2023/04/11/3udroa.jpg"></a>'
+        '<a href="https://imx.to/i/3udrob"><img src="https://image.imx.to/u/t/2023/04/11/3udrob.jpg"></a>'
+        '</blockquote>'
+    )
+    assert fg.parse_posts(body)[0][1] == [
+        "https://image.imx.to/u/i/2023/04/11/3udroa.jpg",
+        "https://image.imx.to/u/i/2023/04/11/3udrob.jpg",
+    ]
+
+
+def test_lingerie_lounging_imx_thumbs_rewrite_from_url_strings():
+    """Current ViperGirls page for thread 15210836 is a 2025-08-17 imx re-upload, not the original turbo set."""
+    body = (
+        '<div id="post_message_1">'
+        '<a href="https://imx.to/i/69akpy"><img src="https://image.imx.to/u/t/2025/08/17/69akpy.jpg"></a>'
+        '<a href="https://imx.to/i/69akqb"><img src="https://image.imx.to/u/t/2025/08/17/69akqb.jpg"></a>'
+        '</blockquote>'
+    )
+    assert fg.parse_posts(body)[0][1] == [
+        "https://image.imx.to/u/i/2025/08/17/69akpy.jpg",
+        "https://image.imx.to/u/i/2025/08/17/69akqb.jpg",
+    ]
+
+
+def test_turbo_html_pages_are_not_sent_to_gallery_dl(monkeypatch, tmp_path):
+    urls = [f"https://www.turboimagehost.com/p/{78447917+i}/135881_{i+1:03d}.jpg.html" for i in range(5)]
+    monkeypatch.setattr(fg, "set_links", lambda url: (urls, []))
+    called = []
+    def popen(cmd, **kw):
+        called.append(cmd); raise AssertionError("must not send Cloudflare HTML pages to gallery-dl")
+    fg.prepare()
+    fg.run_download("https://vipergirls.to/threads/15210836", str(tmp_path / "g"), popen=popen, timeout=30, fresh=False)
+    assert called == []
+    assert fg.DL["files"] == 0
+    err = fg.DL["error"] or ""
+    assert "turboimagehost" in err and "Cloudflare" in err
+    assert "open the thread to save manually" in err
+    assert "No images were downloaded" not in err
+    assert "deleted" not in err.lower() and "page format" not in err
+
+
+def test_gallery_dl_challenge_error_maps_to_cloudflare_message(monkeypatch, tmp_path):
+    script = (
+        "import sys\n"
+        "sys.stderr.write(\"[turboimagehost][error] ChallengeError: Cloudflare challenge "
+        "(403 Forbidden) for 'https://www.turboimagehost.com/p/78448120/135881_191.jpg.html'\\n\")\n"
+        "sys.exit(1)\n"
+    )
+    monkeypatch.setattr(fg, "gallery_dl_cmd", lambda url, dest: [sys.executable, "-c", script])
+    fg.run_download("https://vipergirls.to/threads/1", str(tmp_path / "w - GALLERY"), timeout=30)
+    err = fg.DL["error"] or ""
+    assert "Cloudflare" in err and "turboimagehost" in err
+    assert "open the thread to save manually" in err
+    assert "No images were downloaded" not in err
+    assert fg.DL["files"] == 0
+
+
+def test_cf_host_from_gallery_dl_log(tmp_path):
+    p = tmp_path / "gdl.log"
+    p.write_text(
+        "[turboimagehost][error] ChallengeError: Cloudflare challenge (403 Forbidden) "
+        "for 'https://www.turboimagehost.com/p/78448120/135881_191.jpg.html'\n",
+        encoding="utf-8",
+    )
+    assert fg.cf_count(str(p)) == 1
+    assert fg.cf_hosts_in_log(str(p)) == ["turboimagehost.com"]
+    assert "turboimagehost is blocking" in fg.cf_msg(fg.cf_hosts_in_log(str(p))[0])

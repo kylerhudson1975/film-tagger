@@ -302,6 +302,110 @@ def imx_full_from_thumb(href, thumb_src):
     if not tm or tm.group(2).lower() != token.lower(): return None
     return f"https://image.imx.to/u/i/{tm.group(1)}{tm.group(2)}{tm.group(3)}"
 
+# Other ViperGirls hosts: only thumb->full rewrites verified by HTTP status, content-type, and size
+# (full-size larger than the thumb). Never treat a thumbnail as the download target.
+PIXHOST_THUMB_RE = re.compile(r"(?i)^https?://t(\d+)\.pixhost\.(cc|to)/thumbs/(.+)$")
+PIXHOST_PAGE_RE = re.compile(r"(?i)^https?://(?:www\.)?pixhost\.(cc|to)/show/(.+)$")
+IT_THUMB_RE = re.compile(r"(?i)^https?://img(\d+)\.imagetwist\.com/th/(\d+)/(\w+)\.(jpe?g|png|webp)$")
+IT_PAGE_RE = re.compile(r"(?i)^https?://(?:www\.)?imagetwist\.com/(\w+)(?:/|$)")
+VIPR_THUMB_RE = re.compile(r"(?i)^https?://i(\d+)\.vipr\.im/th/(\d+)/(\w+)\.(jpe?g|png|webp)$")
+VIPR_PAGE_RE = re.compile(r"(?i)^https?://(?:www\.)?vipr\.im/(\w+)/?$")
+TURBO_THUMB_RE = re.compile(r"(?i)^https?://s\d+d\d+\.turboimg\.net/t1/(\d+)_(.+)$")
+TURBO_PAGE_RE = re.compile(r"(?i)^https?://(?:www\.)?turboimagehost\.com/p/(\d+)/")
+DIRECT_IMG_RE = re.compile(r"(?i)\.(?:jpe?g|png|webp|gif)$")
+
+def pixhost_full_from_thumb(href, thumb_src):
+    """tN.pixhost.cc/thumbs/X/file -> imgN.pixhost.cc/images/X/file (same for .to)."""
+    tm = PIXHOST_THUMB_RE.match(html.unescape(thumb_src or "").strip())
+    if not tm: return None
+    hm = PIXHOST_PAGE_RE.match((href or "").strip())
+    if hm and hm.group(2).rstrip("/").lower() != tm.group(3).rstrip("/").lower(): return None
+    return f"https://img{tm.group(1)}.pixhost.{tm.group(2)}/images/{tm.group(3)}"
+
+def imagetwist_full_from_thumb(href, thumb_src):
+    """imgN.imagetwist.com/th/{dir}/{id}.jpg -> .../i/{dir}/{id}.jpg.
+    Do not append the original filename: /i/{dir}/{id}/{name}.jpg is the 8183-byte 'deleted' placeholder."""
+    tm = IT_THUMB_RE.match(html.unescape(thumb_src or "").strip())
+    if not tm: return None
+    hm = IT_PAGE_RE.match((href or "").strip())
+    if hm and hm.group(1).lower() != tm.group(3).lower(): return None
+    return f"https://img{tm.group(1)}.imagetwist.com/i/{tm.group(2)}/{tm.group(3)}.{tm.group(4)}"
+
+def vipr_full_from_thumb(href, thumb_src):
+    """iN.vipr.im/th/{dir}/{id}.jpg -> iN.vipr.im/i/{dir}/{id}.jpg."""
+    tm = VIPR_THUMB_RE.match(html.unescape(thumb_src or "").strip())
+    if not tm: return None
+    hm = VIPR_PAGE_RE.match((href or "").strip())
+    if hm and hm.group(1).lower() != tm.group(3).lower(): return None
+    return f"https://i{tm.group(1)}.vipr.im/i/{tm.group(2)}/{tm.group(3)}.{tm.group(4)}"
+
+def turbo_full_from_thumb(href, thumb_src):
+    """turboimagehost full-size is not derivable from the VG thumb in 2026: the old /t1/ -> /sp/
+    path 404s, and other CDN guesses return 404 or a 5027-byte missing gif. Never use the ~16 KB
+    /t1/ thumb as a stand-in for a full-size set, and never open the Cloudflare-protected HTML page."""
+    return None
+
+def is_html_view_page(url):
+    """Host view/HTML pages (not a direct file). Includes turboimagehost.com/p/*.html."""
+    u = (url or "").strip()
+    if not u: return False
+    if TURBO_PAGE_RE.match(u) or IMX_PAGE_RE.match(u): return True
+    if PIXHOST_PAGE_RE.match(u) or IT_PAGE_RE.match(u) or VIPR_PAGE_RE.match(u): return True
+    if re.match(r"(?i)^https?://(?:www\.)?imagebam\.com/image/", u): return True
+    if re.match(r"(?i)^https?://(?:www\.)?pimpandhost\.com/", u): return True
+    return False
+
+def is_direct_image_url(url):
+    """True when href already points at a file (e.g. imagevenue cdn-images ..._o.jpg)."""
+    u = (url or "").strip()
+    if not u or is_html_view_page(u): return False
+    return bool(DIRECT_IMG_RE.search(urllib.parse.urlsplit(u).path))
+
+def direct_from_thumb(href, thumb_src):
+    """ViperGirls <a href> + thumb src -> direct full-size URL, or None if no verified rewrite applies."""
+    for fn in (imx_full_from_thumb, pixhost_full_from_thumb, imagetwist_full_from_thumb, vipr_full_from_thumb):
+        u = fn(href, thumb_src)
+        if u: return u
+    if is_direct_image_url(href):
+        return href
+    return None
+
+def cf_host_name(host):
+    h = (host or "the image host").lower()
+    if h.startswith("www."): h = h[4:]
+    h = h.split(":")[0]
+    if "turboimagehost" in h or "turboimg" in h: return "turboimagehost"
+    for name in ("pixhost", "imagebam", "imagetwist", "vipr.im", "pimpandhost", "postimg", "imagevenue", "imx.to"):
+        if name in h: return name
+    return h or "the image host"
+
+def cf_msg(host="the image host"):
+    """Shown when a host blocks automated downloads with Cloudflare. Never try to solve the challenge."""
+    return (f"{cf_host_name(host)} is blocking automated downloads (Cloudflare) — "
+            "open the thread to save manually.")
+
+def is_cf_blocked_page(url):
+    """HTML pages we know will 403 behind Cloudflare; do not send them to gallery-dl."""
+    return bool(TURBO_PAGE_RE.match((url or "").strip()))
+
+def host_referer(url):
+    """Parent-site Referer for a direct CDN URL (hotlink-friendly). None if unknown."""
+    h = (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    if h.startswith("www."): h = h[4:]
+    if "turboimg.net" in h or "turboimagehost.com" in h: return "https://www.turboimagehost.com/"
+    if h.endswith(".pixhost.cc") or h.endswith(".pixhost.to") or h in ("pixhost.cc", "pixhost.to"):
+        return "https://pixhost.to/"
+    if "imagetwist.com" in h: return "https://imagetwist.com/"
+    if h.endswith("vipr.im"): return "https://vipr.im/"
+    if "imx.to" in h: return "https://imx.to/"
+    if "imagevenue.com" in h: return "https://www.imagevenue.com/"
+    return None
+
+def common_referer(urls):
+    """A single Referer shared by every URL, or None when the set is mixed/unknown."""
+    refs = {host_referer(u) for u in (urls or []) if u}
+    return next(iter(refs)) if len(refs) == 1 and next(iter(refs)) else None
+
 def parse_imx_image_url(page):
     """Full-size image URL from an imx.to view page (text only). Prefers classed full-size images; skips tiny
     UI icons. Supports the old centred <a href> layout and <img class="centred img-full">. Never opens bytes."""
@@ -482,7 +586,7 @@ PAIR_RE = re.compile(r'<a href="(https?://[^"]+)"[^>]*>\s*<img[^>]+src="([^"]+)"
 
 def parse_posts(page):
     """Thread page -> [(post id, [download URLs])] for posts with linked thumbnails, in order.
-    Prefer a direct full-size URL when the thumb path encodes it (imx.to /u/t/ -> /u/i/); else the host page.
+    Prefer a direct full-size URL when a verified thumb rewrite exists (imx, pixhost, imagetwist, vipr.im) or the href is already a file; else the host page.
     Bare <img src> promo banners and forum links are left out; repeated hrefs are kept once."""
     out = []
     for pid, body in POST_RE.findall(page or ""):
@@ -494,7 +598,7 @@ def parse_posts(page):
             href = html.unescape(href)
             if "vipergirls.to" in href or href in seen: continue
             seen.add(href)
-            links.append(imx_full_from_thumb(href, src) or href)
+            links.append(direct_from_thumb(href, src) or href)
         if links: out.append((pid, links))
     return out
 
@@ -519,9 +623,13 @@ def set_links(url):
     alt = [next(it) if host(u) == top else "" for u in main]  # same position in the set; "" = no counterpart
     return main, alt
 
-def links_cmd(path, dest, err, slow=False):
-    return [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, "-e", err] + \
-        (["--sleep-request", RETRY_SLEEP_S, "-R", "2", "--http-timeout", "20"] if slow else []) + ["-i", path]
+def links_cmd(path, dest, err, slow=False, referer=None):
+    cmd = [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, "-e", err, "--user-agent", UA]
+    if referer:
+        cmd += ["-o", f"downloader.http.headers.Referer={referer}"]
+    if slow:
+        cmd += ["--sleep-request", RETRY_SLEEP_S, "-R", "2", "--http-timeout", "20"]
+    return cmd + ["-i", path]
 
 def read_lines(path):
     try:
@@ -579,6 +687,30 @@ def missing_count(path):
         with open(path, "rb") as f: t = f.read().decode("utf-8", "replace")
         return len(re.findall(r"NotFoundError|could not be found|404 Not Found", t))
     except (OSError, TypeError): return 0
+
+CF_LINE_RE = re.compile(r"ChallengeError|Cloudflare challenge|cloudflare", re.I)
+
+def cf_count(path):
+    """How many Cloudflare / ChallengeError log lines gallery-dl has written (text only)."""
+    try:
+        with open(path, "rb") as f: t = f.read().decode("utf-8", "replace")
+        return sum(1 for line in t.splitlines() if CF_LINE_RE.search(line))
+    except (OSError, TypeError): return 0
+
+def cf_hosts_in_log(path):
+    """Hosts named on Cloudflare / ChallengeError log lines, in first-seen order."""
+    try:
+        with open(path, "rb") as f: t = f.read().decode("utf-8", "replace")
+    except (OSError, TypeError):
+        return []
+    out, seen = [], set()
+    for line in t.splitlines():
+        if not CF_LINE_RE.search(line): continue
+        m = re.search(r"https?://(?:www\.)?([^/\s?]+)", line)
+        h = (m.group(1) if m else "").lower()
+        if h and h not in seen:
+            seen.add(h); out.append(h)
+    return out
 
 FAIL_RE = re.compile(r"\]\[error\] ")
 RETRY_PASSES = 2       # extra passes over the same links when some images failed but others downloaded
@@ -649,6 +781,16 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
                 # every link empty: deleted only when the host said so during resolve
                 DL["error"] = MISSING_MSG if DL.get("imx_removed") else format_msg("imx.to")
                 main, alt = [], []; tries = []
+            elif main and not DL.get("error"):
+                # turboimagehost.com/p/*.html is Cloudflare-protected; never send it to gallery-dl
+                blocked = [u for u in main if is_cf_blocked_page(u)]
+                if blocked and not any(u for u in main if u and not is_cf_blocked_page(u)):
+                    DL["error"] = cf_msg(urllib.parse.urlsplit(blocked[0]).hostname or "turboimagehost")
+                    main, alt = [], []; tries = []
+                elif blocked:
+                    main = ["" if is_cf_blocked_page(u) else u for u in main]
+                    if alt:
+                        alt = ["" if is_cf_blocked_page(u) else u for u in alt]
         tmpd = tempfile.gettempdir(); LK = {"main": main, "alt": alt, "todo": list(range(len(main))), "used_alt": False}
         if main:
             DL["expected"] = len(main); tries = ["&"] + tries
@@ -667,7 +809,8 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
                 if not urls: break
                 try: os.remove(err)
                 except OSError: pass
-                cmd = links_cmd(write_links(urls, "filmtagger_gallerydl_urls.txt"), dest, err, slow=LK.get("passes_done", 0) > 0)
+                cmd = links_cmd(write_links(urls, "filmtagger_gallerydl_urls.txt"), dest, err,
+                                slow=LK.get("passes_done", 0) > 0, referer=common_referer(urls))
                 LK["passes_done"] = LK.get("passes_done", 0) + 1
             else:
                 uu = u.lstrip("%"); cmd = input_file_cmd(uu[1:], dest) if uu.startswith("@") else gallery_dl_cmd(uu, dest)
@@ -686,6 +829,8 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
                     continue
                 if DL["files"] == 0 and missing_count(log_path) >= DEAD_SET_N:  # dead set: stop early
                     kill_tree(p); DL["error"] = MISSING_MSG; break
+                if DL["files"] == 0 and cf_count(log_path) >= DEAD_SET_N:  # Cloudflare: stop, do not keep retrying
+                    kill_tree(p); DL["error"] = cf_msg((cf_hosts_in_log(log_path) or ["the image host"])[0]); break
                 if DL["files"] >= DEAD_SET_N and ph >= DL["files"]:  # only placeholder images so far
                     kill_tree(p); DL["error"] = MISSING_MSG; break
                 if DL["files"] == 0 and not str(u).startswith(("@", "&")) and dns_failed_hosts(log_path):  # dead host: stop, skip it
@@ -771,8 +916,12 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
             err = DL.get("error") or ""
             # keep an explicit format-failure; use "deleted" only with positive evidence (placeholders removed, or
             # many NotFound after we already resolved to direct URLs / host said removed)
-            if "page format" in err:
+            if "page format" in err and "Cloudflare" not in err:
                 pass
+            elif "blocking automated downloads (Cloudflare)" in err:
+                pass  # already the user-facing Cloudflare message (e.g. turbo HTML pages never sent to gallery-dl)
+            elif "Cloudflare" in err or cf_hosts_in_log(log_path) or cf_count(log_path):
+                DL["error"] = cf_msg((cf_hosts_in_log(log_path) or ["the image host"])[0])
             elif err == MISSING_MSG or DL.get("imx_removed") or DL["removed"] or missing_count(log_path) >= DEAD_SET_N:
                 DL["error"] = MISSING_MSG
             else:
