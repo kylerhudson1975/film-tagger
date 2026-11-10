@@ -3928,7 +3928,7 @@ def stills_status():
 
 @app.get("/api/findgallery/status")
 def findgallery_status():
-    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at", "last_msg", "cancel", "cancelled", "partial_removed")}
+    j = {k: v for k, v in fgmod.DL.items() if k in ("running", "film_id", "url", "files", "error", "removed", "rc", "started_at", "finished_at", "last_msg", "cancel", "cancelled", "partial_removed", "expected", "failed")}
     j["dest"] = os.path.basename(fgmod.DL.get("dest") or "")
     st = fgmod.SEARCH
     j["search"] = dict(step=st["step"], secs=round(time.time() - st["started"]) if st["started"] else 0) if st["step"] else None

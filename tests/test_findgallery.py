@@ -655,3 +655,48 @@ def test_run_download_resolves_imx_before_gallery_dl(monkeypatch, tmp_path):
     fg.run_download(thread, str(dest), popen=popen, timeout=30, fresh=False)
     assert seen == ["https://image.imx.to/u/i/2026/07/04/6vv4df.jpg"], seen
     assert fg.DL["files"] == 1 and not fg.DL["error"]
+
+def test_imx_full_from_thumb_rewrites_t_to_i():
+    href = "https://imx.to/i/3udroa"
+    thumb = "https://image.imx.to/u/t/2023/04/11/3udroa.jpg"
+    assert fg.imx_full_from_thumb(href, thumb) == "https://image.imx.to/u/i/2023/04/11/3udroa.jpg"
+    assert fg.imx_full_from_thumb(href, "https://image.imx.to/u/t/2023/04/11/OTHER.jpg") is None
+    assert fg.imx_full_from_thumb("https://vipr.im/x", thumb) is None
+
+def test_parse_posts_rewrites_imx_thumbs_to_fullsize():
+    body = ('<div id="post_message_1">'
+            '<a href="https://imx.to/i/3udroa"><img src="https://image.imx.to/u/t/2023/04/11/3udroa.jpg"></a>'
+            '<a href="https://imx.to/i/3udrob"><img src="https://image.imx.to/u/t/2023/04/11/3udrob.jpg"></a>'
+            '</blockquote>')
+    posts = fg.parse_posts(body)
+    assert posts[0][1] == [
+        "https://image.imx.to/u/i/2023/04/11/3udroa.jpg",
+        "https://image.imx.to/u/i/2023/04/11/3udrob.jpg",
+    ]
+
+def test_resolve_failure_duplicate_urls_are_format_error_not_deleted():
+    fg.DL["imx_removed"] = 0
+    msg = fg.resolve_failure(["https://image.imx.to/u/i/2026/10/23/77mpw2.jpg"] * 89)
+    assert msg and "page format" in msg and "deleted" not in msg.lower()
+    assert fg.resolve_failure(["https://a/1.jpg", "https://a/2.jpg", "https://a/3.jpg"]) is None
+
+def test_resolve_all_empty_without_removed_is_format_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(fg, "set_links", lambda url: (["https://imx.to/i/a"] * 5, []))
+    monkeypatch.setattr(fg, "resolve_links", lambda urls: [""] * len(urls))
+    fg.DL["imx_removed"] = 0
+    called = []
+    def popen(cmd, **kw):
+        called.append(cmd); raise AssertionError("gallery-dl should not run")
+    fg.prepare()
+    fg.run_download("https://vipergirls.to/threads/1", str(tmp_path / "g"), popen=popen, timeout=30, fresh=False)
+    assert "page format" in (fg.DL["error"] or "") and fg.DL["files"] == 0
+    assert called == []
+
+def test_resolve_all_empty_with_host_removed_is_deleted(monkeypatch, tmp_path):
+    monkeypatch.setattr(fg, "set_links", lambda url: (["https://imx.to/i/a"] * 5, []))
+    def resolve(urls):
+        fg.DL["imx_removed"] = len(urls); return [""] * len(urls)
+    monkeypatch.setattr(fg, "resolve_links", resolve)
+    fg.prepare()
+    fg.run_download("https://vipergirls.to/threads/1", str(tmp_path / "h"), popen=lambda *a, **k: (_ for _ in ()).throw(AssertionError()), timeout=30, fresh=False)
+    assert fg.DL["error"] == fg.MISSING_MSG

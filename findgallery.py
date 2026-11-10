@@ -282,29 +282,56 @@ def learn(page, studio, performers, plist):
 # ---------- image-host page -> direct URL (gallery-dl's imx.to extractor still expects the old HTML) ----------
 IMX_PAGE_RE = re.compile(r"^https?://(?:www\.)?(?:imx\.to|img\.yt)/(?:i/|img-)(\w+)", re.I)
 IMX_REMOVED_RE = re.compile(r"This image has been removed or is missing", re.I)
+IMX_THUMB_RE = re.compile(
+    r"(?i)^https?://(?:image\.)?imx\.to/u/t/(\d{4}/\d{2}/\d{2}/)(\w+)(\.[A-Za-z0-9]+)$")
+# many resolved links pointing at one URL = our parser grabbed a shared placeholder / ad, not the set
+DUP_RESOLVE_N = 3
+
+def format_msg(host="the image host"):
+    """Shown when we cannot read a host's page format. Never used for a confirmed deletion."""
+    return f"Couldn't read {host}'s page format — please report this gallery."
+
+def imx_full_from_thumb(href, thumb_src):
+    """ViperGirls posts imx thumbs as image.imx.to/u/t/YYYY/MM/DD/<id>.jpg next to href imx.to/i/<id>.
+    Full-size is the same path with /u/t/ -> /u/i/. Returns None when the thumb does not match the href id."""
+    m = IMX_PAGE_RE.match((href or "").strip())
+    if not m: return None
+    token = m.group(1)
+    src = html.unescape(thumb_src or "").strip()
+    tm = IMX_THUMB_RE.match(src)
+    if not tm or tm.group(2).lower() != token.lower(): return None
+    return f"https://image.imx.to/u/i/{tm.group(1)}{tm.group(2)}{tm.group(3)}"
 
 def parse_imx_image_url(page):
-    """Full-size image URL from an imx.to view page (text only). Supports the old centred <a href> layout and the
-    current <img class="centred img-full" src="..."> layout. Never opens image bytes."""
+    """Full-size image URL from an imx.to view page (text only). Prefers classed full-size images; skips tiny
+    UI icons. Supports the old centred <a href> layout and <img class="centred img-full">. Never opens bytes."""
     page = page or ""
     for pat in (
+        r'<img[^>]+class="[^"]*\bimg-full\b[^"]*"[^>]*\bsrc="(https?://[^"]+)"',
         r'<img[^>]+class="[^"]*\bcentred\b[^"]*"[^>]*\bsrc="(https?://[^"]+)"',
-        r'<img[^>]+\bsrc="(https?://[^"]+)"[^>]*class="[^"]*\bcentred\b[^"]*"',
+        r'<img[^>]+\bsrc="(https?://[^"]+)"[^>]*class="[^"]*\b(?:img-full|centred)\b[^"]*"',
         r'<div style="text-align:center;"><a href="(https?://[^"]+)"',
     ):
         m = re.search(pat, page, re.I)
-        if m: return html.unescape(m.group(1))
+        if not m: continue
+        u = html.unescape(m.group(1))
+        # never accept a thumbnail path as the download target
+        if re.search(r"/u/t/", u, re.I): continue
+        if "/css/" in u or u.endswith(".png") and "imx.to/u/" not in u: continue
+        return u
     return None
 
 def resolve_imx(url):
     """imx.to / img.yt image-page URL -> direct image URL, or None if the host reports it missing/unreadable.
-    Other URLs are returned unchanged. Uses the continue form (imgToken when present). Text / headers only."""
+    Other URLs are returned unchanged. Uses the continue form (imgToken when present). Text / headers only.
+    Increments DL['imx_removed'] when the host says the image was removed (positive deletion evidence)."""
     m = IMX_PAGE_RE.match((url or "").strip())
     if not m: return url
     page_url = "https://imx.to/i/" + m.group(1)
     try: page = http(page_url)
     except Exception: return None
-    if IMX_REMOVED_RE.search(page or ""): return None
+    if IMX_REMOVED_RE.search(page or ""):
+        DL["imx_removed"] = DL.get("imx_removed", 0) + 1; return None
     direct = parse_imx_image_url(page)
     if direct: return direct
     data = {"imgContinue": "Continue to your image..."}
@@ -312,15 +339,33 @@ def resolve_imx(url):
     if tok: data["imgToken"] = tok.group(1)
     try: page2 = http(page_url, data=data)
     except Exception: return None
-    if IMX_REMOVED_RE.search(page2 or ""): return None
+    if IMX_REMOVED_RE.search(page2 or ""):
+        DL["imx_removed"] = DL.get("imx_removed", 0) + 1; return None
     return parse_imx_image_url(page2)
 
+def resolve_failure(urls):
+    """If every link failed, or many resolved to the same URL (shared placeholder/ad), return format_msg; else None."""
+    nonempty = [u for u in (urls or []) if u]
+    if not nonempty:
+        host = "imx.to" if any(IMX_PAGE_RE.match(u or "") for u in (urls or []) or [""]) else "the image host"
+        # positive deletion evidence from resolve_imx
+        if DL.get("imx_removed"): return None  # caller uses MISSING_MSG
+        return format_msg(host)
+    from collections import Counter
+    url, n = Counter(nonempty).most_common(1)[0]
+    if n >= DUP_RESOLVE_N and n * 2 >= len(nonempty):
+        return format_msg(urllib.parse.urlsplit(url).hostname or "the image host")
+    return None
+
 def resolve_links(urls):
-    """Resolve each host-page URL that we know how to (imx.to today) to a direct file URL. Keeps positions
-    (empty string = missing/unreadable) so an alternate upload can still fill by index. Stops early on cancel."""
+    """Turn host-page URLs into direct file URLs. imx.to links already rewritten from VG thumbs are left alone;
+    remaining imx.to/i/ pages go through resolve_imx. Keeps positions ('' = missing). Updates DL['last_msg']."""
     out = []
-    for u in urls or []:
+    total = len(urls or [])
+    for i, u in enumerate(urls or [], 1):
         if cancelled(): break
+        if total and (i == 1 or i == total or i % 5 == 0):
+            DL["last_msg"] = f"Resolving image host links ({i}/{total})"
         if not u:
             out.append("")
             continue
@@ -432,19 +477,24 @@ def input_file_cmd(path, dest):
     return [sys.executable, "-m", "gallery_dl", "--no-mtime", "-D", dest, "-i", path]
 
 POST_RE = re.compile(r'<div id="post_message_(\d+)">(.*?)</blockquote>', re.S)
-LINK_RE = re.compile(r'<a href="(https?://[^"]+)"[^>]*>\s*<img\s', re.I)
+LINK_RE = re.compile(r'<a href="(https?://[^"]+)"[^>]*>\s*<img\s', re.I)  # kept for tests / fallback
+PAIR_RE = re.compile(r'<a href="(https?://[^"]+)"[^>]*>\s*<img[^>]+src="([^"]+)"', re.I)
 
 def parse_posts(page):
-    """Thread page -> [(post id, [image-host page links])] for posts with linked thumbnails, in order.
-    Only <a href> around an <img> counts (the host page, which gallery-dl resolves to the full-size image); bare
-    <img src> (promo/banner pictures) and forum links are left out; repeated links are kept once."""
+    """Thread page -> [(post id, [download URLs])] for posts with linked thumbnails, in order.
+    Prefer a direct full-size URL when the thumb path encodes it (imx.to /u/t/ -> /u/i/); else the host page.
+    Bare <img src> promo banners and forum links are left out; repeated hrefs are kept once."""
     out = []
     for pid, body in POST_RE.findall(page or ""):
         seen, links = set(), []
-        for u in LINK_RE.findall(body):
-            u = html.unescape(u)
-            if "vipergirls.to" in u or u in seen: continue
-            seen.add(u); links.append(u)
+        pairs = PAIR_RE.findall(body)
+        if not pairs:  # older markup without a parseable src on the same <img>
+            pairs = [(u, "") for u in LINK_RE.findall(body)]
+        for href, src in pairs:
+            href = html.unescape(href)
+            if "vipergirls.to" in href or href in seen: continue
+            seen.add(href)
+            links.append(imx_full_from_thumb(href, src) or href)
         if links: out.append((pid, links))
     return out
 
@@ -582,15 +632,23 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
         tries = [url] + ([tm.group(1)] if tm else [])
         # Link mode: download the set's host-page links ourselves (one gallery-dl run with a URL file), so only the
         # links that fail are retried and a set posted twice is downloaded once. Falls back to the whole URL.
+        DL["last_msg"] = "Reading image links from the thread"; DL["imx_removed"] = 0
         main, alt = _unless_cancelled(lambda: set_links(url), ([], [])) if url.startswith(BASE) else ([], [])
-        # gallery-dl's imx.to extractor still looks for the old HTML; resolve those pages to direct image URLs first
+        # Rewrite any remaining imx.to/i/ host pages (thumbs already became image.imx.to/u/i/ in parse_posts)
         if main and not cancelled():
+            need = sum(1 for u in main if IMX_PAGE_RE.match(u or ""))
+            if need:
+                DL["last_msg"] = f"Resolving image host links (0/{need})"
             main = _unless_cancelled(lambda: resolve_links(main), main) or main
             if alt and not cancelled():
                 alt = _unless_cancelled(lambda: resolve_links(alt), alt) or alt
-            # if every imx.to page resolved to nothing, the set really is gone (or unreadable)
-            if main and not any(main):
-                DL["error"] = MISSING_MSG; main, alt = [], []; tries = []
+            fail = resolve_failure(main)
+            if fail:
+                DL["error"] = fail; main, alt = [], []; tries = []
+            elif main and not any(main):
+                # every link empty: deleted only when the host said so during resolve
+                DL["error"] = MISSING_MSG if DL.get("imx_removed") else format_msg("imx.to")
+                main, alt = [], []; tries = []
         tmpd = tempfile.gettempdir(); LK = {"main": main, "alt": alt, "todo": list(range(len(main))), "used_alt": False}
         if main:
             DL["expected"] = len(main); tries = ["&"] + tries
@@ -710,8 +768,15 @@ def run_download(url, dest, on_done=None, popen=None, timeout=DL_TIMEOUT_S, fres
             if DL["failed"]: DL["error"] = failed_msg(DL["failed"], log_path) if not e else f"{DL['failed']} failed (image removed from host)"
         if DL["files"] == 0 and DL.get("dead") and not DL.get("error"): DL["error"] = dead_host_msg(DL["dead"])
         if DL["files"] == 0 and DL.get("error") != "cancelled" and not (DL.get("dead") and DL.get("error") == dead_host_msg(DL["dead"])):
-            DL["error"] = MISSING_MSG if (DL.get("error") == MISSING_MSG or missing_count(log_path) or DL["removed"]) else \
-                "No images were downloaded" + (f" ({DL['error']})" if DL.get("error") else "") + ". Try another result."
+            err = DL.get("error") or ""
+            # keep an explicit format-failure; use "deleted" only with positive evidence (placeholders removed, or
+            # many NotFound after we already resolved to direct URLs / host said removed)
+            if "page format" in err:
+                pass
+            elif err == MISSING_MSG or DL.get("imx_removed") or DL["removed"] or missing_count(log_path) >= DEAD_SET_N:
+                DL["error"] = MISSING_MSG
+            else:
+                DL["error"] = "No images were downloaded" + (f" ({err})" if err else "") + ". Try another result."
         if DL["files"] == 0:
             try: os.rmdir(dest)
             except OSError: pass
