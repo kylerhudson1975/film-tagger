@@ -212,19 +212,12 @@ class LibraryTests(unittest.TestCase):
         self.assertGreaterEqual(r["count"], 3)
         self.assertIn("Movies", r["by_library"])
         self.assertIn("Classic Porn", r["by_library"])
-        # apply only Splice (not the hand-edited copy, not classic)
+        # Splice's file is not on disk here: Apply must skip and leave the year alone
         applied = self.cl.post("/api/imdb-years/apply", json={"film_ids": [self.splice]}).get_json()
         self.assertTrue(applied["ok"])
-        self.assertEqual(applied["applied"], 1)
-        self.assertEqual(len(applied["changed"]), 1)
-        row = self.c.execute("SELECT year, release_date, imdb_id, mc_slug, mc_metascore FROM films WHERE id=?", (self.splice,)).fetchone()
-        self.assertEqual(row["year"], 2009)
-        self.assertEqual(row["release_date"], "2009")
-        self.assertEqual(row["imdb_id"], "tt0443701")
-        self.assertIsNone(row["mc_slug"])
-        self.assertIsNone(row["mc_metascore"])
-        self.assertIn((self.splice, True), self.kicked)
-        # others unchanged
+        self.assertEqual(applied["applied"], 0)
+        self.assertEqual(applied["skipped"], 1)
+        self.assertEqual(self.c.execute("SELECT year FROM films WHERE id=?", (self.splice,)).fetchone()[0], 2010)
         self.assertEqual(self.c.execute("SELECT year FROM films WHERE id=?", (self.hand,)).fetchone()[0], 2010)
         self.assertEqual(self.c.execute("SELECT year FROM films WHERE id=?", (self.classic,)).fetchone()[0], 1971)
 

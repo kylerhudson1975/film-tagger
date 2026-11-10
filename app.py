@@ -935,7 +935,11 @@ def update_film(fid):
         try: _, rename_note, mkv = rename_scene_file(c, fid)
         except OSError as e: rename_note = f"Saved, but the file could not be renamed: {e}"
     elif old["kind"] != "scene" and changed & {"title", "year"}:
-        mkv = movie_mkv_after(c, fid)
+        try:
+            _, rename_note, mkv = rename_movie_file(c, fid)
+        except OSError as e:
+            rename_note = f"Saved, but the file could not be renamed: {e}"
+            mkv = movie_mkv_after(c, fid)
     if mkv and mkv["status"] != "updated" and not rename_note: rename_note = mkv["note"]
     if rename_note and not new_tid:
         j = get_film(fid).get_json(); j["rename_note"] = rename_note; return jsonify(j)
@@ -2156,9 +2160,10 @@ def run_poster_job(key, ids):
                 if r:
                     apply_movie(c, fid, call(f"movie/{r['id']}", append_to_response="credits,release_dates,alternative_titles", include_adult="true"))
                     JOB["matched"] += 1
+                    c.commit(); after_movie_apply(c, fid)
                 else:
                     c.execute("UPDATE films SET tmdb_status='needs_match' WHERE id=?", (fid,)); JOB["skipped"] += 1
-                c.commit()
+                    c.commit()
             except urllib.error.HTTPError as e:
                 if e.code == 401: JOB["error"] = "TMDB rejected the API key (401)"; break
                 JOB["errors"] += 1
@@ -2534,7 +2539,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                                         credits = (m or {}).get("credits") or {}
                                         # apply full match (respects hand edits); cast_ comes with it
                                         apply_movie(c, fid, m, respect_edits=True, genres=True)
-                                        c.commit()
+                                        c.commit(); after_movie_apply(c, fid)
                                         CRJ["cast_filled"] += 1; filled_cast = True
                                         row = c.execute(
                                             "SELECT cast_, cast_roles, tmdb_id, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
@@ -2877,7 +2882,7 @@ def fetch_and_apply(c, fid, tid, keep=(), genres=True):
         return f"TMDB has no movie with id {tid}" if e.code == 404 else "TMDB rejected the API key (401)" if e.code == 401 else f"TMDB error {e.code}"
     except Exception as e: return f"Could not reach TMDB: {e}"
     apply_movie(c, fid, m, respect_edits=True, genres=genres, keep=[k for k in keep if k in FILM_FIELDS])
-    c.commit(); movie_mkv_after(c, fid); return None
+    c.commit(); after_movie_apply(c, fid); return None
 
 @app.post("/api/films/<int:fid>/tmdb")
 def tmdb_apply(fid):
@@ -2904,7 +2909,7 @@ def tmdb_apply(fid):
     except Exception as e: return jsonify(error=f"Could not reach TMDB: {e}"), 502
     keep = [k for k in d.get("keep", []) if k in FILM_FIELDS]  # fields the user changed in this edit win
     apply_movie(c, fid, m, respect_edits=True, genres=d.get("genres", True), keep=keep)
-    c.commit(); movie_mkv_after(c, fid); return get_film(fid)
+    c.commit(); after_movie_apply(c, fid); return get_film(fid)
 
 # ---------- backup ----------
 TABLES = ["films", "files", "categories", "tags", "film_tags", "smart_queue", "aznude_queue", "saved_searches", "settings"]
@@ -3311,6 +3316,281 @@ def rename_scene_file(c, fid):
         c.execute("UPDATE films SET rename_pending=0 WHERE id=?", (fid,)); c.commit()  # now standard
         mkv = mkv_after_rename(c, fid)
     return n, note, mkv
+
+def movie_std_name(title, year):
+    """Standard movie folder/file stem: 'Title (Year)'. Year is left out when missing."""
+    t = _safe(title, 120)
+    if not t: return None
+    try:
+        if year not in (None, ""): return f"{t} ({int(year)})"
+    except (TypeError, ValueError):
+        pass
+    return t
+
+_CD_SUF = _re.compile(r"(?i)(?:[\s._-])((?:CD|DISC|DISK|PART)[\s._-]*[A-Z0-9]+)$")
+_WALK_UP = {"VIDEO_TS", "BDMV", "STREAM", "SUBS", "EXTRAS", "FEATURETTES", "AUDIO_TS"}
+
+def _movie_root(c, path):
+    roots = [r for r in (db.get_setting(c, "roots", []) or []) if r and str(r).strip()]
+    hits = [r for r in roots if db.under(path, r)]
+    return max(hits, key=lambda r: len(os.path.normcase(r.rstrip("\\/")))) if hits else None
+
+def _film_folder(path, root):
+    """Directory immediately under the library root that contains this video, or None if the file is at the root."""
+    d = os.path.dirname(os.path.abspath(path))
+    root = os.path.abspath(root.rstrip("\\/"))
+    while os.path.basename(d).upper() in _WALK_UP and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    if os.path.normcase(d) == os.path.normcase(root):
+        return None
+    # first component under root
+    cur, parent = d, os.path.dirname(d)
+    while parent != cur and os.path.normcase(parent) != os.path.normcase(root) and db.under(parent, root):
+        cur, parent = parent, os.path.dirname(parent)
+    if os.path.normcase(parent) == os.path.normcase(root):
+        return cur
+    return d if db.under(d, root) else None
+
+def _under_or_same(path, folder):
+    if not path or not folder: return False
+    a, b = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return a == b or db.under(path, folder)
+
+def _other_films_in_dir(c, folder, fid):
+    if not folder: return False
+    for r in c.execute("SELECT film_id, path FROM files WHERE film_id!=? AND COALESCE(missing,0)=0", (fid,)):
+        if r["path"] and _under_or_same(r["path"], folder):
+            return True
+    return False
+
+def _map_under(path, old_folder, new_folder):
+    if not path or not old_folder: return path
+    oldn = os.path.normcase(os.path.abspath(old_folder).rstrip("\\/"))
+    p = os.path.abspath(path)
+    pn = os.path.normcase(p)
+    if pn == oldn: return new_folder
+    sep = pn[len(oldn):len(oldn)+1] if len(pn) > len(oldn) else ""
+    if pn.startswith(oldn) and sep in ("\\", "/", ""):
+        return os.path.join(new_folder, p[len(os.path.abspath(old_folder).rstrip("\\/")):].lstrip("\\/"))
+    return path
+
+def _stem_sidecars(folder, stem, video_path, new_dir, new_stem):
+    """Same-folder files whose name starts with 'stem.' (e.g. Title (2011).en.srt, .forced.srt, .nfo)."""
+    import subtitles as _submod
+    out = []
+    try: names = os.listdir(folder)
+    except OSError: return out
+    vnorm = os.path.normcase(os.path.abspath(video_path))
+    prefix = stem.lower() + "."
+    for y in names:
+        p = os.path.join(folder, y)
+        if os.path.normcase(os.path.abspath(p)) == vnorm: continue
+        if os.path.isdir(p):
+            # '<stem> - GALLERY' (or a suffix after the stem) moves with the video
+            if y.lower().startswith(stem.lower() + " - gallery") or y.lower() == stem.lower() + " - gallery":
+                out.append((p, os.path.join(new_dir, new_stem + y[len(stem):]), "gallery"))
+            continue
+        if not y.lower().startswith(prefix): continue
+        dest = os.path.join(new_dir, new_stem + y[len(stem):])
+        ext = os.path.splitext(y)[1].lower()
+        kind = "subtitle" if ext in getattr(_submod, "SUB_EXT", {}) else "sidecar"
+        out.append((p, dest, kind))
+    return out
+
+def plan_movie_rename(c, fid, title=None, year=None):
+    """Planned folder/file/sidecar moves for one movie to the standard 'Title (Year)' name.
+    title/year override the stored values (used to preview an IMDb year before writing it).
+    Returns (moves, error). moves is a list of dict(kind, old, new, file_id?, root). error is a reason to skip."""
+    f = c.execute("SELECT * FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return [], "not found"
+    if (f["kind"] or "") == "scene": return [], "Scenes use the scene rename path"
+    title = f["title"] if title is None else title
+    year = f["year"] if year is None else year
+    std = movie_std_name(title, year)
+    if not std: return [], "Not renamed: missing title"
+    files = list(c.execute("SELECT id, path FROM files WHERE film_id=? ORDER BY id", (fid,)))
+    if not files: return [], None
+    # Exclusive film folder (all this film's videos in one folder under a root, no other film)
+    folders, roots_for = [], {}
+    missing = []
+    for x in files:
+        old = x["path"]
+        if not old or not os.path.exists(old):
+            missing.append(old or "(no path)")
+            continue
+        root = _movie_root(c, old)
+        if not root: continue
+        folders.append((_film_folder(old, root), root, x))
+        roots_for[id(x)] = root
+    if missing and not folders:
+        return [], "File missing or not reachable"
+    if not folders:
+        return [], "Not under a movie library folder"
+    unique_folders = []
+    for fol, root, x in folders:
+        key = os.path.normcase(os.path.abspath(fol)) if fol else ("__root__", os.path.normcase(os.path.abspath(root)))
+        if not any(k[0] == key for k in unique_folders):
+            unique_folders.append((key, fol, root))
+    exclusive = (len(unique_folders) == 1 and unique_folders[0][1] is not None
+                 and not _other_films_in_dir(c, unique_folders[0][1], fid))
+    dest_folder_by_root = {}
+    folder_move = None
+    if exclusive:
+        fol, root = unique_folders[0][1], unique_folders[0][2]
+        dest = os.path.join(root, std)
+        dest_folder_by_root[os.path.normcase(os.path.abspath(root))] = dest
+        if os.path.normcase(os.path.abspath(fol)) != os.path.normcase(os.path.abspath(dest)):
+            if os.path.exists(dest) and os.path.normcase(os.path.abspath(dest)) != os.path.normcase(os.path.abspath(fol)):
+                return [], f"Name collision: folder already exists: {dest}"
+            if not db.same_drive(fol, dest):
+                return [], "Not renamed: new name would be on another drive"
+            folder_move = (fol, dest, root)
+    out, taken = [], set()
+    if folder_move:
+        out.append(dict(kind="folder", old=folder_move[0], new=folder_move[1], file_id=None, root=folder_move[2]))
+        taken.add(os.path.normcase(os.path.abspath(folder_move[1])))
+
+    for x in files:
+        old = x["path"]
+        if not old or not os.path.exists(old): continue
+        root = _movie_root(c, old)
+        if not root: continue
+        fol = _film_folder(old, root)
+        if exclusive:
+            dest_folder = dest_folder_by_root[os.path.normcase(os.path.abspath(root))]
+        elif fol:
+            dest_folder = fol  # shared folder: rename files in place
+        else:
+            dest_folder = os.path.join(root, std)  # file at library root: put it in Title (Year)\
+        if not db.same_drive(old, os.path.join(dest_folder, "x")):
+            return [], "Not renamed: new name would be on another drive"
+        ext = os.path.splitext(old)[1]
+        old_stem = os.path.splitext(os.path.basename(old))[0]
+        stem = movie_std_name(title, year)
+        mcd = _CD_SUF.search(old_stem.strip())
+        file_stem = f"{stem} {mcd.group(1).replace('_', ' ').replace('.', ' ').strip()}" if mcd else stem
+        base = os.path.join(dest_folder, file_stem)
+        new = base + ext
+        n = 2
+        # After a folder move, the current file will already sit at dest_folder/old_basename
+        after_folder = _map_under(old, folder_move[0], folder_move[1]) if folder_move else old
+        while ((os.path.exists(new) and os.path.normcase(os.path.abspath(new)) != os.path.normcase(os.path.abspath(after_folder))
+                and os.path.normcase(os.path.abspath(new)) != os.path.normcase(os.path.abspath(old)))
+               or os.path.normcase(os.path.abspath(new)) in taken):
+            # If the dest already exists and is not this file, use (2) only for a file in the same film folder
+            # that is not an exclusive-folder name collision (those already returned above).
+            new = f"{base} ({n}){ext}"; n += 1
+        taken.add(os.path.normcase(os.path.abspath(new)))
+        side = _stem_sidecars(os.path.dirname(old), old_stem, old, dest_folder, os.path.splitext(os.path.basename(new))[0])
+        # drop sidecars that would collide
+        side_ok = []
+        for a, b, kind in side:
+            b_after = b
+            if os.path.exists(b) and os.path.normcase(os.path.abspath(b)) != os.path.normcase(os.path.abspath(a)) and not folder_move:
+                # after folder move, a maps into dest; collision if something else is already at b
+                return [], f"Name collision: {os.path.basename(b)} already exists"
+            if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b_after)):
+                continue
+            if not db.same_drive(a, b):
+                return [], "Not renamed: a sidecar would move to another drive"
+            side_ok.append((a, b, kind))
+        if (os.path.normcase(os.path.abspath(new)) == os.path.normcase(os.path.abspath(old))
+                and not folder_move and not side_ok):
+            continue
+        if os.path.normcase(os.path.abspath(new)) != os.path.normcase(os.path.abspath(old)) or folder_move:
+            if os.path.normcase(os.path.abspath(after_folder)) != os.path.normcase(os.path.abspath(new)):
+                out.append(dict(kind="file", old=old, new=new, file_id=x["id"], root=root))
+        for a, b, kind in side_ok:
+            out.append(dict(kind=kind, old=a, new=b, file_id=x["id"], root=root))
+    return out, None
+
+def do_movie_moves(c, moves):
+    """Execute planned movie folder/file/sidecar moves. Same logging as scene Rename on Save
+    (_filmtagger_renames.csv in the library root). Returns (done file-renames, error or None).
+    On failure after a folder rename, attempts to rename the folder back so year and names stay in sync."""
+    import csv
+    if not moves: return 0, None
+    folder_mv = next((m for m in moves if m["kind"] == "folder"), None)
+    done_pairs = []
+    files_done = 0
+    try:
+        if folder_mv:
+            old_f, new_f = folder_mv["old"], folder_mv["new"]
+            if os.path.exists(new_f) and os.path.normcase(os.path.abspath(new_f)) != os.path.normcase(os.path.abspath(old_f)):
+                return 0, f"Name collision: folder already exists: {new_f}"
+            if os.path.normcase(os.path.abspath(old_f)) != os.path.normcase(os.path.abspath(new_f)):
+                os.rename(old_f, new_f)
+                done_pairs.append((old_f, new_f))
+        def physical(old):
+            return _map_under(old, folder_mv["old"], folder_mv["new"]) if folder_mv else old
+        for m in moves:
+            if m["kind"] == "folder": continue
+            src, dst = physical(m["old"]), m["new"]
+            if os.path.normcase(os.path.abspath(src)) == os.path.normcase(os.path.abspath(dst)):
+                continue
+            if not os.path.exists(src):
+                raise OSError(f"Source disappeared: {m['old']}")
+            if os.path.exists(dst) and os.path.normcase(os.path.abspath(dst)) != os.path.normcase(os.path.abspath(src)):
+                raise OSError(f"Name collision: {dst}")
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if os.path.isdir(src):
+                import shutil; shutil.move(src, dst)
+            else:
+                os.rename(src, dst)
+            done_pairs.append((m["old"], dst))
+            if m["kind"] == "file" and m.get("file_id"):
+                c.execute("UPDATE files SET path=?, missing=0 WHERE id=?", (dst, m["file_id"]))
+                c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (dst, m["old"]))
+                mkvtag.ensure_table(c)
+                c.execute("UPDATE mkv_meta SET path=? WHERE file_id=? AND path=?", (dst, m["file_id"], m["old"]))
+                files_done += 1
+        if done_pairs:
+            c.commit()
+            root = (folder_mv or moves[0])["root"]
+            try:
+                with open(os.path.join(root, "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh:
+                    csv.writer(fh).writerows(done_pairs)
+            except OSError:
+                pass
+            # drop an empty leftover folder (never the library root)
+            if not folder_mv:
+                for m in moves:
+                    if m["kind"] != "file": continue
+                    dd = os.path.dirname(m["old"])
+                    try:
+                        if (not os.listdir(dd) and os.path.normcase(dd) != os.path.normcase(m["root"])):
+                            os.rmdir(dd)
+                    except OSError:
+                        pass
+        return files_done, None
+    except OSError as e:
+        # Roll back a folder rename if later file/sidecar steps failed
+        if folder_mv and done_pairs and os.path.normcase(os.path.abspath(done_pairs[0][0])) == os.path.normcase(os.path.abspath(folder_mv["old"])):
+            try:
+                if os.path.exists(folder_mv["new"]) and not os.path.exists(folder_mv["old"]):
+                    os.rename(folder_mv["new"], folder_mv["old"])
+            except OSError:
+                pass
+        return 0, str(e)
+
+def rename_movie_file(c, fid, title=None, year=None):
+    """Move a movie's folder, video file(s), and same-name sidecars (including .en.srt / .forced.srt) to
+    the standard 'Title (Year)' name. Returns (renamed count, note, mkv result). Never overwrites."""
+    moves, note = plan_movie_rename(c, fid, title=title, year=year)
+    if note: return 0, note, None
+    n, err = do_movie_moves(c, moves) if moves else (0, None)
+    if err: return n, err, None
+    mkv = movie_mkv_after(c, fid)
+    return n, None, mkv
+
+def after_movie_apply(c, fid):
+    """After a committed TMDB/IMDb apply: rename to Title (Year), then write the MKV title if needed."""
+    try:
+        _, note, mkv = rename_movie_file(c, fid)
+        return note, mkv
+    except OSError as e:
+        return f"Matched, but the file could not be renamed: {e}", movie_mkv_after(c, fid)
+
 
 # ---------- MKV container titles (mkvtag.py, optional MKVToolNix): hard-matched scenes + regular movie .mkv ----------
 MKV_SQL = ("SELECT x.id file_id, x.path, f.id, f.title, f.studio, f.release_date, f.cast_, COALESCE(f.notes,'') notes, "
@@ -3800,29 +4080,112 @@ def imdb_years_mismatches():
     rows = imdbmod.find_mismatches(C())
     return jsonify(mismatches=rows, count=len(rows), by_library=imdbmod.counts_by_library(rows), status=st)
 
-@app.post("/api/imdb-years/apply")
-def imdb_years_apply():
-    """Apply IMDb years to the selected film ids. Invalidates Metacritic cache when a year changes."""
+def _imdb_ids_from_body():
     d = request.get_json(silent=True) or {}
     ids = d.get("film_ids") or d.get("ids") or []
     try:
-        ids = [int(x) for x in ids]
+        return [int(x) for x in ids], None
     except (TypeError, ValueError):
-        return jsonify(error="film_ids must be a list of ids"), 400
+        return None, (jsonify(error="film_ids must be a list of ids"), 400)
+
+def preview_imdb_year_renames(c, ids):
+    """Plan year + file/folder/sidecar renames for selected films. Does not write films.db or move files."""
+    st = imdbmod.status()
+    items = []
+    if not st.get("ready"):
+        return dict(ok=False, error="IMDb year data is not ready yet", status=st, items=[], count=0)
+    # Reuse mismatch resolution so preview agrees with the list
+    want = set(ids)
+    rows = {r["film_id"]: r for r in imdbmod.find_mismatches(c) if r["film_id"] in want}
+    for fid in ids:
+        m = rows.get(fid)
+        if not m:
+            # may already match, or unresolved
+            film = c.execute("SELECT id, title, year, kind FROM films WHERE id=?", (fid,)).fetchone()
+            if not film:
+                items.append(dict(film_id=fid, ok=False, reason="not found", moves=[], title="", year=None, imdb_year=None))
+                continue
+            items.append(dict(film_id=fid, ok=False, reason="No IMDb year mismatch for this film", moves=[],
+                              title=film["title"] or "", year=film["year"], imdb_year=None))
+            continue
+        item = dict(film_id=fid, title=m["title"], year=m["year"], imdb_year=m["imdb_year"],
+                    imdb_id=m["imdb_id"], library=m.get("library"), hand_edited=m.get("hand_edited"),
+                    ok=True, reason=None, moves=[])
+        if (c.execute("SELECT kind FROM films WHERE id=?", (fid,)).fetchone() or [None])[0] == "scene":
+            item.update(ok=True, reason=None, moves=[])  # scene names do not use the year in Title (Year) form
+            items.append(item); continue
+        moves, err = plan_movie_rename(c, fid, title=m["title"], year=m["imdb_year"])
+        item["moves"] = [dict(kind=x["kind"], old=x["old"], new=x["new"]) for x in (moves or [])]
+        if err:
+            item["ok"] = False
+            item["reason"] = err
+        items.append(item)
+    return dict(ok=True, status=st, items=items, count=len(items),
+                ready=sum(1 for x in items if x["ok"]), blocked=sum(1 for x in items if not x["ok"]))
+
+@app.post("/api/imdb-years/preview")
+def imdb_years_preview():
+    """Dry-run: show current folder/file/sidecar names and the Title (Year) names after the IMDb year.
+    Does not change films.db or rename anything."""
+    ids, err = _imdb_ids_from_body()
+    if err: return err
+    if not ids:
+        return jsonify(error="No films selected"), 400
+    return jsonify(preview_imdb_year_renames(C(), ids))
+
+@app.post("/api/imdb-years/apply")
+def imdb_years_apply():
+    """Apply IMDb years to the selected films. Renames each movie's folder, video(s) and sidecars
+    (including language-tagged subtitles) first; if a rename fails, that film's year is left unchanged."""
+    ids, err = _imdb_ids_from_body()
+    if err: return err
     if not ids:
         return jsonify(error="No films selected"), 400
     st = imdbmod.status()
     if not st.get("ready"):
         return jsonify(error="IMDb year data is not ready yet", status=st), 409
     c = C()
-    result = imdbmod.apply_fixes(c, ids)
-    for ch in result["changed"]:
-        invalidate_metacritic_for_year(c, ch["film_id"])
-    c.commit()
-    for ch in result["changed"]:
-        kick_metacritic(ch["film_id"], force=True)
-    result["ok"] = True
-    return jsonify(result)
+    preview = preview_imdb_year_renames(c, ids)
+    applied, skipped, changed, renamed, details = 0, 0, [], 0, []
+    for item in preview["items"]:
+        fid = item["film_id"]
+        if not item.get("ok"):
+            skipped += 1
+            details.append(dict(film_id=fid, title=item.get("title") or "", ok=False, reason=item.get("reason") or "skipped", renamed=0))
+            continue
+        # Rename first (using the IMDb year), then write the year so a failed rename never desyncs names
+        moves, plan_err = plan_movie_rename(c, fid, title=item.get("title"), year=item.get("imdb_year"))
+        if plan_err:
+            skipped += 1
+            details.append(dict(film_id=fid, title=item.get("title") or "", ok=False, reason=plan_err, renamed=0))
+            continue
+        try:
+            n, move_err = do_movie_moves(c, moves) if moves else (0, None)
+        except OSError as e:
+            n, move_err = 0, str(e)
+        if move_err:
+            skipped += 1
+            details.append(dict(film_id=fid, title=item.get("title") or "", ok=False, reason=move_err, renamed=0))
+            continue
+        result = imdbmod.apply_fixes(c, [fid])
+        if result["changed"]:
+            for ch in result["changed"]:
+                invalidate_metacritic_for_year(c, ch["film_id"])
+            c.commit()
+            for ch in result["changed"]:
+                kick_metacritic(ch["film_id"], force=True)
+                changed.append(ch)
+            # MKV title with the new year (files are already at the new name)
+            movie_mkv_after(c, fid)
+        elif result["applied"]:
+            c.commit()
+        applied += result["applied"]
+        skipped += result["skipped"]
+        renamed += n
+        details.append(dict(film_id=fid, title=item.get("title") or "", ok=True, reason=None, renamed=n,
+                            year=item.get("year"), imdb_year=item.get("imdb_year"),
+                            moves=[dict(kind=x["kind"], old=x["old"], new=x["new"]) for x in (moves or [])]))
+    return jsonify(ok=True, applied=applied, skipped=skipped, changed=changed, renamed=renamed, details=details)
 
 @app.post("/api/imdb-years/export")
 def imdb_years_export():
