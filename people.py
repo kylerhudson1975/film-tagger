@@ -474,6 +474,116 @@ def tpdb_update(c, token, row, call, allow_image=True, fill_only=False):
     apply_tpdb(c, c.execute("SELECT * FROM people WHERE id=?", (row["id"],)).fetchone(), p, allow_image, fill_only)
     return "found"
 
+
+def replace_credit_names(field, old, new):
+    """Replace a comma-separated credit entry that fold-matches `old` with `new`. Returns (value, changed)."""
+    if not field: return field, False
+    old_k = db.fold(old); new = " ".join((new or "").split())
+    if not old_k or not new: return field, False
+    out, changed = [], False
+    for x in field.split(","):
+        n = " ".join(x.split())
+        if n and db.fold(n) == old_k:
+            out.append(new); changed = True
+        elif n:
+            out.append(n)
+    return (", ".join(out) if out else None), changed
+
+def rewrite_person_credits(c, old_name, new_name):
+    """Rewrite film (and excluded) credit lists when a person's primary name changes. Also re-keys cast_roles.
+    Returns the number of film rows updated."""
+    old_name, new_name = " ".join((old_name or "").split()), " ".join((new_name or "").split())
+    if not old_name or not new_name or old_name == new_name: return 0
+    cols_have = {r[1] for r in c.execute("PRAGMA table_info(films)")}
+    use = [col for col in db.PEOPLE_ROLES.values() if col in cols_have]
+    now = time.time(); n = 0
+    if use:
+        extra = ", cast_roles" if "cast_roles" in cols_have else ""
+        q = f"SELECT id{''.join(', '+col for col in use)}{extra} FROM films WHERE " + " OR ".join(
+            f"COALESCE({col},'')<>''" for col in use)
+        old_k = db.fold(old_name)
+        for r in c.execute(q):
+            sets = {}
+            for col in use:
+                nv, ch = replace_credit_names(r[col], old_name, new_name)
+                if ch: sets[col] = nv
+            if "cast_roles" in cols_have:
+                try: roles = json.loads(r["cast_roles"] or "{}") or {}
+                except Exception: roles = {}
+                if isinstance(roles, dict) and roles:
+                    new_roles, rch = {}, False
+                    for k, v in roles.items():
+                        if db.fold(k or "") == old_k:
+                            if new_name not in new_roles: new_roles[new_name] = v
+                            rch = True
+                        else:
+                            new_roles[k] = v
+                    if rch: sets["cast_roles"] = json.dumps(new_roles, ensure_ascii=False)
+            if sets:
+                sets["updated_at"] = now
+                c.execute("UPDATE films SET " + ", ".join(f"{k}=?" for k in sets) + " WHERE id=?",
+                          list(sets.values()) + [r["id"]])
+                n += 1
+    xcols = {r[1] for r in c.execute("PRAGMA table_info(excluded)")}
+    if "cast_" in xcols:
+        for r in c.execute("SELECT id, cast_ FROM excluded WHERE COALESCE(cast_,'')<>''"):
+            nv, ch = replace_credit_names(r["cast_"], old_name, new_name)
+            if ch: c.execute("UPDATE excluded SET cast_=? WHERE id=?", (nv, r["id"]))
+    return n
+
+def _rename_conflict_msg(c, other, new_name, pid):
+    if other["merged_into"] == pid:
+        return "A merged person already uses that name. Undo the merge first, then make it primary."
+    if other["merged_into"]:
+        t = c.execute("SELECT name FROM people WHERE id=?", (other["merged_into"],)).fetchone()
+        who = t["name"] if t else "someone else"
+        return f"A person named '{other['name']}' already exists (merged into {who}). Merge them instead."
+    return f"A person named '{other['name']}' already exists. Merge them instead."
+
+def apply_rename(c, row, new_name):
+    """Set a person's primary name. The old name becomes an alias; the new name is dropped from aliases.
+    Film credits under the old name are rewritten to the new spelling so pages keep linking.
+    Returns (payload, http_status). Does not commit. If the new name already belongs to another
+    person (as a primary name or alias), refuses and suggests Merge."""
+    new_name = " ".join((new_name or "").split())
+    if not new_name: return dict(error="Name is required"), 400
+    if row["merged_into"]: return dict(error="This person was merged into someone else"), 400
+    old_name = row["name"]
+    try: old_als = [a for a in json.loads(row["aliases"] or "[]") if isinstance(a, str)]
+    except Exception: old_als = []
+    if new_name == old_name:
+        return dict(id=row["id"], name=old_name, aliases=old_als, credits_updated=0, unchanged=True), 200
+    new_k = db.fold(new_name); old_k = row["name_norm"]
+    other = c.execute("SELECT * FROM people WHERE name_norm=? AND id<>?", (new_k, row["id"])).fetchone()
+    if other: return dict(error=_rename_conflict_msg(c, other, new_name, row["id"])), 400
+    for r2 in c.execute("SELECT id, name, aliases FROM people WHERE id<>? AND merged_into IS NULL AND aliases IS NOT NULL", (row["id"],)):
+        try: oal = json.loads(r2["aliases"] or "[]")
+        except Exception: oal = []
+        if any(isinstance(a, str) and db.fold(a) == new_k for a in oal):
+            return dict(error=f"'{new_name}' is already an alias of {r2['name']}. Merge them instead."), 400
+    als = [a for a in old_als if a.strip() and db.fold(a) != new_k]
+    if old_k != new_k and db.fold(old_name) not in {db.fold(a) for a in als}:
+        als.append(old_name)
+    edited = set(json.loads(row["edited_fields"] or "[]")) | {"name"}
+    if als != old_als: edited.add("aliases")
+    c.execute("UPDATE people SET name=?, name_norm=?, aliases=?, edited_fields=? WHERE id=?",
+              (new_name, new_k, json.dumps(als) if als else None, json.dumps(sorted(edited)), row["id"]))
+    n = rewrite_person_credits(c, old_name, new_name)
+    try:
+        if old_k != new_k:
+            if c.execute("SELECT 1 FROM birthdate_lookup WHERE name_norm=?", (new_k,)).fetchone():
+                c.execute("DELETE FROM birthdate_lookup WHERE name_norm=?", (old_k,))
+            else:
+                c.execute("UPDATE birthdate_lookup SET name_norm=?, name=? WHERE name_norm=?", (new_k, new_name, old_k))
+        else:
+            c.execute("UPDATE birthdate_lookup SET name=? WHERE name_norm=?", (new_name, old_k))
+    except Exception:
+        pass
+    try: c.execute("UPDATE tmdb_match_review SET name=? WHERE person_id=?", (new_name, row["id"]))
+    except Exception: pass
+    db._AG["key"] = None
+    return dict(id=row["id"], name=new_name, aliases=als, credits_updated=n), 200
+
 def init(app, tmdb, posters_dir):
     PHOTO_DIR = os.path.join(posters_dir, "people")
     fold = db.fold
@@ -570,11 +680,26 @@ def init(app, tmdb, posters_dir):
         has = row and (row["photo_file"] or photo_choice(row))
         return f"/api/person/{row['id']}/photo?v={int(row['fetched_at'] or 0)}" if has else None
 
+    def follow_merge(c, r):
+        hops = 0
+        while r and r["merged_into"] and hops < 5:
+            t = c.execute("SELECT * FROM people WHERE id=?", (r["merged_into"],)).fetchone()
+            if not t: break
+            r = t; hops += 1
+        return r
+
     def ensure_row(c, name):
-        k = fold(" ".join(name.split()))
+        name = " ".join((name or "").split()); k = fold(name)
+        if not k: return None
         r = c.execute("SELECT * FROM people WHERE name_norm=?", (k,)).fetchone()
-        if r: return r
-        c.execute("INSERT INTO people(name, name_norm) VALUES(?,?)", (" ".join(name.split()), k)); c.commit()
+        if r: return follow_merge(c, r)
+        # exact alias (including a single-word former primary) of an existing person
+        for row in c.execute("SELECT * FROM people WHERE aliases IS NOT NULL"):
+            try: als = json.loads(row["aliases"] or "[]")
+            except Exception: als = []
+            if any(isinstance(a, str) and fold(" ".join(a.split())) == k for a in als):
+                return follow_merge(c, row)
+        c.execute("INSERT INTO people(name, name_norm) VALUES(?,?)", (name, k)); c.commit()
         return c.execute("SELECT * FROM people WHERE name_norm=?", (k,)).fetchone()
 
     def name_order(hits, q):
@@ -1224,12 +1349,29 @@ def init(app, tmdb, posters_dir):
         """Undo a merge for one person row that was merged into another (its name stays as an alias until removed by hand)."""
         c = C(); c.execute("UPDATE people SET merged_into=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
 
-    @app.post("/api/person/<int:pid>/edit")
-    def person_edit(pid):
-        """Hand edits to profile fields; edited fields are never overwritten by TPDB/TMDB fetches."""
+    @app.post("/api/person/<int:pid>/rename")
+    def person_rename(pid):
+        """Change the person's primary name: {name}. The old name becomes an alias; the new name is
+        removed from aliases if present. Film credits under the old name are rewritten. If the new
+        name already exists as a separate person, refuses and suggests Merge."""
         c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         if not row: return jsonify(error="Unknown person"), 404
-        d = request.json or {}; edited = set(json.loads(row["edited_fields"] or "[]"))
+        r, status = apply_rename(c, row, (request.json or {}).get("name"))
+        if status != 200: return jsonify(r), status
+        c.commit(); return jsonify(ok=True, **r)
+
+    @app.post("/api/person/<int:pid>/edit")
+    def person_edit(pid):
+        """Hand edits to profile fields; edited fields are never overwritten by TPDB/TMDB fetches.
+        `name` changes the primary name (same rules as /rename)."""
+        c = C(); row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        if not row: return jsonify(error="Unknown person"), 404
+        d = request.json or {}
+        if "name" in d:
+            r, status = apply_rename(c, row, d.get("name"))
+            if status != 200: return jsonify(r), status
+            row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+        edited = set(json.loads(row["edited_fields"] or "[]"))
         for k in EDITABLE:
             if k not in d: continue
             v = d[k]
