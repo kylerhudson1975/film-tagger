@@ -580,7 +580,7 @@ def _fp_err(e):
 
 @app.get("/api/films/<int:fid>/findposters")
 def findposters(fid):
-    """All TMDB posters for the film's existing TMDB id (one /movie/{id}/images request), best first."""
+    """All TMDB posters for the film's existing TMDB id (one /movie/{id}/images or /tv/{id}/images request), best first."""
     c = C(); r, bad = _fp_movie(c, fid)
     if bad: return bad
     can_restore = db.get_setting(c, _fp_prev_key(fid)) is not None
@@ -1894,10 +1894,90 @@ def tmdb_item_path(tid, kind="movie", suffix=""):
     base = "tv" if tmdb_kind_of(kind) == "tv" else "movie"
     return f"{base}/{int(tid)}{suffix}"
 
+def tmdb_page_url(tid, kind="movie"):
+    """Public themoviedb.org page for a movie or TV id."""
+    if not tid:
+        return None
+    base = "tv" if tmdb_kind_of(kind) == "tv" else "movie"
+    return f"https://www.themoviedb.org/{base}/{int(tid)}"
+
+
+def tmdb_credits_append(kind):
+    """append_to_response value that loads character/crew data for this kind."""
+    return "aggregate_credits,credits" if tmdb_kind_of(kind) == "tv" else "credits"
+
+
 def tmdb_append_for(kind):
+    creds = tmdb_credits_append(kind)
     if tmdb_kind_of(kind) == "tv":
-        return "credits,content_ratings,alternative_titles,external_ids"
-    return "credits,release_dates,alternative_titles,external_ids"
+        return f"{creds},content_ratings,alternative_titles,external_ids"
+    return f"{creds},release_dates,alternative_titles,external_ids"
+
+
+def tmdb_character(person):
+    """Character name from a movie credits row, or roles[].character on TV aggregate_credits."""
+    ch = ((person or {}).get("character") or "").strip()
+    if ch:
+        return ch
+    seen, parts = set(), []
+    for r in (person or {}).get("roles") or []:
+        n = (r.get("character") or "").strip()
+        if n and n not in seen:
+            seen.add(n)
+            parts.append(n)
+    return " / ".join(parts)
+
+
+def tmdb_job(person):
+    """Crew job from a movie credits row, or jobs[].job on TV aggregate_credits."""
+    j = ((person or {}).get("job") or "").strip()
+    if j:
+        return j
+    seen, parts = set(), []
+    for r in (person or {}).get("jobs") or []:
+        n = (r.get("job") or "").strip()
+        if n and n not in seen:
+            seen.add(n)
+            parts.append(n)
+    return parts
+
+
+def normalize_credits(credits):
+    """Map TV aggregate_credits (roles/jobs) onto the credits.cast/crew shape used everywhere."""
+    credits = credits or {}
+    cast = []
+    for x in credits.get("cast") or []:
+        y = dict(x)
+        y["character"] = tmdb_character(x)
+        cast.append(y)
+    crew = []
+    for x in credits.get("crew") or []:
+        jobs = tmdb_job(x)
+        if isinstance(jobs, str):
+            jobs = [jobs] if jobs else [""]
+        if not jobs:
+            jobs = [""]
+        seen = set()
+        for j in jobs:
+            if j in seen:
+                continue
+            seen.add(j)
+            y = dict(x)
+            y["job"] = j
+            crew.append(y)
+    return {"cast": cast, "crew": crew, "id": credits.get("id")}
+
+
+def tmdb_credits_of(m):
+    """Prefer TV aggregate_credits (complete character list), else regular credits."""
+    m = m or {}
+    agg = m.get("aggregate_credits") or {}
+    cred = m.get("credits") or {}
+    if (agg.get("cast") or agg.get("crew")):
+        raw = agg
+    else:
+        raw = cred or agg
+    return normalize_credits(raw)
 
 def tmdb_result_title(r):
     return ((r or {}).get("title") or (r or {}).get("name") or "").strip()
@@ -1934,6 +2014,9 @@ def normalize_tmdb_item(m, kind=None):
                 m["runtime"] = ert[0]
     if not m.get("imdb_id"):
         m["imdb_id"] = ext.get("imdb_id")
+    # Flatten TV aggregate_credits onto credits so apply_movie / hover code can use one shape.
+    if m.get("credits") is not None or m.get("aggregate_credits") is not None:
+        m["credits"] = tmdb_credits_of(m)
     return m
 
 def tmdb_get(key, tid, kind="movie", append=None, **params):
@@ -2037,7 +2120,7 @@ def cast_roles_from_credits(credits, limit=None):
     rows = (credits or {}).get("cast", [])
     if limit is not None: rows = rows[:limit]
     for x in rows:
-        name = (x.get("name") or "").strip(); ch = (x.get("character") or "").strip()
+        name = (x.get("name") or "").strip(); ch = tmdb_character(x)
         if name and ch and name not in out: out[name] = ch
     return out
 
@@ -2062,7 +2145,7 @@ def cast_roles_for_names(credits, names, tmdb_ids_by_name=None):
     if not names: return {}
     by_id, by_key = {}, {}
     for x in (credits or {}).get("cast", []):
-        ch = (x.get("character") or "").strip()
+        ch = tmdb_character(x)
         if not ch: continue
         tid = x.get("id")
         if tid is not None:
@@ -2373,7 +2456,7 @@ def run_credits_job(key, ids):
             kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb_get(key, tid, kind, append="credits")
+                rl.wait(); m = tmdb_get(key, tid, kind, append=tmdb_credits_append(kind))
                 # only people fields; respects the user's manual edits
                 ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"))
                 keep = [k for k in FILM_FIELDS if k not in ("director", "cast_", *db.PEOPLE_COLS)]
@@ -2868,7 +2951,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                             try:
                                 tid = row["tmdb_id"]; credits = None; m = None
                                 if tid:
-                                    rl.wait(); m = tmdb_get(key, tid, row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append="credits")
+                                    rl.wait(); m = tmdb_get(key, tid, row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append=tmdb_credits_append(row["tmdb_kind"] if "tmdb_kind" in row.keys() else None))
                                     credits = (m or {}).get("credits") or {}
                                 else:
                                     # title+year search for unmatched films (same confidence as the poster job)
@@ -2920,7 +3003,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                                 or cast_roles_has_crewish(row["cast_"], merge_cast_roles(cur, incoming, only_names=names or None, replace_crewish=True)))
                         if need:
                             try:
-                                rl.wait(); m = tmdb_get(key, row["tmdb_id"], row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append="credits")
+                                rl.wait(); m = tmdb_get(key, row["tmdb_id"], row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append=tmdb_credits_append(row["tmdb_kind"] if "tmdb_kind" in row.keys() else None))
                                 credits = m.get("credits") or {}
                                 ids = tmdb_ids_for_cast_names(c, names)
                                 troles = cast_roles_for_names(credits, names, ids)
@@ -2993,12 +3076,28 @@ def cast_roles_job_status():
                         "AND COALESCE(edited_fields,'') NOT LIKE ?", (locked,)).fetchone()[0]
     return jsonify(dict(CRJ, with_roles=with_roles, pending=pending))
 
+def requeue_tv_cast_roles(c):
+    """Clear cast_roles_checked for TMDB-TV films that are not hand-locked, so the job can
+    fill characters from aggregate_credits. Existing non-empty character names are kept (add-only merge)."""
+    locked = '%"cast_roles"%'
+    cur = c.execute(
+        "UPDATE films SET cast_roles_checked=NULL WHERE lower(COALESCE(tmdb_kind,''))='tv' "
+        "AND tmdb_id IS NOT NULL AND id IN (SELECT film_id FROM files) "
+        "AND COALESCE(edited_fields,'') NOT LIKE ?",
+        (locked,),
+    )
+    return cur.rowcount
+
+
 @app.post("/api/cast_roles/job")
 def cast_roles_job_start():
     c = C(); key = db.get_setting(c, "tmdb_key", "") or ""
     body = request.get_json(silent=True) or {}
     requeued = 0
-    if body.get("force"):
+    if body.get("tmdb_kind") == "tv" or body.get("force_tv"):
+        requeued = requeue_tv_cast_roles(c)
+        db.set_setting(c, "cast_roles_backfill_done", None)
+    elif body.get("force"):
         requeued = requeue_incomplete_cast_roles(c)
         db.set_setting(c, "cast_roles_backfill_done", None)
     db.set_setting(c, "cast_roles_backfill_started", time.time()); c.commit()

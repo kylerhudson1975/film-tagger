@@ -54,6 +54,82 @@ DEPT_ORDER = ["Acting", "Directing", "Writing", "Production", "Camera", "Sound",
               "Visual Effects", "Crew", "Lighting"]
 STALE_S = 14 * 86400
 NO_MATCH = -1  # tmdb_person_id value meaning "searched TMDB, nothing found"
+
+def tmdb_title_kind(kind=None, item=None):
+    k = kind
+    if not k and item is not None:
+        k = item.get("media_type") or item.get("tmdb_kind")
+    return "tv" if str(k or "").strip().lower() == "tv" else "movie"
+
+def tmdb_page_url(tid, kind="movie"):
+    if not tid:
+        return None
+    return f"https://www.themoviedb.org/{tmdb_title_kind(kind)}/{int(tid)}"
+
+def load_title_credits(tmdb, key, tid, kind="movie"):
+    """Film or TV credits for a library title. TV uses aggregate_credits, then credits. Never cross-tries movie/TV ids."""
+    kind = tmdb_title_kind(kind)
+    paths = [f"tv/{int(tid)}/aggregate_credits", f"tv/{int(tid)}/credits"] if kind == "tv" else [f"movie/{int(tid)}/credits"]
+    last = None
+    for path in paths:
+        try:
+            cr = tmdb(path, key) or {}
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                raise
+            last = e
+            continue
+        # Flatten roles[]/jobs[] so callers can use character/job the same way as movies.
+        out = {"cast": [], "crew": []}
+        for x in cr.get("cast") or []:
+            y = dict(x)
+            if not (y.get("character") or "").strip():
+                parts, seen = [], set()
+                for r in y.get("roles") or []:
+                    n = (r.get("character") or "").strip()
+                    if n and n not in seen:
+                        seen.add(n); parts.append(n)
+                y["character"] = " / ".join(parts)
+            out["cast"].append(y)
+        for x in cr.get("crew") or []:
+            jobs = [(r.get("job") or "").strip() for r in (x.get("jobs") or []) if (r.get("job") or "").strip()]
+            if not jobs:
+                j = (x.get("job") or "").strip()
+                jobs = [j] if j else [""]
+            seen = set()
+            for j in jobs:
+                if j in seen: continue
+                seen.add(j)
+                y = dict(x); y["job"] = j
+                out["crew"].append(y)
+        return out
+    if last is not None:
+        raise last
+    return {"cast": [], "crew": []}
+
+def _norm_combined_credit(x, typ="cast"):
+    """Normalize a person combined_credits row so movie and TV share title/date/media_type fields."""
+    x = x or {}
+    media = tmdb_title_kind(item=x)
+    rec = dict(id=x.get("id"),
+               title=x.get("title") or x.get("name"),
+               original_title=x.get("original_title") or x.get("original_name"),
+               release_date=x.get("release_date") or x.get("first_air_date"),
+               poster_path=x.get("poster_path"),
+               media_type=media)
+    if typ == "cast":
+        rec["character"] = (x.get("character") or "").strip()
+        if not rec["character"]:
+            parts, seen = [], set()
+            for r in x.get("roles") or []:
+                n = (r.get("character") or "").strip()
+                if n and n not in seen:
+                    seen.add(n); parts.append(n)
+            rec["character"] = " / ".join(parts)
+    else:
+        rec["job"] = x.get("job")
+        rec["department"] = x.get("department")
+    return rec
 TPDB_MAX_PAGES = 200  # 100 scenes per page (20,000 scenes)
 TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing found"
 
@@ -638,9 +714,9 @@ def init(app, tmdb, posters_dir):
     def resolve(c, key, row, lib_ids):
         """Find the TMDB person id: first via the library films' TMDB credits, else TMDB person search."""
         target = row["name_norm"]
-        tids = [r[0] for r in c.execute(f"SELECT tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND id IN ({','.join('?'*len(lib_ids))}) ORDER BY year DESC LIMIT 4", list(lib_ids))] if lib_ids else []
-        for tid in tids:
-            try: cr = tmdb(f"movie/{tid}/credits", key)
+        tids = [tuple(r) for r in c.execute(f"SELECT tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL AND id IN ({','.join('?'*len(lib_ids))}) ORDER BY year DESC LIMIT 4", list(lib_ids))] if lib_ids else []
+        for tid, kind in tids:
+            try: cr = load_title_credits(tmdb, key, tid, kind)
             except urllib.error.HTTPError as e:
                 if e.code == 401: raise
                 continue
@@ -670,11 +746,11 @@ def init(app, tmdb, posters_dir):
         keys = {fold(n) for n in names}
         ids = list(lib_ids or [])
         cl = classic_film_ids(c) & set(ids)
-        q = lambda s_: [r[0] for r in c.execute(f"SELECT tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND id IN ({','.join('?'*len(s_))}) ORDER BY year DESC", list(s_))] if s_ else []
-        ctids = q(cl); ltids = set(q(set(ids)))
+        q = lambda s_: [tuple(r) for r in c.execute(f"SELECT tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL AND id IN ({','.join('?'*len(s_))}) ORDER BY year DESC", list(s_))] if s_ else []
+        ctids = q(cl); ltids = {tid for tid, _k in q(set(ids))}
         hit = {}
-        for tid in ctids[:6]:
-            try: cr = tmdb(f"movie/{tid}/credits", key)
+        for tid, kind in ctids[:6]:
+            try: cr = load_title_credits(tmdb, key, tid, kind)
             except urllib.error.HTTPError as e:
                 if e.code == 401: raise
                 continue
@@ -703,9 +779,9 @@ def init(app, tmdb, posters_dir):
     def fetch(c, key, row, keep_profile=False, tmdb_primary=False):
         p = tmdb(f"person/{row['tmdb_person_id']}", key, append_to_response="combined_credits", include_adult="true")
         cc = p.get("combined_credits") or {}
-        keep = lambda x: x.get("media_type", "movie") == "movie"
-        credits = dict(cast=[{k: x.get(k) for k in ("id", "title", "original_title", "release_date", "character", "poster_path")} for x in cc.get("cast", []) if keep(x)],
-                       crew=[{k: x.get(k) for k in ("id", "title", "original_title", "release_date", "job", "department", "poster_path")} for x in cc.get("crew", []) if keep(x)])
+        keep = lambda x: (x.get("media_type") or "movie") in ("movie", "tv")
+        credits = dict(cast=[_norm_combined_credit(x, "cast") for x in cc.get("cast", []) if keep(x)],
+                       crew=[_norm_combined_credit(x, "crew") for x in cc.get("crew", []) if keep(x)])
         edited = set(json.loads(row["edited_fields"] or "[]"))
         sets = dict(profile_path=p.get("profile_path"), bio=p.get("biography"), birthday=p.get("birthday"), deathday=p.get("deathday"),
                     place=p.get("place_of_birth"), known_for=p.get("known_for_department"), credits_json=json.dumps(credits),
@@ -731,8 +807,14 @@ def init(app, tmdb, posters_dir):
             threading.Thread(target=eth_wikidata, args=([row["id"]],), daemon=True).start()  # Wikidata P172, only when published
 
     def filmography(c, credits):
-        lib = [dict(r) for r in c.execute("SELECT id, title, original_title, year, tmdb_id, poster, custom_poster FROM films")]
-        by_tmdb = {f["tmdb_id"]: f for f in lib if f["tmdb_id"]}
+        lib = [dict(r) for r in c.execute("SELECT id, title, original_title, year, tmdb_id, tmdb_kind, poster, custom_poster FROM films")]
+        by_tmdb = {}
+        by_tmdb_id = {}
+        for f in lib:
+            if f["tmdb_id"]:
+                k = tmdb_title_kind(f.get("tmdb_kind"))
+                by_tmdb[(f["tmdb_id"], k)] = f
+                by_tmdb_id.setdefault(f["tmdb_id"], f)
         by_ty = {}
         for f in lib:
             for t in (f["title"], f["original_title"]):
@@ -741,15 +823,21 @@ def init(app, tmdb, posters_dir):
         def add(dept, x, what):
             yr = int(x["release_date"][:4]) if (x.get("release_date") or "")[:4].isdigit() else None
             g = groups.setdefault(dept, {})
-            e = g.get(x["id"])
+            kind = tmdb_title_kind(item=x)
+            e = g.get((x["id"], kind))
             if e:
                 if what and what not in e["role"].split(" / "): e["role"] += " / " + what
                 return
-            own = by_tmdb.get(x["id"]) or (yr and (by_ty.get((fold(x.get("title") or ""), yr)) or by_ty.get((fold(x.get("original_title") or ""), yr))))
-            g[x["id"]] = dict(tmdb_id=x["id"], title=x.get("title") or x.get("original_title"), year=yr, date=x.get("release_date") or "",
+            own = by_tmdb.get((x["id"], kind))
+            if own is None and kind == "movie":
+                own = by_tmdb_id.get(x["id"])
+            if own is None:
+                own = yr and (by_ty.get((fold(x.get("title") or ""), yr)) or by_ty.get((fold(x.get("original_title") or ""), yr)))
+            g[(x["id"], kind)] = dict(tmdb_id=x["id"], title=x.get("title") or x.get("original_title"), year=yr, date=x.get("release_date") or "",
                               role=what or "", thumb=x.get("poster_path") and "https://image.tmdb.org/t/p/w92" + x["poster_path"],
                               film_id=own["id"] if own else None,
-                              poster=(own["custom_poster"] or own["poster"]) if own else None)
+                              poster=(own["custom_poster"] or own["poster"]) if own else None,
+                              media_type=kind, tmdb_kind=kind, url=tmdb_page_url(x["id"], kind))
         for x in credits.get("cast", []): add("Acting", x, (x.get("character") or "").strip())
         for x in credits.get("crew", []): add(x.get("department") or "Crew", x, x.get("job"))
         depts = sorted(groups, key=lambda d: (DEPT_ORDER.index(d) if d in DEPT_ORDER else 99, d))
@@ -1397,6 +1485,8 @@ def init(app, tmdb, posters_dir):
                     k = "L%d" % x["film_id"] if x["film_id"] else "T%d" % x["tmdb_id"]
                     it = items.setdefault(k, dict(film_id=x["film_id"], roles=[], xroles=[]))
                     it.setdefault("tmdb_id", x["tmdb_id"]); it.setdefault("title", x["title"]); it.setdefault("year", x["year"]); it.setdefault("date", x["date"])
+                    if x.get("url"): it.setdefault("url", x["url"])
+                    if x.get("media_type") or x.get("tmdb_kind"): it.setdefault("media_type", x.get("media_type") or x.get("tmdb_kind"))
                     lab = "Actor" if g["dept"] == "Acting" else (x["role"] or g["dept"])
                     for part in (lab.split(" / ") if g["dept"] != "Acting" else [lab]):
                         if part and part not in it["xroles"]: it["xroles"].append(part)
@@ -1458,7 +1548,7 @@ def init(app, tmdb, posters_dir):
                 adult = k[0] == "P" or anyadult
                 r = dict(key=k, film_id=None, title=it0.get("title") or "?", year=it0.get("year"), date=it0.get("date") or "", kind="scene" if k[0] == "P" else "film",
                          studio=it0.get("studio") or "", director="", genre="", country="", rating=None, watched=None, runtime=None,
-                         tmdb_id=it0.get("tmdb_id"), url=it0.get("url") or (f"https://www.themoviedb.org/movie/{it0.get('tmdb_id')}" if it0.get("tmdb_id") else None),
+                         tmdb_id=it0.get("tmdb_id"), url=it0.get("url") or tmdb_page_url(it0.get("tmdb_id"), it0.get("media_type") or it0.get("tmdb_kind")),
                          in_library=False, adult=adult)
             if r["year"] is None and (r["date"] or "")[:4].isdigit(): r["year"] = int(r["date"][:4])
             r["roles"] = []
@@ -1701,7 +1791,8 @@ def init(app, tmdb, posters_dir):
             else:
                 adult = k[0] == "P" or anyadult
                 r = dict(film_id=None, year=it.get("year"), date=it.get("date") or "", kind="scene" if k[0] == "P" else "film", studio=it.get("studio") or "",
-                         genre="", country="", rating=None, in_library=False, adult=adult, tmdb_id=it.get("tmdb_id") if k[0] == "T" else None)
+                         genre="", country="", rating=None, in_library=False, adult=adult, tmdb_id=it.get("tmdb_id") if k[0] == "T" else None,
+                         media_type=it.get("media_type") or it.get("tmdb_kind"), url=it.get("url"))
             if r["year"] is None and (r["date"] or "")[:4].isdigit(): r["year"] = int(r["date"][:4])
             labs = [RLBL_CO.get(ro, ro) for ro in it["roles"]] or it["xroles"] or ["Credited"]
             if adult and r["kind"] == "scene": labs = ["Performer" if x == "Actor" else x for x in labs]
@@ -1770,40 +1861,51 @@ def init(app, tmdb, posters_dir):
 
     # ---------- Stable / Muses / Harem over the whole filmography: TMDB casts of films not in the library (cached) ----------
     CAST_SCHEMA = "CREATE TABLE IF NOT EXISTS tmdb_movie_cast(tmdb_id INTEGER PRIMARY KEY, cast_json TEXT, at REAL)"
+    CAST_KIND_SCHEMA = "CREATE TABLE IF NOT EXISTS tmdb_title_cast(tmdb_id INTEGER NOT NULL, tmdb_kind TEXT NOT NULL DEFAULT 'movie', cast_json TEXT, at REAL, PRIMARY KEY(tmdb_id, tmdb_kind))"
+    def ensure_title_cast(c):
+        c.execute(CAST_SCHEMA); c.execute(CAST_KIND_SCHEMA)
+        if not c.execute("SELECT 1 FROM tmdb_title_cast LIMIT 1").fetchone():
+            c.execute("INSERT OR IGNORE INTO tmdb_title_cast(tmdb_id, tmdb_kind, cast_json, at) SELECT tmdb_id, 'movie', cast_json, at FROM tmdb_movie_cast")
+            c.commit()
     SJOB = {}   # canonical person id -> progress of the on-demand job
     SALL = {}   # (person id, data key, cached casts) -> result
 
     def stable_all_films(c, row):
         """(films for stable_tiers incl. not-in-library TMDB titles with a cached cast, TMDB ids still missing a cast, e)."""
         rows, _, e, F, xrows = person_rows(c, row)
-        need = sorted({r["tmdb_id"] for r in rows + xrows if not r["in_library"] and r.get("tmdb_id") and stable_want(r["roles"], "all")})
+        need = sorted({(r["tmdb_id"], tmdb_title_kind(item=r)) for r in rows + xrows if not r["in_library"] and r.get("tmdb_id") and stable_want(r["roles"], "all")})
         cache = {}
+        ensure_title_cast(c)
         for i in range(0, len(need), 500):
             ch = need[i:i + 500]
-            for t, cj in c.execute(f"SELECT tmdb_id, cast_json FROM tmdb_movie_cast WHERE tmdb_id IN ({','.join('?' * len(ch))})", ch):
-                try: cache[t] = json.loads(cj or "[]")
-                except Exception: cache[t] = []
+            for t, knd, cj in c.execute(
+                f"SELECT tmdb_id, tmdb_kind, cast_json FROM tmdb_title_cast WHERE (tmdb_id, tmdb_kind) IN ({','.join('(?,?)' * len(ch))})",
+                [v for pair in ch for v in pair]):
+                try: cache[(t, tmdb_title_kind(knd))] = json.loads(cj or "[]")
+                except Exception: cache[(t, tmdb_title_kind(knd))] = []
         films = []
         for r in rows + [x for x in xrows]:
             if r["in_library"]: films.append(dict(r, cast=(F[r["film_id"]]["cast_"] or "").split(",")))
-            elif r.get("tmdb_id") in cache: films.append(dict(r, cast=[x[0] for x in cache[r["tmdb_id"]]], tmdb_cast=cache[r["tmdb_id"]]))
-        return films, [t for t in need if t not in cache], e
+            else:
+                ck = (r.get("tmdb_id"), tmdb_title_kind(item=r))
+                if ck in cache: films.append(dict(r, cast=[x[0] for x in cache[ck]], tmdb_cast=cache[ck]))
+        return films, [pair for pair in need if pair not in cache], e
 
     def stable_all_job(pid):
         st = SJOB[pid] = dict(running=True, phase="filmography", done=0, total=0, errors=0, error=None, started=time.time())
         def work():
             c = C()
             try:
-                c.execute(CAST_SCHEMA)
+                ensure_title_cast(c)
                 row = co_canon(c, pid); key = key_of(c)
                 if not key: st["error"] = "No TMDB key is set, so only library titles can be counted."; return
                 if not row["credits_json"] and (row["tmdb_person_id"] or 0) > 0:
                     fetch(c, key, row, keep_profile=(row["source"] or "") in ("tpdb", "manual")); CO_ITEMS.clear(); row = co_canon(c, pid)
                 films, missing, e = stable_all_films(c, row)
                 st.update(phase="casts", total=len(missing), done=0)
-                for t in missing:
+                for t, kind in missing:
                     time.sleep(0.25)  # ~4 TMDB requests a second
-                    try: m = tmdb(f"movie/{t}/credits", key)
+                    try: m = load_title_credits(tmdb, key, t, kind)
                     except urllib.error.HTTPError as ex:
                         if ex.code == 401: st["error"] = "TMDB rejected the API key (401)."; return
                         if ex.code != 404:
@@ -1816,7 +1918,7 @@ def init(app, tmdb, posters_dir):
                         if st["errors"] > 20: st["error"] = "Could not reach TMDB."; return
                         continue
                     cast = [[x.get("name"), x.get("id")] for x in (m.get("cast") or [])[:10] if x.get("name")]  # top-billed 10, like library titles
-                    c.execute("INSERT OR REPLACE INTO tmdb_movie_cast(tmdb_id, cast_json, at) VALUES(?,?,?)", (t, json.dumps(cast), time.time())); c.commit()
+                    c.execute("INSERT OR REPLACE INTO tmdb_title_cast(tmdb_id, tmdb_kind, cast_json, at) VALUES(?,?,?,?)", (t, kind, json.dumps(cast), time.time())); c.commit()
                     st["done"] += 1
                 # performers left out only for lacking a birth date (adult titles): TMDB person birthday, else Wikidata/Wikipedia
                 films, missing, e = stable_all_films(c, row); mb = {}
@@ -1858,7 +1960,7 @@ def init(app, tmdb, posters_dir):
     @app.get("/api/people/<int:pid>/stable_all")
     def person_stable_all(pid):
         """Stable / Muses / Harem over the person's whole filmography (library + TMDB). Loads missing casts on demand."""
-        c = C(); c.execute(CAST_SCHEMA); row = co_canon(c, pid)
+        c = C(); ensure_title_cast(c); row = co_canon(c, pid)
         if not row: return jsonify(error="Unknown person"), 404
         st = SJOB.get(row["id"])
         if st and st.get("running"):
@@ -1868,7 +1970,7 @@ def init(app, tmdb, posters_dir):
         if not fresh and (missing or (not row["credits_json"] and (row["tmdb_person_id"] or 0) > 0) or request.args.get("refresh")):
             st = stable_all_job(row["id"])
             return jsonify(status="loading", phase=st["phase"], done=0, total=0)
-        dk = co_dkey(c); n_cast = c.execute("SELECT COUNT(*) FROM tmdb_movie_cast").fetchone()[0]
+        dk = co_dkey(c); n_cast = c.execute("SELECT COUNT(*) FROM tmdb_title_cast").fetchone()[0]
         ck = (row["id"], dk, n_cast); hit = SALL.get(ck)
         if hit is None:
             mb = {}

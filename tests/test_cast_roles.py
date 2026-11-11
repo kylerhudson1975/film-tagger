@@ -259,5 +259,87 @@ class CastRoles(unittest.TestCase):
         f2 = self.cl.get(f"/api/films/{locked}").get_json()
         self.assertFalse(f2.get("cast_"))  # hand-locked empty cast untouched
 
+    def test_tmdb_character_from_roles(self):
+        self.assertEqual(A.tmdb_character({"character": "Dean Corso"}), "Dean Corso")
+        self.assertEqual(A.tmdb_character({
+            "name": "Tim Curry",
+            "roles": [{"character": "Pennywise"}, {"character": "Pennywise", "episode_count": 2}],
+        }), "Pennywise")
+        self.assertEqual(A.tmdb_character({
+            "name": "Someone",
+            "roles": [{"character": "A"}, {"character": "B"}],
+        }), "A / B")
+
+    def test_apply_tv_aggregate_credits_fills_hover_roles(self):
+        c = db.connect()
+        fid = c.execute(
+            "INSERT INTO films(title, year, added_at, updated_at) VALUES(?,?,?,?)",
+            ("Storm of the Century", 1999, time.time(), time.time())).lastrowid
+        itid = c.execute(
+            "INSERT INTO films(title, year, added_at, updated_at) VALUES(?,?,?,?)",
+            ("IT", 1990, time.time(), time.time())).lastrowid
+        storm = {
+            "id": 5028, "name": "Storm of the Century", "first_air_date": "1999-02-14",
+            "episode_run_time": [90], "overview": "A storm arrives.",
+            "aggregate_credits": {
+                "cast": [
+                    {"id": 101, "name": "Colm Feore", "roles": [{"character": "Andre Linoge", "episode_count": 3}]},
+                    {"id": 102, "name": "Tim Daly", "roles": [{"character": "Mike Anderson"}]},
+                ],
+                "crew": [{"name": "Craig R. Baxley", "jobs": [{"job": "Director"}]}],
+            },
+        }
+        it = {
+            "id": 19614, "name": "It", "first_air_date": "1990-11-18",
+            "aggregate_credits": {
+                "cast": [
+                    {"id": 201, "name": "Tim Curry", "roles": [{"character": "Pennywise"}]},
+                    {"id": 202, "name": "Richard Thomas", "roles": [{"character": "Bill Denbrough"}]},
+                ],
+            },
+            "created_by": [{"name": "Tommy Lee Wallace"}],
+        }
+        A.apply_movie(c, fid, storm, tmdb_kind="tv")
+        A.apply_movie(c, itid, it, tmdb_kind="tv")
+        c.commit(); c.close()
+        s = self.cl.get(f"/api/films/{fid}").get_json()
+        self.assertEqual(s["tmdb_kind"], "tv")
+        self.assertEqual(s["tmdb_id"], 5028)
+        self.assertIn("Colm Feore", s["cast_"] or "")
+        self.assertEqual(s["cast_roles"].get("Colm Feore"), "Andre Linoge")
+        self.assertEqual(s["director"], "Craig R. Baxley")
+        i = self.cl.get(f"/api/films/{itid}").get_json()
+        self.assertEqual(i["cast_roles"].get("Tim Curry"), "Pennywise")
+        self.assertIn("Tim Curry", i["cast_"] or "")
+        self.assertEqual(i["director"], "Tommy Lee Wallace")  # created_by fallback when no Director job
+
+    def test_tv_cast_roles_hand_lock_and_requeue(self):
+        c = db.connect()
+        tv = c.execute(
+            "INSERT INTO films(title, year, tmdb_id, tmdb_kind, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,1,?,?)",
+            ("IT", 1990, 19614, "tv", time.time(), time.time())).lastrowid
+        locked = c.execute(
+            "INSERT INTO films(title, year, tmdb_id, tmdb_kind, cast_roles, edited_fields, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,?,?,1,?,?)",
+            ("Salem's Lot", 1979, 16118, "tv", json.dumps({"David Soul": "Keep Me"}),
+             json.dumps(["cast_roles"]), time.time(), time.time())).lastrowid
+        movie = c.execute(
+            "INSERT INTO films(title, year, tmdb_id, tmdb_kind, cast_roles_checked, added_at, updated_at) VALUES(?,?,?,?,1,?,?)",
+            ("The Ninth Gate", 1999, 481, "movie", time.time(), time.time())).lastrowid
+        for fid, path in ((tv, "/tmp/it.mkv"), (locked, "/tmp/salem.mkv"), (movie, "/tmp/ninth2.mkv")):
+            c.execute("INSERT INTO files(film_id, path, size) VALUES(?,?,?)", (fid, path, 10))
+        n = A.requeue_tv_cast_roles(c); c.commit()
+        flags = {r[0]: r[1] for r in c.execute(
+            "SELECT id, cast_roles_checked FROM films WHERE id IN (?,?,?)", (tv, locked, movie))}
+        c.close()
+        self.assertGreaterEqual(n, 1)
+        self.assertIsNone(flags[tv])
+        self.assertEqual(flags[locked], 1)  # hand-locked roles not requeued
+        self.assertEqual(flags[movie], 1)   # movies left alone
+
+    def test_tmdb_page_url(self):
+        self.assertEqual(A.tmdb_page_url(19614, "tv"), "https://www.themoviedb.org/tv/19614")
+        self.assertEqual(A.tmdb_page_url(481, "movie"), "https://www.themoviedb.org/movie/481")
+        self.assertEqual(A.tmdb_page_url(481, None), "https://www.themoviedb.org/movie/481")
+
 if __name__ == "__main__":
     unittest.main()
