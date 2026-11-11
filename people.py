@@ -2046,7 +2046,7 @@ def init(app, tmdb, posters_dir):
         for i in range(0, len(need), 500):
             ch = need[i:i + 500]
             for t, knd, cj in c.execute(
-                f"SELECT tmdb_id, tmdb_kind, cast_json FROM tmdb_title_cast WHERE (tmdb_id, tmdb_kind) IN ({','.join('(?,?)' * len(ch))})",
+                f"SELECT tmdb_id, tmdb_kind, cast_json FROM tmdb_title_cast WHERE (tmdb_id, tmdb_kind) IN ({','.join(['(?,?)'] * len(ch))})",
                 [v for pair in ch for v in pair]):
                 try: cache[(t, tmdb_title_kind(knd))] = json.loads(cj or "[]")
                 except Exception: cache[(t, tmdb_title_kind(knd))] = []

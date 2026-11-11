@@ -7,7 +7,65 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.4.0
+Critic scores, IMDb-checked years, TV miniseries as films, person renames, a photo darkroom for galleries, and performer galleries — everything since v1.3.5.
+
+<p align="center"><img src="docs/screenshots/23-metacritic-imdb-id.png" alt="Edit window for Alien (1979) with Metascore 89, User score 8.9 and IMDb id tt0078748" width="760"></p>
+
+### ⭐ Metacritic scores
+- **Metascore and User score** on every film in your *Movies* library, right under the rating in the Edit window, colour-coded green / yellow / red like Metacritic. Each score links to its critic or user reviews page.
+- Scores are looked up quietly in the background, cached for 30 days and rate-limited. A festival-vs-theatrical year one off still matches when the title is exact and unique; a cached "not found" is retried after a day.
+- Wrong match? Paste the right **Metacritic slug or URL** in the Edit window. Classic Porn and Porn Scenes are never looked up.
+
+### 🎬 Release years checked against IMDb
+- Film Tagger downloads IMDb's free, non-commercial **title.basics** dataset (about 2.5 million titles) into its own `imdb_years.db` next to your library and refreshes it weekly. Your library database is not touched by the download.
+- **New TMDB matches** get the IMDb year automatically when TMDB is off by one (a year you typed by hand is never changed).
+- **Library & Settings → Scanning & Matching → Check years against IMDb** lists existing films whose year is off. A **year fix** is only offered when the film already has *its own* IMDb id, the IMDb title matches and the gap is at most one year, so a different film that just shares a title is never "fixed".
+- Everything else goes under **IMDb link may be the wrong film**: listed for you to look at, with no Apply checkbox.
+- **Apply selected** first shows a preview of every rename: the film folder, the video and its subtitle sidecars (`.srt`, `.en.srt`, `.forced.srt` and other language tags) all move to the standard `Title (Year)` name. If a rename can't be done (file in use, name taken), that film is skipped and its year stays as it was. Every move is logged to `_filmtagger_renames.csv`. *Save list to Desktop CSV* exports the list.
+
+<p align="center"><img src="docs/screenshots/24-imdb-year-check.png" alt="Check years against IMDb in Library and Settings, showing the wrong-link list for the Movies library" width="900"></p>
+
+### 🆔 IMDb id on every film
+- The Edit window has an **IMDb id** field in every library, validated (`tt` + digits, or paste any imdb.com link) and shown as a link to the IMDb page.
+- New TMDB matches store the IMDb id only when the TMDB match is solid and IMDb's own title agrees — never from a title-only search. **Fill missing IMDb ids** (Library & Settings) backfills the rest of the library in the background.
+- An id you type by hand is locked: TMDB refreshes and backfills never overwrite it.
+
+### 📺 TV movies and miniseries are films
+- IMDb and TMDB file made-for-TV films and miniseries under TV, but in Film Tagger they are films: *Jesus of Nazareth*, *Storm of the Century*, *IT* (1990), *Salem's Lot* (1979) and friends now match properly.
+- When there's no solid TMDB movie match, Film Tagger tries TMDB's TV search, keeps the title a film, and remembers which side it came from so later fetches use the right source. The IMDb dataset includes TV movies, miniseries and specials, with theatrical movies preferred when a title is ambiguous.
+- **Character names on hover** work for miniseries too (from TMDB's full series credits), and person pages link those titles to the right TMDB page.
+
+<p align="center"><img src="docs/screenshots/25-miniseries-character-hover.png" alt="Storm of the Century (1999) in the Edit window, hovering Colm Feore shows 'as Andre Linoge'" width="760"></p>
+
+### 👤 Rename a person
+- **Edit profile** now has a **Name (primary)** field, and every alias has a **make primary** link. The old name becomes an alias automatically, film credits follow the rename, and searching the old name still finds the person.
+- If the new name already belongs to someone else, Film Tagger stops and suggests **Merge** instead.
+
+<p align="center"><img src="docs/screenshots/26-person-edit-name.png" alt="Colm Feore's person page with Edit profile open, showing the Name (primary) field" width="900"></p>
+
+### 🎨 Photo editing in galleries
+- Open any gallery photo and click **Edit** for **Contrast**, **Brightness**, **Gamma** and **Sharpen** sliders with a live preview, plus **Reset**, **Cancel** and **Save**. Great for faded, hazy '70s stills.
+- The first save copies the original into an `_originals` folder next to the photo (never shown in the gallery, never deleted), so **Revert to original** can always undo your edits.
+
+<p align="center"><img src="docs/screenshots/27-gallery-photo-edit.png" alt="Edit photo window with contrast, brightness, gamma and sharpen sliders on a public-domain NASA photo" width="900"></p>
+<p align="center"><img src="docs/screenshots/28-gallery-before-after.png" alt="Before and after: a hazy photo, then the same photo with more contrast and sharpening" width="900"></p>
+
+### 📷 Performer galleries
+- Link a **photo folder to a person** (Edit profile → Gallery folder, or automatically by name or alias). Their Person Profile shows a **Gallery** grid with a full-screen viewer (zoom, arrow keys).
+- **Hide from gallery** on any thumbnail or in the viewer hides a photo without moving or deleting the file; *N hidden, show* lets you see and unhide them.
+
+### 🛠️ More improvements and fixes
+- **Links are readable everywhere**, including visited links, in the app's light blue.
+- **Ethnicity:** Wikidata ancestry labels (for example Irish Americans) fold into the main Ethnicity groups; people with two or more main groups go to *Needs ethnicity* with the Wikidata listings shown. The Ethnicity field is a real dropdown picker.
+- **Soft match:** a scene whose video was replaced or re-encoded outside the app, but already has its standard name, is relinked on Save, Load or Fix names.
+- **Find Gallery:** full-size images straight from imx.to, pixhost, imagetwist and vipr.im thumbs; clearer messages for Cloudflare-protected hosts and unreadable page formats; better TeamSkeet-network searches.
+- **Library picker** reopens at the top, and picking a library scrolls the grid to the first title.
+- **Cast roles:** fixes for NFO files that list crew jobs, Jr. names, and full TMDB cast for hover tips; empty cast is filled library-wide.
+- **Release date** sorts newest first; **Delete files** works on a multi-selection.
+- **Installer:** Pillow is bundled for photo editing, every program module is included, and the build stops if the app's page has a script error.
 
 ## What's new in v1.3.5
 Jewish ethnicity, safer Delete files, and cast character names on hover — everything since v1.3.4.
@@ -291,6 +349,8 @@ In **Library & Settings → Related studios**, link a sub-label to its parent st
 | 📷 **Galleries** | `<video> - GALLERY` folders, From Gallery posters, Find Gallery search and gallery-dl downloads |
 | 🧠 **AI** | Optional smart tagging and questions with any chatbot (no key), local Ollama / LM Studio, or any OpenAI-compatible API |
 | 🖼️ **Smart crop** | On-device face detection centres 2:3 posters on the people |
+| ⭐ **Scores & years** | Metacritic Metascore and User score on Movies, release years checked against IMDb, an IMDb id on every film |
+| 🎨 **Photo editing** | Contrast, brightness, gamma and sharpen for gallery photos, with the original always kept |
 | 🔒 **Private** | One local SQLite file, localhost only, no account or telemetry |
 
 ## Quick start
@@ -355,10 +415,15 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Complete scene lists:** a performer's ThePornDB scenes are loaded page by page in the background (with progress) and cached, so performers with thousands of scenes show the true total. All your own scenes for that person are listed first as **In library**, linked by name, ThePornDB alias or scene id; the rest show 200 at a time with *Load more*. Scenes have their own *Only scenes I have* toggle.
 - **Re-link** a person to a different ThePornDB performer or TMDB person by id or URL, or go back to automatic matching.
 - **+ Person** adds someone by hand (name, photo, bio, links), for people neither service knows.
+- **Rename a person:** *Edit profile → Name (primary)* or *make primary* on an alias; the old name is kept as an alias and credits follow.
+- **Performer galleries:** link a photo folder to a person for a Gallery grid and viewer on their profile; *Hide from gallery* hides a photo without touching the file, and **Edit** adjusts contrast, brightness, gamma and sharpen (original kept in `_originals`).
 - **Crop photo** frames a person's photo in a 2:3 portrait box (drag and zoom) without losing the original; **Reset crop** undoes it.
 
 ### Metadata and AI
 - **Optional TMDB metadata:** with a free key it fetches posters, cast, plot, runtime, genres, studios and countries for one film or the whole library, and fills in MPAA ratings. Your own poster art (upload, drag-and-drop or URL) is never replaced.
+- **Metacritic:** Metascore and User score for Movies, cached for 30 days, linked to the critic and user reviews; a slug field fixes a wrong match.
+- **IMDb:** an IMDb id field on every film (hand-typed ids are locked), *Fill missing IMDb ids*, and *Check years against IMDb* with safe ±1 year fixes on a film's own IMDb id and a preview of every folder, video and subtitle rename.
+- **TV movies and miniseries** are catalogued as films, with TMDB's TV data used when there's no movie match.
 - **Smart tagging (AI):** queue films and let an AI suggest tags and a primary genre. Every suggestion waits for your approval. Two ways:
   - **No key needed:** copy the ready-made prompt into any AI chatbot and paste back its JSON reply.
   - **Bring your own key:** connect any OpenAI-compatible API (OpenAI, OpenRouter, xAI, or local Ollama / LM Studio) for one-click "Tag now".
@@ -400,6 +465,30 @@ Screenshots captured and censored by the author from his own Porn Scenes library
 ![Freshly downloaded gallery](docs/screenshots/scenes-08-gallery-done.jpg)
 
 ## Screenshots
+New in v1.4.0, captured from the author's own Film Tagger, *Movies* library only (no adult titles). The photo-editing shots use public-domain NASA photos (Apollo 11, Apollo 8, Mars), with a haze added to show what the sliders do.
+
+Metacritic scores and the IMDb id field (Alien, 1979):
+
+![Metacritic scores and IMDb id](docs/screenshots/23-metacritic-imdb-id.png)
+
+Check years against IMDb:
+
+![Check years against IMDb](docs/screenshots/24-imdb-year-check.png)
+
+A miniseries as a film, with the character on hover (Storm of the Century):
+
+![Miniseries character hover](docs/screenshots/25-miniseries-character-hover.png)
+
+Edit profile with the Name field:
+
+![Rename a person](docs/screenshots/26-person-edit-name.png)
+
+Gallery photo editing, and before / after:
+
+![Edit photo](docs/screenshots/27-gallery-photo-edit.png)
+
+![Before and after](docs/screenshots/28-gallery-before-after.png)
+
 Dashboard (v1.3.0), from a demo library of made-up mainstream titles and names:
 
 ![Dashboard overview](docs/screenshots/19-dashboard.png)
@@ -494,12 +583,14 @@ REST equivalents: `GET /api/queue/export`, `POST /api/queue/import`, `GET /api/p
 - Network requests only happen when **you** use them:
   - TMDB lookups, if you add a TMDB key;
   - ThePornDB lookups for Scenes libraries and adult performers, if you add a ThePornDB token;
+  - Metacritic, for Metascore and User score on films in your *Movies* library (title and year only);
+  - IMDb's public dataset download (`datasets.imdbws.com`), about once a week, for the year check;
   - ViperGirls (guest search) and the image hosts of a set, only when you use Find Gallery or click Download;
   - your chosen AI provider, if you set one up. For Smart tagging only the film's title, year, director, file path, a short plot and its existing tags are sent. For *Ask a question*, the question, a description of the database columns and the first rows of the answer are sent. With a local model (Ollama, LM Studio) nothing leaves your computer.
 - API keys are stored only in your local database.
 
 ## Tech
-Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed; MKVToolNix's mkvpropedit, if installed, writes MKV titles for hard-matched scenes and for regular movies as Title (Year)). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
+Python 3 + Flask + SQLite, with a single-page HTML/JS front end. There is no build step. Dependencies are in `requirements.txt` (ffprobe is used for resolution and subtitle detection if installed; MKVToolNix's mkvpropedit, if installed, writes MKV titles for hard-matched scenes and for regular movies as Title (Year)). Gallery photo editing uses [Pillow](https://python-pillow.org) (bundled with the Windows installer). Find Gallery runs [gallery-dl](https://github.com/mikf/gallery-dl) as a separate program; see [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## Release history
 <details><summary>Older release notes (v1.0.43 to v1.1.0)</summary>

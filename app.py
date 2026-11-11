@@ -11,7 +11,7 @@ import mkvtag
 import metacritic as mcmod
 import imdbyears as imdbmod
 
-APP_VERSION = "1.3.5"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.4.0"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")

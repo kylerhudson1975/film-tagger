@@ -1,5 +1,5 @@
 """Stable / Muses / Harem 'All films': the director's TMDB filmography plus the cast of each film not in the library
-(TMDB movie credits, top 10, cached in tmdb_movie_cast), counted as 'N total (M in library)'; the age rule still applies.
+(TMDB movie credits, top 10, cached in tmdb_title_cast), counted as 'N total (M in library)'; the age rule still applies.
 TMDB is mocked (no network). Run: python tests/test_stable_all.py"""
 import os, sys, json, tempfile, time, io, urllib.request
 os.environ["FILMTAGGER_DB"] = os.path.join(tempfile.mkdtemp(), "films.db")
@@ -47,7 +47,7 @@ st = r["stable"]; got = {x["name"]: (x["n"], x["lib"], x["tier"]) for x in st["d
 assert got == {"Bill Test": (8, 3, "harem"), "Owen Test": (5, 4, "muses"), "Anjelica Test": (4, 1, "stable")}, got
 assert st["films"]["directed"] == 9 and st["films_lib"]["directed"] == 4 and r["missing_casts"] == 0 and r["has_filmography"]
 assert sorted(int(u.split("/movie/")[1].split("/")[0]) for u in calls) == [104, 105, 106, 107, 108]
-assert c.execute("SELECT COUNT(*) FROM tmdb_movie_cast").fetchone()[0] == 5
+assert c.execute("SELECT COUNT(*) FROM tmdb_title_cast").fetchone()[0] == 5
 n = len(calls); people_SJOB_cleared = True
 r2 = cl.get(f"/api/people/{wes}/stable_all?refresh=1").json   # cached casts: no new TMDB calls even on refresh
 for _ in range(50):
