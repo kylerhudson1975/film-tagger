@@ -34,6 +34,15 @@ FAKE = [
     ("tt8765432", "movie", "All Grown Up", "All Grown Up", 2018),
     ("tt0118662", "movie", "Ayn Rand: A Sense of Life", "Ayn Rand: A Sense of Life", 1996),
     ("tt0131867", "movie", "Baby Sister", "Baby Sister", 1971),
+    ("tt0085207", "tvMovie", "Baby Sister", "Baby Sister", 1983),
+    ("tt0078882", "tvMiniSeries", "Salem's Lot", "Salem's Lot", 1979),
+    ("tt10245072", "movie", "Salem's Lot", "Salem's Lot", 2024),
+    ("tt0099864", "tvMiniSeries", "It", "It", 1990),
+    ("tt0132246", "tvMiniSeries", "Storm of the Century", "Storm of the Century", 1999),
+    ("tt0076250", "tvMiniSeries", "Jesus of Nazareth", "Jesus of Nazareth", 1977),
+    ("tt0096616", "tvMiniSeries", "Lonesome Dove", "Lonesome Dove", 1989),
+    {"tconst": "tt8888888", "titleType": "tvSeries", "primaryTitle": "Short Run Event", "originalTitle": "Short Run Event", "startYear": 1990, "endYear": 1990},
+    {"tconst": "tt8888889", "titleType": "tvSeries", "primaryTitle": "It", "originalTitle": "It", "startYear": 1990, "endYear": 2005},
 ]
 
 
@@ -53,6 +62,15 @@ class Helpers(unittest.TestCase):
         self.assertEqual(iy.title_key("Spider-Man"), iy.title_key("Spider Man"))
         self.assertEqual(iy.title_key("Les Démons"), "les demons")
 
+    def test_short_tv_series_import_filter(self):
+        self.assertTrue(iy.include_title_type("tvMiniSeries", 1990, 1990))
+        self.assertTrue(iy.include_title_type("tvSpecial", 1995, None))
+        self.assertTrue(iy.include_title_type("tvSeries", 1990, 1990))
+        self.assertTrue(iy.include_title_type("tvSeries", 1989, 1990))
+        self.assertFalse(iy.include_title_type("tvSeries", 1990, 2005))
+        self.assertFalse(iy.include_title_type("tvSeries", 1990, None))
+        self.assertFalse(iy.include_title_type("tvEpisode", 1990, 1990))
+
     def test_adjust_release_date(self):
         self.assertEqual(iy.adjust_release_date("2010-06-03", 2010), "2010-06-03")
         self.assertEqual(iy.adjust_release_date("2010-06-03", 2009), "2009")
@@ -68,7 +86,7 @@ class FakeDataset(unittest.TestCase):
         self.assertTrue(st["ready"])
         self.assertEqual(st["source_date"], "2026-11-10")
         # tvSeries and \N year are dropped; 10 usable rows in FAKE
-        self.assertEqual(st["rows"], 16)
+        self.assertEqual(st["rows"], 24)
         self.assertFalse(st["stale"])
         self.assertIsNone(iy.year_for("tt0000001"))
         self.assertIsNone(iy.year_for("tt0999999"))
@@ -111,6 +129,30 @@ class FakeDataset(unittest.TestCase):
         hit = iy.find_by_title("Video Only Title")
         self.assertEqual(hit["tconst"], "tt4444444")
         self.assertEqual(hit["title_type"], "video")
+
+    def test_miniseries_used_when_movie_year_is_far_off(self):
+        hit = iy.find_by_title("Salem's Lot", year=1979)
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit["tconst"], "tt0078882")
+        self.assertEqual(hit["title_type"], "tvMiniSeries")
+        self.assertEqual(hit["year"], 1979)
+        # The 2024 theatrical remake is still preferred when the year is close to 2024
+        hit = iy.find_by_title("Salem's Lot", year=2024)
+        self.assertEqual(hit["tconst"], "tt10245072")
+        self.assertEqual(hit["title_type"], "movie")
+
+    def test_it_1990_and_lonesome_dove_resolve_as_miniseries(self):
+        hit = iy.find_by_title("It", year=1990)
+        self.assertEqual(hit["tconst"], "tt0099864")
+        self.assertEqual(hit["title_type"], "tvMiniSeries")
+        hit = iy.find_by_title("Lonesome Dove", year=1989)
+        self.assertEqual(hit["tconst"], "tt0096616")
+        self.assertEqual(iy.year_for("tt8888889"), None)  # long-running series not imported
+        self.assertEqual(iy.year_for("tt8888888"), 1990)
+
+    def test_tvmovie_is_not_a_type_mismatch(self):
+        hit = iy.lookup("tt0085207")
+        self.assertFalse(iy.type_mismatch(hit, is_classic=False))
 
 
 class LibraryTests(unittest.TestCase):
@@ -277,12 +319,15 @@ class LibraryTests(unittest.TestCase):
         d = iy.classify_films(self.c)
         fixes = {r["film_id"]: r for r in d["year_fixes"]}
         wrong = {r["film_id"]: r for r in d["wrong_links"]}
-        for fid, year, imdb_year in ((agu, 1995, 2018), (ayn, 1998, 1996), (baby, 1983, 1971)):
+        for fid, year, imdb_year in ((agu, 1995, 2018), (ayn, 1998, 1996)):
             self.assertNotIn(fid, fixes)
             self.assertIn(fid, wrong)
             self.assertEqual(wrong[fid]["year"], year)
             self.assertEqual(wrong[fid]["imdb_year"], imdb_year)
             self.assertEqual(wrong[fid]["section"], "wrong_link")
+        # 1983 now uniquely matches the 1983 tvMovie, so it is not a year typo or a wrong link
+        self.assertNotIn(baby, fixes)
+        self.assertNotIn(baby, wrong)
         # Titles actually match; the flag is the year gap / missing stored id, not a title typo
         self.assertEqual(wrong[agu]["library"], "Classic Porn")
         self.assertIn("no_stored_imdb_id", wrong[agu]["reason"])
@@ -376,7 +421,9 @@ class LibraryTests(unittest.TestCase):
             365262: {"id": 365262, "title": "Classic Example", "original_title": "Classic Example", "release_date": "2018-01-01", "imdb_id": "tt3333333"},
         }
         def fake_tmdb(path, key, **params):
-            self.assertIn("movie/", path)
+            if path.startswith("search/"):
+                return {"results": []}
+            self.assertTrue(path.startswith("movie/"), path)
             tid = int(path.split("/")[1])
             return movies[tid]
         path = os.path.join(_TMP, f"backfill-{self.uid}.csv")
@@ -400,6 +447,78 @@ class LibraryTests(unittest.TestCase):
         # Films with no TMDB id were logged, not title-searched
         self.assertEqual(by[self.gift]["reason"], "no_tmdb_id")
         self.assertEqual(A.JOB["matched"], 1)
+
+    def test_tvmovie_with_matching_title_and_year_is_not_wrong_link(self):
+        fid = self._film("Baby Sister", 1983, path=rf"D:\Movies\Baby Sister 2\bs2-{self.uid}.mkv",
+                         imdb_id="tt0085207")
+        self.c.commit()
+        d = iy.classify_films(self.c)
+        fixes = {r["film_id"]: r for r in d["year_fixes"]}
+        wrong = {r["film_id"]: r for r in d["wrong_links"]}
+        self.assertNotIn(fid, fixes)
+        self.assertNotIn(fid, wrong)
+
+    def test_stored_miniseries_id_plus_minus_one_is_a_year_fix(self):
+        fid = self._film("It", 1991, path=rf"D:\Movies\IT\it-{self.uid}.mkv", imdb_id="tt0099864")
+        self.c.commit()
+        d = iy.classify_films(self.c)
+        fixes = {r["film_id"]: r for r in d["year_fixes"]}
+        wrong = {r["film_id"]: r for r in d["wrong_links"]}
+        self.assertIn(fid, fixes)
+        self.assertEqual(fixes[fid]["imdb_year"], 1990)
+        self.assertEqual(fixes[fid]["title_type"], "tvMiniSeries")
+        self.assertNotIn(fid, wrong)
+
+    def test_apply_tv_payload_stores_kind_and_imdb_id(self):
+        fid = self._film("Storm of the Century", 1999, path=rf"D:\Movies\Storm\st-{self.uid}.mkv")
+        self.c.commit()
+        A.apply_movie(self.c, fid, {
+            "id": 14164, "name": "Storm of the Century", "original_name": "Storm of the Century",
+            "first_air_date": "1999-02-14", "media_type": "tv",
+            "external_ids": {"imdb_id": "tt0132246"},
+            "credits": {},
+        }, tmdb_kind="tv")
+        self.c.commit()
+        row = self.c.execute("SELECT imdb_id, tmdb_id, tmdb_kind, year, kind FROM films WHERE id=?", (fid,)).fetchone()
+        self.assertEqual(row["imdb_id"], "tt0132246")
+        self.assertEqual(row["tmdb_id"], 14164)
+        self.assertEqual(row["tmdb_kind"], "tv")
+        self.assertEqual(row["year"], 1999)
+        self.assertNotEqual(row["kind"], "scene")  # stays a film
+
+    def test_parse_tmdb_tv_url(self):
+        tid, kind = A.parse_tmdb_ref("https://www.themoviedb.org/tv/1448-it")
+        self.assertEqual(tid, 1448)
+        self.assertEqual(kind, "tv")
+        tid, kind = A.parse_tmdb_ref("https://www.themoviedb.org/movie/748230")
+        self.assertEqual(tid, 748230)
+        self.assertEqual(kind, "movie")
+
+    def test_backfill_searches_tv_when_no_tmdb_movie_id(self):
+        fid = self._film("Jesus of Nazareth", 1977, path=rf"D:\Movies\Jesus\jn-{self.uid}.mkv")
+        self.c.commit()
+        db.set_setting(self.c, "tmdb_key", "test-key")
+        self.c.commit()
+        def fake_tmdb(path, key, **params):
+            if path.startswith("search/movie"):
+                return {"results": []}
+            if path.startswith("search/tv"):
+                return {"results": [{"id": 2082, "name": "Jesus of Nazareth", "original_name": "Jesus of Nazareth", "first_air_date": "1977-03-27"}]}
+            if path.startswith("tv/2082"):
+                return {"id": 2082, "name": "Jesus of Nazareth", "original_name": "Jesus of Nazareth",
+                        "first_air_date": "1977-03-27", "external_ids": {"imdb_id": "tt0076250"}}
+            raise AssertionError("unexpected " + path)
+        path = os.path.join(_TMP, f"backfill-tv-{self.uid}.csv")
+        with mock.patch.object(A, "tmdb", side_effect=fake_tmdb):
+            rows = [r for r in A._imdb_id_backfill_candidates(self.c) if r["id"] == fid]
+            A.JOB.clear(); A.JOB.update(running=True, kind="imdbids", done=0, total=len(rows),
+                                        matched=0, skipped=0, errors=0, error=None, cancel=False)
+            A.run_imdb_id_job("test-key", rows, path)
+        row = self.c.execute("SELECT imdb_id, tmdb_id, tmdb_kind, year FROM films WHERE id=?", (fid,)).fetchone()
+        self.assertEqual(row["imdb_id"], "tt0076250")
+        self.assertEqual(row["tmdb_id"], 2082)
+        self.assertEqual(row["tmdb_kind"], "tv")
+        self.assertEqual(row["year"], 1977)  # year not changed
 
     def test_refresh_does_not_hit_network_when_not_stale(self):
         with mock.patch.object(iy, "_download", side_effect=AssertionError("should not download")):

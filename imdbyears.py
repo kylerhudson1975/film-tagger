@@ -2,7 +2,8 @@
 
 Downloads https://datasets.imdbws.com/title.basics.tsv.gz into the Film Tagger
 data folder and builds a separate, replaceable SQLite file (imdb_years.db) with
-tconst -> startYear for movie / tvMovie / video / short. Never writes films.db.
+tconst -> startYear for movie / tvMovie / video / short / tvMiniSeries / tvSpecial
+and short-run tvSeries. Never writes films.db.
 Refresh is background, non-blocking, and fails softly. Existing films are never
 changed by a scan; apply_fixes is the only path that updates years (via the app).
 """
@@ -11,12 +12,18 @@ import csv, gzip, io, os, re, sqlite3, threading, time, urllib.error, urllib.req
 import db
 
 BASICS_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
-TITLE_TYPES = frozenset(("movie", "tvMovie", "video", "short"))
+# Theatrical and made-for-TV "films" (a miniseries or short-run series can be a film in the library).
+FILM_TYPES = frozenset(("movie", "tvMovie", "video", "short"))
+TV_FILM_TYPES = frozenset(("tvMiniSeries", "tvSpecial", "tvSeries"))
+TITLE_TYPES = FILM_TYPES | TV_FILM_TYPES
 YEAR_FIX_DELTA = 1  # existing-film year fixes and new-movie auto-fix: only ±1
-SUSPECT_TYPES = frozenset(("tvMovie", "tvSeries", "tvEpisode", "tvSpecial", "tvMiniSeries", "tvShort"))
-# Prefer a theatrical movie over a TV movie, and never fall through to video/short
-# once a higher type group had any candidates (avoids "Amadeus" 1984 matching a 2018 video).
-TYPE_GROUPS = (("movie",), ("tvMovie",), ("video",), ("short",))
+# Only a single episode is treated as "probably the wrong kind of title" by itself.
+# tvMovie / tvMiniSeries / tvSpecial / short tvSeries are valid for a library film.
+SUSPECT_TYPES = frozenset(("tvEpisode",))
+# Prefer a theatrical movie over a TV movie, then video/short, and only then a
+# miniseries/special/short series — and never fall through once a higher group
+# had close-year candidates that could not be uniquely picked (Amadeus 1984).
+TYPE_GROUPS = (("movie",), ("tvMovie",), ("video",), ("short",), ("tvMiniSeries", "tvSpecial"), ("tvSeries",))
 STALE_SEC = 7 * 24 * 3600
 UA = "Film Tagger/1.0 (non-commercial; IMDb datasets.imdbws.com title.basics refresh)"
 SCHEMA = """
@@ -78,6 +85,25 @@ def parse_imdb_id(val):
     return None
 
 
+def is_short_tv_series(start_year, end_year):
+    """True when a tvSeries run is short enough to treat as a made-for-TV film (same year or ±1)."""
+    if end_year in (None, "", r"\N"):
+        return False
+    try:
+        return abs(int(end_year) - int(start_year)) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def include_title_type(typ, start_year, end_year=None):
+    typ = (typ or "").strip()
+    if typ not in TITLE_TYPES:
+        return False
+    if typ == "tvSeries":
+        return is_short_tv_series(start_year, end_year)
+    return True
+
+
 def imdb_id_from_tmdb(movie):
     """IMDb id from a TMDB movie payload (top-level imdb_id or external_ids). Never searches by title."""
     movie = movie or {}
@@ -86,7 +112,7 @@ def imdb_id_from_tmdb(movie):
 
 
 def _tmdb_year(movie):
-    d = str((movie or {}).get("release_date") or "")
+    d = str((movie or {}).get("release_date") or (movie or {}).get("first_air_date") or "")
     return int(d[:4]) if len(d) >= 4 and d[:4].isdigit() else None
 
 
@@ -125,7 +151,8 @@ def decide_imdb_id(film, movie=None, *, require_close_year=True):
     if movie is None:
         return {"action": "skip", "imdb_id": "", "reason": "tmdb_not_fetched"}
     if not titles_agree_names(film.get("title"), film.get("original_title"),
-                              movie.get("title"), movie.get("original_title")):
+                              movie.get("title") or movie.get("name"),
+                              movie.get("original_title") or movie.get("original_name")):
         return {"action": "skip", "imdb_id": "", "reason": "tmdb_title_mismatch"}
     if require_close_year:
         fy, ty = _film_year(film.get("year")), _tmdb_year(movie)
@@ -142,7 +169,7 @@ def decide_imdb_id(film, movie=None, *, require_close_year=True):
     return {"action": "fill", "imdb_id": iid, "reason": "tmdb_external_ids"}
 
 
-BACKFILL_CSV_FIELDS = ["film_id", "title", "year", "library", "tmdb_id", "imdb_id", "action", "reason"]
+BACKFILL_CSV_FIELDS = ["film_id", "title", "year", "library", "tmdb_id", "tmdb_kind", "imdb_id", "action", "reason"]
 
 
 def write_backfill_csv(path, rows):
@@ -319,12 +346,14 @@ def titles_agree(film_title, original, hit):
 
 
 def type_mismatch(hit, is_classic=False):
-    """True when the IMDb title is probably not this library film (TV movie, or a documentary vs Classic Porn)."""
+    """True when the IMDb title is probably not this library film (a single TV episode,
+    or a documentary vs Classic Porn). tvMovie / tvMiniSeries / tvSpecial / short
+    tvSeries are allowed — those are how IMDb files many made-for-TV films."""
     typ = (hit or {}).get("title_type") or ""
     genres = ((hit or {}).get("genres") or "").lower()
     if typ in SUSPECT_TYPES:
         return True
-    if is_classic and typ not in ("movie", "video"):
+    if is_classic and typ not in ("movie", "video", "tvMovie"):
         return True
     if is_classic and "documentary" in genres:
         return True
@@ -340,15 +369,21 @@ def _pick_match(rows, year=None):
         year = int(year) if year not in (None, "") else None
     except (TypeError, ValueError):
         year = None
+    delayed = None  # unique higher-type hit whose year is far off; used only if no closer lower-type match
     for group in TYPE_GROUPS:
         cand = [r for t in group for r in by_type.get(t, [])]
         if not cand:
             continue
         ids = {r["tconst"] for r in cand}
         if len(ids) == 1:
-            return _hit_from_row(cand[0], how="unique_title")
+            r = cand[0]
+            if year is None or abs(int(r["start_year"]) - year) <= YEAR_FIX_DELTA:
+                return _hit_from_row(r, how="unique_title")
+            if delayed is None:
+                delayed = _hit_from_row(r, how="unique_title")
+            continue
         if year is None:
-            return None  # ambiguous at this preferred type; do not fall through to video/short
+            return None  # ambiguous at this preferred type; do not fall through
         exact = [r for r in cand if int(r["start_year"]) == year]
         eids = {r["tconst"] for r in exact}
         if len(eids) == 1:
@@ -359,8 +394,11 @@ def _pick_match(rows, year=None):
         nids = {r["tconst"] for r in near}
         if len(nids) == 1:
             return _hit_from_row(near[0], how="year_plus_minus_1")
-        return None
-    return None
+        if len(nids) > 1:
+            return None
+        # This group only has far-off years: try miniseries/series before giving up
+        continue
+    return delayed
 
 
 def find_by_title(title, original=None, year=None):
@@ -698,14 +736,14 @@ def _iter_basics(path):
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
             typ = (row.get("titleType") or "").strip()
-            if typ not in TITLE_TYPES:
-                continue
             year = (row.get("startYear") or "").strip()
             if not year or year == "\\N":
                 continue
             try:
                 year = int(year)
             except ValueError:
+                continue
+            if not include_title_type(typ, year, (row.get("endYear") or "").strip()):
                 continue
             tconst = (row.get("tconst") or "").strip()
             if not tconst:
@@ -787,15 +825,15 @@ def build_from_rows(rows, dest=None, extra_meta=None):
         recs = []
         for row in rows:
             if not isinstance(row, dict):
-                tconst, typ, primary, original, year = row
-                row = {"tconst": tconst, "titleType": typ, "primaryTitle": primary, "originalTitle": original or primary, "startYear": year}
+                tconst, typ, primary, original, year, *rest = row
+                row = {"tconst": tconst, "titleType": typ, "primaryTitle": primary, "originalTitle": original or primary, "startYear": year, "endYear": (rest[0] if rest else None)}
             typ = (row.get("titleType") or "").strip()
-            if typ not in TITLE_TYPES:
-                continue
             year = row.get("startYear")
             if year in (None, "", "\\N"):
                 continue
             year = int(year)
+            if not include_title_type(typ, year, row.get("endYear")):
+                continue
             tconst = (row.get("tconst") or "").strip()
             pk = title_key(row.get("primaryTitle"))
             ok = title_key(row.get("originalTitle")) or None
@@ -822,34 +860,42 @@ def build_from_rows(rows, dest=None, extra_meta=None):
     return len(recs)
 
 
-def refresh(force=False):
-    """Download (if needed) and rebuild the lookup. Fail softly; keep the old db on error."""
+def refresh(force=False, reuse_gz=False):
+    """Download (if needed) and rebuild the lookup. Fail softly; keep the old db on error.
+    reuse_gz=True rebuilds from the copy already on disk (used when the import types change)."""
     with _LOCK:
         if STATE.get("running"):
             return status()
         _set_state(running=True, kind="imdbyears", phase="start", detail="", done=0, total=0, error=None, cancel=False, finished_at=None)
     try:
         st = status()
-        if not force and st.get("ready") and not st.get("stale"):
+        if not force and not reuse_gz and st.get("ready") and not st.get("stale"):
             _set_state(phase="idle", detail="Already up to date")
             return status()
         os.makedirs(db.user_data_dir(), exist_ok=True)
         dest_gz = gz_path()
         dest_db = db_path()
         info = None
-        try:
-            info = _download(dest_gz, last_modified=st.get("source_last_modified") if st.get("ready") and not force else None)
-        except Exception as e:
-            if os.path.exists(dest_gz) and (force or not st.get("ready") or st.get("stale")):
-                # Fall back to a previously downloaded gz
-                _set_state(detail=f"Download failed ({e}); rebuilding from the copy on disk")
-                info = {
-                    "last_modified": st.get("source_last_modified"),
-                    "source_date": st.get("source_date"),
-                    "download_error": str(e),
-                }
-            else:
-                raise
+        if reuse_gz and os.path.exists(dest_gz):
+            _set_state(detail="Rebuilding from the title.basics copy on disk")
+            info = {
+                "last_modified": st.get("source_last_modified"),
+                "source_date": st.get("source_date"),
+            }
+        else:
+            try:
+                info = _download(dest_gz, last_modified=st.get("source_last_modified") if st.get("ready") and not force else None)
+            except Exception as e:
+                if os.path.exists(dest_gz) and (force or not st.get("ready") or st.get("stale") or reuse_gz):
+                    # Fall back to a previously downloaded gz
+                    _set_state(detail=f"Download failed ({e}); rebuilding from the copy on disk")
+                    info = {
+                        "last_modified": st.get("source_last_modified"),
+                        "source_date": st.get("source_date"),
+                        "download_error": str(e),
+                    }
+                else:
+                    raise
         if info == "not_modified":
             c = _connect(create=False)
             if c is not None:
@@ -887,15 +933,15 @@ def refresh(force=False):
         _set_state(running=False, finished_at=time.time())
 
 
-def kick_refresh(force=False):
+def kick_refresh(force=False, reuse_gz=False):
     """Start a background refresh if needed (or if force). Returns True if a thread was started."""
     if STATE.get("running"):
         return False
-    if not force and not needs_refresh():
+    if not force and not reuse_gz and not needs_refresh():
         return False
     def run():
         try:
-            refresh(force=force)
+            refresh(force=force, reuse_gz=reuse_gz)
         except Exception:
             pass
     threading.Thread(target=run, daemon=True, name="imdb-years-refresh").start()

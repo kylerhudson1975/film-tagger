@@ -16,7 +16,7 @@ REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
 FILM_FIELDS = ["title", "year", "mpaa", "director", "cast_", "runtime", "plot", "poster", "rating", "watched", "notes", "storage", "tmdb_id", "original_title", "user_akas",
-               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id", "mc_slug", "imdb_id"]
+               "writers", "producers", "cinematographer", "composer", "country", "studio", "resolution", "primary_genre", "aznude_status", "subtitles", "release_date", "tpdb_id", "mc_slug", "imdb_id", "tmdb_kind"]
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -565,7 +565,7 @@ def _fp_restore_value(v):
     return v, None
 
 def _fp_movie(c, fid):
-    r = c.execute("SELECT id, kind, tmdb_id FROM films WHERE id=?", (fid,)).fetchone()
+    r = c.execute("SELECT id, kind, tmdb_id, tmdb_kind FROM films WHERE id=?", (fid,)).fetchone()
     if not r: return None, (jsonify(error="not found"), 404)
     if r["kind"] == "scene": return None, (jsonify(error="Find Posters is only for movies, not scenes"), 400)
     return r, None
@@ -587,7 +587,7 @@ def findposters(fid):
     if not r["tmdb_id"]: return jsonify(matched=False, error="Not matched on TMDB", posters=[], can_restore=can_restore)
     key = db.get_setting(c, "tmdb_key", "")
     if not key: return jsonify(error="No TMDB API key set in Settings"), 400
-    try: m = tmdb(f"movie/{r['tmdb_id']}/images", key, include_image_language=FP_LANGS)
+    try: m = tmdb(tmdb_item_path(r["tmdb_id"], r["tmdb_kind"], "/images"), key, include_image_language=FP_LANGS)
     except Exception as e:
         msg, code = _fp_err(e); return jsonify(error=msg), code
     out = []
@@ -814,12 +814,10 @@ def get_film(fid):
     return jsonify(j)
 
 def parse_tmdb_id(v):
-    """Accepts 595334, '595334', or a TMDB URL like https://www.themoviedb.org/movie/595334-some-title."""
-    if v in (None, ""): return None
-    s = str(v).strip()
-    m = _re.search(r"themoviedb\.org/(?:[a-z]{2}(?:-[A-Z]{2})?/)?movie/(\d+)", s) or _re.fullmatch(r"\s*(\d+)\s*", s)
-    if not m: raise ValueError(f"Not a TMDB id or movie URL: {s}")
-    return int(m.group(1))
+    """Accepts a numeric id or a themoviedb.org movie or TV URL. Kind is available via parse_tmdb_ref."""
+    tid, _kind = parse_tmdb_ref(v)
+    return tid
+
 
 def norm_release_date(v):
     """'1931-02-12', '1931-02' or '1931' (exact day unknown) -> stored as typed; '' -> None. Raises ValueError otherwise."""
@@ -840,7 +838,21 @@ def clean(d):
     for k in FILM_FIELDS:
         if k in d:
             v = d[k]
-            if k == "tmdb_id": out[k] = parse_tmdb_id(v); continue
+            if k == "tmdb_id":
+                tid, kind = parse_tmdb_ref(v)
+                out[k] = tid
+                if kind and "tmdb_kind" not in out:
+                    out["tmdb_kind"] = kind
+                continue
+            if k == "tmdb_kind":
+                s = "" if v is None else str(v).strip().lower()
+                if not s:
+                    out[k] = None
+                    continue
+                if s not in ("movie", "tv"):
+                    raise ValueError("TMDB kind must be movie or tv")
+                out[k] = s
+                continue
             if k == "imdb_id":
                 s = "" if v is None else str(v).strip()
                 if not s:
@@ -887,7 +899,7 @@ def create_film():
         c.execute("UPDATE films SET mpaa=? WHERE id=?", (f["mpaa"], cur.lastrowid))
     c.commit()
     if split_list(d.get("paths")): start_res_job([cur.lastrowid])
-    if f.get("tmdb_id"): fetch_and_apply(c, cur.lastrowid, f["tmdb_id"], keep=[k for k, v in f.items() if v not in (None, "") and k != "title"])
+    if f.get("tmdb_id"): fetch_and_apply(c, cur.lastrowid, f["tmdb_id"], keep=[k for k, v in f.items() if v not in (None, "") and k != "title"], tmdb_kind=f.get("tmdb_kind"))
     return get_film(cur.lastrowid)
 
 @app.put("/api/films/<int:fid>")
@@ -956,7 +968,7 @@ def update_film(fid):
     if rename_note and not new_tid:
         j = get_film(fid).get_json(); j["rename_note"] = rename_note; return jsonify(j)
     if new_tid:  # new/changed TMDB id on Save: load its details now (hand edits + this save's changes are kept; tags only added)
-        err = fetch_and_apply(c, fid, new_tid, keep=changed)
+        err = fetch_and_apply(c, fid, new_tid, keep=changed, tmdb_kind=f.get("tmdb_kind"))
         r = get_film(fid); j = r.get_json(); j["tmdb_loaded"] = not err
         if err: j["tmdb_error"] = err
         return jsonify(j)
@@ -1868,13 +1880,119 @@ def tmdb(path, key, **params):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=15) as r: return json.load(r)
 
+def tmdb_kind_of(kind=None, row=None):
+    """Normalize a stored or requested TMDB kind to 'movie' or 'tv' (default movie)."""
+    k = kind
+    if k in (None, "") and row is not None:
+        try:
+            k = row["tmdb_kind"]
+        except (KeyError, IndexError, TypeError):
+            k = None
+    return "tv" if str(k or "").strip().lower() == "tv" else "movie"
+
+def tmdb_item_path(tid, kind="movie", suffix=""):
+    base = "tv" if tmdb_kind_of(kind) == "tv" else "movie"
+    return f"{base}/{int(tid)}{suffix}"
+
+def tmdb_append_for(kind):
+    if tmdb_kind_of(kind) == "tv":
+        return "credits,content_ratings,alternative_titles,external_ids"
+    return "credits,release_dates,alternative_titles,external_ids"
+
+def tmdb_result_title(r):
+    return ((r or {}).get("title") or (r or {}).get("name") or "").strip()
+
+def tmdb_result_original(r):
+    return ((r or {}).get("original_title") or (r or {}).get("original_name") or "").strip()
+
+def tmdb_result_year(r):
+    d = str((r or {}).get("release_date") or (r or {}).get("first_air_date") or "")
+    return int(d[:4]) if len(d) >= 4 and d[:4].isdigit() else None
+
+def normalize_tmdb_item(m, kind=None):
+    """Map a TMDB movie or TV payload onto the movie-shaped fields apply_movie already uses.
+    The library film stays a film; _tmdb_kind records which endpoint was used."""
+    m = dict(m or {})
+    kind = kind or m.get("_tmdb_kind") or m.get("media_type")
+    if kind not in ("movie", "tv"):
+        if m.get("first_air_date") or (m.get("name") and not m.get("title")):
+            kind = "tv"
+        else:
+            kind = "movie"
+    m["_tmdb_kind"] = kind
+    ext = m.get("external_ids") if isinstance(m.get("external_ids"), dict) else {}
+    if kind == "tv":
+        if not m.get("title"):
+            m["title"] = m.get("name")
+        if not m.get("original_title"):
+            m["original_title"] = m.get("original_name")
+        if not m.get("release_date"):
+            m["release_date"] = m.get("first_air_date")
+        if not m.get("runtime"):
+            ert = m.get("episode_run_time") or []
+            if ert:
+                m["runtime"] = ert[0]
+    if not m.get("imdb_id"):
+        m["imdb_id"] = ext.get("imdb_id")
+    return m
+
+def tmdb_get(key, tid, kind="movie", append=None, **params):
+    """Fetch /movie/{id} or /tv/{id} and normalize. Does not guess the other kind (ids can collide)."""
+    kind = tmdb_kind_of(kind)
+    params = dict(params)
+    params.setdefault("include_adult", "true")
+    params["append_to_response"] = append or tmdb_append_for(kind)
+    m = tmdb(tmdb_item_path(tid, kind), key, **params)
+    return normalize_tmdb_item(m, kind)
+
+def parse_tmdb_ref(v):
+    """Accept a TMDB movie or TV id or themoviedb.org URL. Returns (id, kind_or_None)."""
+    if v in (None, ""):
+        return None, None
+    s = str(v).strip()
+    m = _re.search(r"themoviedb\.org/(?:[a-z]{2}(?:-[A-Z]{2})?/)?(movie|tv)/(\d+)", s)
+    if m:
+        return int(m.group(2)), m.group(1)
+    m = _re.fullmatch(r"\s*(?:(movie|tv)\s*[:/]\s*)?(\d+)\s*", s)
+    if m:
+        return int(m.group(2)), m.group(1)
+    raise ValueError(f"Not a TMDB id or themoviedb.org movie/TV URL: {s}")
+
+def search_tmdb_movie_then_tv(key, title, year, call=None):
+    """Solid TMDB match: movie first, then TV. Returns (result, kind) or (None, None)."""
+    call = call or (lambda path, **p: tmdb(path, key, **p))
+
+    def _search(path, year_key):
+        p = {"query": title, "include_adult": "true"}
+        if year:
+            p[year_key] = year
+        res = (call(path, **p) or {}).get("results") or []
+        if not res and year:
+            res = (call(path, query=title, include_adult="true") or {}).get("results") or []
+        return pick_confident(title, year, res)
+
+    r = _search("search/movie", "year")
+    if r:
+        r = dict(r)
+        r["media_type"] = "movie"
+        return r, "movie"
+    r = _search("search/tv", "first_air_date_year")
+    if r:
+        r = dict(r)
+        r["media_type"] = "tv"
+        return r, "tv"
+    return None, None
+
 def us_cert(m):
-    """US certification from TMDB release_dates (prefers theatrical, then any non-empty)."""
+    """US certification from TMDB release_dates (movies) or content_ratings (TV)."""
     for r in (m.get("release_dates") or {}).get("results", []):
         if r.get("iso_3166_1") == "US":
             rds = sorted(r.get("release_dates", []), key=lambda x: (x.get("type") != 3, x.get("type") or 9))
             for x in rds:
                 if (x.get("certification") or "").strip(): return x["certification"].strip()
+    for r in (m.get("content_ratings") or {}).get("results", []):
+        if r.get("iso_3166_1") == "US" and (r.get("rating") or "").strip():
+            return r["rating"].strip()
     return None
 
 def alt_titles_of(m):
@@ -2059,10 +2177,12 @@ def merge_cast_roles(existing, incoming, only_names=None, replace_crewish=False)
             out[name] = ch
     return out
 
-def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
-    """Apply TMDB details to a film. Never removes or alters existing tags (approved or pending): genres are only
+def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=(), tmdb_kind=None):
+    """Apply TMDB details to a film (from a movie or TV endpoint). The library row stays a film.
+    Never removes or alters existing tags (approved or pending): genres are only
     added when the film does not already have that tag. Hand-edited fields (edited_fields) are never replaced,
     even on an explicit fetch; `respect_edits` is kept for API compatibility and cannot turn that off."""
+    m = normalize_tmdb_item(m, tmdb_kind)
     crew = m.get("credits", {})
     def jobs(*js):
         seen = []
@@ -2096,6 +2216,11 @@ def apply_movie(c, fid, m, respect_edits=True, genres=True, keep=()):
     if is_scene(c, fid): lock |= {"release_date"}  # scenes keep their ThePornDB/file-name date
     upd = {k: v for k, v in upd.items() if k not in lock and k not in TMDB_NEVER}
     upd["tmdb_id"] = m["id"]; upd["tmdb_status"] = "matched"
+    upd["tmdb_kind"] = m.get("_tmdb_kind") or "movie"
+    if upd["tmdb_kind"] == "tv" and not upd.get("director"):
+        created = [x.get("name") for x in (m.get("created_by") or []) if x.get("name")]
+        if created:
+            upd["director"] = ", ".join(created)
     if upd.get("title"): upd["title"] = db.strip_title_quotes(upd["title"])
     # Character names (cast hover tip). Never overwrite a hand-locked cast_roles value.
     if "cast_roles" not in lock:
@@ -2139,15 +2264,17 @@ def _norm(s):
     return " ".join(s.split())
 
 def pick_confident(title, year, results):
-    def yr(r): return int(r["release_date"][:4]) if (r.get("release_date") or "")[:4].isdigit() else None
+    def yr(r): return tmdb_result_year(r)
+    def nt(r): return _norm(tmdb_result_title(r))
     if len(results) == 1:
         r = results[0]
         if year is None or yr(r) is None or abs(yr(r) - year) <= 1: return r
         return None
+    want = _norm(title)
     for r in results[:5]:
-        if _norm(r.get("title")) in (_norm(title),) or _norm(r.get("original_title")) == _norm(title):
+        if nt(r) == want or _norm(tmdb_result_original(r)) == want:
             if year is not None and yr(r) is not None and abs(yr(r) - year) <= 1: return r
-            if year is None and sum(_norm(x.get("title")) == _norm(title) for x in results) == 1: return r
+            if year is None and sum(nt(x) == want for x in results) == 1: return r
     return None
 
 class RateLimiter:
@@ -2166,13 +2293,9 @@ def run_poster_job(key, ids):
             f = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
             if not f: JOB["done"] += 1; continue
             try:
-                p = {"query": f["title"]}
-                if f["year"]: p["year"] = f["year"]
-                res = call("search/movie", **p).get("results", [])
-                if not res and f["year"]: res = call("search/movie", query=f["title"]).get("results", [])
-                r = pick_confident(f["title"], f["year"], res)
+                r, kind = search_tmdb_movie_then_tv(key, f["title"], f["year"], call=call)
                 if r:
-                    apply_movie(c, fid, call(f"movie/{r['id']}", append_to_response="credits,release_dates,alternative_titles", include_adult="true"))
+                    apply_movie(c, fid, tmdb_get(key, r["id"], kind), tmdb_kind=kind)
                     JOB["matched"] += 1
                     c.commit(); after_movie_apply(c, fid)
                 else:
@@ -2206,11 +2329,13 @@ def start_poster_job(retry_skipped=False, only_if_any=False):
 def run_mpaa_job(key, ids):
     rl = RateLimiter(20); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb(f"movie/{tid}/release_dates", key)
-                cert = db.classic_porn_mpaa(c, fid, us_cert({"release_dates": m}))
+                rl.wait(); m = tmdb_get(key, tid, kind, append="release_dates,content_ratings")
+                cert = db.classic_porn_mpaa(c, fid, us_cert(m))
                 ed = json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]")
                 if cert and "mpaa" not in ed:
                     c.execute("UPDATE films SET mpaa=?, mpaa_checked=1 WHERE id=? AND (mpaa IS NULL OR mpaa='')", (cert, fid)); JOB["matched"] += 1
@@ -2234,7 +2359,7 @@ def mpaa_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         retry = (request.json or {}).get("retry_checked", False)
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND (mpaa IS NULL OR mpaa='')"
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL AND (mpaa IS NULL OR mpaa='')"
                + ("" if retry else " AND mpaa_checked IS NULL") + " AND COALESCE(edited_fields,'') NOT LIKE '%\"mpaa\"%' ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="mpaa", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_mpaa_job, args=(key, ids), daemon=True).start()
@@ -2243,10 +2368,12 @@ def mpaa_start():
 def run_credits_job(key, ids):
     rl = RateLimiter(20); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="credits")
+                rl.wait(); m = tmdb_get(key, tid, kind, append="credits")
                 # only people fields; respects the user's manual edits
                 ed = set(json.loads(c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0] or "[]"))
                 keep = [k for k in FILM_FIELDS if k not in ("director", "cast_", *db.PEOPLE_COLS)]
@@ -2266,10 +2393,12 @@ def run_titles_job(key, ids):
     """Backfill original_title / alt_titles only. Never writes any other column."""
     rl = RateLimiter(20); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="alternative_titles")
+                rl.wait(); m = tmdb_get(key, tid, kind, append="alternative_titles")
                 row = c.execute("SELECT title, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
                 ed = set(json.loads(row["edited_fields"] or "[]"))
                 ot = (m.get("original_title") or "").strip()
@@ -2292,10 +2421,12 @@ def run_country_job(key, ids):
     """Backfill films.country from TMDB production_countries. Never overwrites a hand-edited or existing value."""
     rl = RateLimiter(8); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
+                rl.wait(); m = tmdb_get(key, tid, kind)
                 cn = countries_of(m)
                 cur = c.execute("UPDATE films SET country=? WHERE id=? AND (country IS NULL OR country='') AND COALESCE(edited_fields,'') NOT LIKE '%\"country\"%'", (cn, fid)) if cn else None
                 if cur is not None and cur.rowcount: JOB["matched"] += 1
@@ -2320,7 +2451,7 @@ def country_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         retry = (request.json or {}).get("retry_checked", False) if request.is_json else False
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND (country IS NULL OR country='')"
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL AND (country IS NULL OR country='')"
                + ("" if retry else " AND country_checked IS NULL") + " AND COALESCE(edited_fields,'') NOT LIKE '%\"country\"%' ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="country", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_country_job, args=(key, ids), daemon=True).start()
@@ -2330,10 +2461,12 @@ def run_studio_job(key, ids):
     """Backfill films.studio from TMDB production_companies. Never overwrites a hand-edited or existing value."""
     rl = RateLimiter(8); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             try:
-                rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
+                rl.wait(); m = tmdb_get(key, tid, kind)
                 st = db.canon_studio(studios_of(m), c)
                 cur = c.execute("UPDATE films SET studio=? WHERE id=? AND (studio IS NULL OR studio='') AND COALESCE(edited_fields,'') NOT LIKE '%\"studio\"%'", (st, fid)) if st else None
                 if cur is not None and cur.rowcount: JOB["matched"] += 1
@@ -2358,7 +2491,7 @@ def studio_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         retry = (request.json or {}).get("retry_checked", False) if request.is_json else False
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL AND (studio IS NULL OR studio='')"
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL AND (studio IS NULL OR studio='')"
                + ("" if retry else " AND studio_checked IS NULL") + " AND COALESCE(edited_fields,'') NOT LIKE '%\"studio\"%' ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="studio", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
         threading.Thread(target=run_studio_job, args=(key, ids), daemon=True).start()
@@ -2379,7 +2512,7 @@ def _imdb_id_backfill_candidates(c):
     """Non-scene films that do not yet have an IMDb id (Classic Porn included when they have a TMDB id)."""
     like = '%"imdb_id"%'
     return list(c.execute(
-        "SELECT f.id, f.title, f.original_title, f.year, f.tmdb_id, f.imdb_id, f.kind, f.edited_fields, "
+        "SELECT f.id, f.title, f.original_title, f.year, f.tmdb_id, f.tmdb_kind, f.imdb_id, f.kind, f.edited_fields, "
         "(SELECT path FROM files WHERE film_id=f.id ORDER BY id LIMIT 1) AS path "
         "FROM films f WHERE COALESCE(f.kind,'')<>'scene' AND (f.imdb_id IS NULL OR TRIM(f.imdb_id)='') "
         "AND COALESCE(f.edited_fields,'') NOT LIKE ? ORDER BY f.id",
@@ -2403,7 +2536,8 @@ def run_imdb_id_job(key, ids, csv_path):
             rec = {
                 "film_id": film["id"], "title": film.get("title") or "", "year": film.get("year") or "",
                 "library": imdbmod.library_name(film.get("kind") or "", film.get("path"), is_classic),
-                "tmdb_id": film.get("tmdb_id") or "", "imdb_id": "", "action": "skip", "reason": "",
+                "tmdb_id": film.get("tmdb_id") or "", "tmdb_kind": film.get("tmdb_kind") or "",
+                "imdb_id": "", "action": "skip", "reason": "",
             }
             try:
                 decision = imdbmod.decide_imdb_id(film, None, require_close_year=True)
@@ -2412,7 +2546,7 @@ def run_imdb_id_job(key, ids, csv_path):
                     for attempt in range(4):
                         try:
                             rl.wait()
-                            movie = tmdb(f"movie/{int(film['tmdb_id'])}", key, include_adult="true")
+                            movie = tmdb_get(key, int(film["tmdb_id"]), film.get("tmdb_kind"))
                             break
                         except urllib.error.HTTPError as e:
                             if e.code == 429:
@@ -2435,16 +2569,41 @@ def run_imdb_id_job(key, ids, csv_path):
                         decision = {"action": "skip", "imdb_id": "", "reason": "tmdb_rate_limited"}
                     if movie is not None:
                         decision = imdbmod.decide_imdb_id(film, movie, require_close_year=True)
+                if decision["reason"] == "no_tmdb_id":
+                    def _call(path, **params):
+                        rl.wait()
+                        return tmdb(path, key, **params)
+                    hit, kind = search_tmdb_movie_then_tv(key, film.get("title") or "", film.get("year"), call=_call)
+                    if hit:
+                        rl.wait()
+                        movie = tmdb_get(key, hit["id"], kind)
+                        decision = imdbmod.decide_imdb_id({**film, "tmdb_id": hit["id"]}, movie, require_close_year=True)
+                        rec["tmdb_id"] = hit["id"]
+                        rec["tmdb_kind"] = kind
+                        film["_found_tmdb"] = True
                 rec["imdb_id"] = decision.get("imdb_id") or ""
                 rec["action"] = decision["action"]
-                rec["reason"] = decision["reason"]
+                rec["reason"] = decision.get("reason") or rec.get("reason") or ""
+                if rec.get("tmdb_kind"):
+                    rec["tmdb_kind"] = rec["tmdb_kind"]
                 if decision["action"] == "fill" and decision.get("imdb_id"):
-                    # Re-check we still have no id and it is not user-set, then write only imdb_id
-                    cur = c.execute(
-                        "UPDATE films SET imdb_id=?, updated_at=? WHERE id=? AND (imdb_id IS NULL OR TRIM(imdb_id)='') "
-                        "AND COALESCE(edited_fields,'') NOT LIKE ?",
-                        (decision["imdb_id"], time.time(), film["id"], '%"imdb_id"%'),
-                    )
+                    # Write only imdb_id (and a newly found TMDB id/kind). Never change year or file names.
+                    now = time.time()
+                    like = '%"imdb_id"%'
+                    if film.get("_found_tmdb") and rec.get("tmdb_id"):
+                        cur = c.execute(
+                            "UPDATE films SET imdb_id=?, tmdb_id=?, tmdb_kind=?, tmdb_status=?, updated_at=? "
+                            "WHERE id=? AND (imdb_id IS NULL OR TRIM(imdb_id)='') "
+                            "AND COALESCE(edited_fields,'') NOT LIKE ?",
+                            (decision["imdb_id"], rec["tmdb_id"], rec.get("tmdb_kind") or "movie", "matched",
+                             now, film["id"], like),
+                        )
+                    else:
+                        cur = c.execute(
+                            "UPDATE films SET imdb_id=?, updated_at=? WHERE id=? AND (imdb_id IS NULL OR TRIM(imdb_id)='') "
+                            "AND COALESCE(edited_fields,'') NOT LIKE ?",
+                            (decision["imdb_id"], now, film["id"], like),
+                        )
                     c.commit()
                     if cur.rowcount:
                         JOB["matched"] += 1
@@ -2537,11 +2696,13 @@ def run_pgenre_job(key, ids):
     never adds/removes/changes tags or any other metadata. ~4 requests/s, backs off and retries on 429."""
     rl = RateLimiter(4); c = C()
     try:
-        for fid, tid in ids:
+        for _row in ids:
+            fid, tid = _row[0], _row[1]
+            kind = tmdb_kind_of(_row[2] if len(_row) > 2 else None)
             if JOB["cancel"]: break
             for attempt in range(4):
                 try:
-                    rl.wait(); m = tmdb(f"movie/{tid}", key, include_adult="true")
+                    rl.wait(); m = tmdb_get(key, tid, kind)
                     names = [g.get("name") for g in m.get("genres", []) if g.get("name")]
                     c.execute("UPDATE films SET tmdb_genres=? WHERE id=?", (json.dumps(names, ensure_ascii=False), fid))
                     if names and db.set_primary_genre(c, fid, names[0], only_if_empty=True): JOB["matched"] += 1
@@ -2569,7 +2730,7 @@ def pgenre_start():
         for (pid,) in c.execute("SELECT id FROM films WHERE " + PG_BLANK + " AND " + PG_CLASSIC).fetchall():
             db.set_porn_primary_genre(c, pid)  # Classic Porn: Hardcore/Softcore from tags, no TMDB
         c.commit()
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE " + PG_WHERE + " ORDER BY id")]
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE " + PG_WHERE + " ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="pgenre", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False, started_at=time.time())
         threading.Thread(target=run_pgenre_job, args=(key, ids), daemon=True).start()
     return jsonify(JOB)
@@ -2613,7 +2774,7 @@ def titles_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         allf = (request.json or {}).get("all", False) if request.is_json else False
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL"
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL"
                + ("" if allf else " AND alt_titles IS NULL") + " ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="titles", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_titles_job, args=(key, ids), daemon=True).start()
@@ -2627,7 +2788,7 @@ def credits_start():
     with JOB_LOCK:
         if JOB["running"]: return jsonify(error="Another TMDB job is already running"), 409
         allf = (request.json or {}).get("all", False)
-        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id FROM films WHERE tmdb_id IS NOT NULL"
+        ids = [(r[0], r[1]) for r in c.execute("SELECT id, tmdb_id, tmdb_kind FROM films WHERE tmdb_id IS NOT NULL"
                + ("" if allf else " AND writers IS NULL AND producers IS NULL") + " ORDER BY id")]
         JOB.clear(); JOB.update(running=True, kind="credits", done=0, total=len(ids), matched=0, skipped=0, errors=0, error=None, cancel=False)
         threading.Thread(target=run_credits_job, args=(key, ids), daemon=True).start()
@@ -2658,7 +2819,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                 CRJ["done"] += 1
                 try:
                     row = c.execute(
-                        "SELECT cast_, cast_roles, tmdb_id, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
+                        "SELECT cast_, cast_roles, tmdb_id, tmdb_kind, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
                         (fid,)).fetchone()
                     if not row: CRJ["skipped"] += 1; continue
                     ed = set(json.loads(row["edited_fields"] or "[]"))
@@ -2690,27 +2851,24 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                             try:
                                 tid = row["tmdb_id"]; credits = None; m = None
                                 if tid:
-                                    rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="credits", include_adult="true")
+                                    rl.wait(); m = tmdb_get(key, tid, row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append="credits")
                                     credits = (m or {}).get("credits") or {}
                                 else:
                                     # title+year search for unmatched films (same confidence as the poster job)
-                                    p = {"query": row["title"] or ""}
-                                    if row["year"]: p["year"] = row["year"]
-                                    rl.wait(); res = tmdb("search/movie", key, include_adult="true", **p).get("results") or []
-                                    if not res and row["year"]:
-                                        rl.wait(); res = tmdb("search/movie", key, include_adult="true", query=row["title"] or "").get("results") or []
-                                    hit = pick_confident(row["title"], row["year"], res)
+                                    def _call(path, **params):
+                                        rl.wait()
+                                        return tmdb(path, key, **params)
+                                    hit, kind = search_tmdb_movie_then_tv(key, row["title"] or "", row["year"], call=_call)
                                     CRJ["cast_searched"] += 1
                                     if hit:
                                         tid = hit["id"]
-                                        rl.wait(); m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
+                                        rl.wait(); m = tmdb_get(key, tid, kind)
                                         credits = (m or {}).get("credits") or {}
-                                        # apply full match (respects hand edits); cast_ comes with it
-                                        apply_movie(c, fid, m, respect_edits=True, genres=True)
+                                        apply_movie(c, fid, m, respect_edits=True, genres=True, tmdb_kind=kind)
                                         c.commit(); after_movie_apply(c, fid)
                                         CRJ["cast_filled"] += 1; filled_cast = True
                                         row = c.execute(
-                                            "SELECT cast_, cast_roles, tmdb_id, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
+                                            "SELECT cast_, cast_roles, tmdb_id, tmdb_kind, tpdb_id, title, year, edited_fields, kind FROM films WHERE id=?",
                                             (fid,)).fetchone()
                                     else:
                                         CRJ["unmatched"] += 1
@@ -2745,7 +2903,7 @@ def run_cast_roles_job(key, wait=0, tmdb_gap=0.3):
                                 or cast_roles_has_crewish(row["cast_"], merge_cast_roles(cur, incoming, only_names=names or None, replace_crewish=True)))
                         if need:
                             try:
-                                rl.wait(); m = tmdb(f"movie/{row['tmdb_id']}", key, append_to_response="credits", include_adult="true")
+                                rl.wait(); m = tmdb_get(key, row["tmdb_id"], row["tmdb_kind"] if "tmdb_kind" in row.keys() else None, append="credits")
                                 credits = m.get("credits") or {}
                                 ids = tmdb_ids_for_cast_names(c, names)
                                 troles = cast_roles_for_names(credits, names, ids)
@@ -3032,24 +3190,43 @@ def shutdown():
 def tmdb_search():
     c = C(); key = db.get_setting(c, "tmdb_key", "")
     if not key: return jsonify(error="No TMDB API key set in Settings"), 400
-    p = {"query": request.args["q"]}
-    if request.args.get("year"): p["year"] = request.args["year"]
-    try: res = tmdb("search/movie", key, **p)["results"][:10]
-    except Exception as e: return jsonify(error=str(e)), 502
-    return jsonify([dict(id=r["id"], title=r["title"], year=(r.get("release_date") or "")[:4],
-                         poster=r.get("poster_path") and "https://image.tmdb.org/t/p/w185" + r["poster_path"],
-                         overview=r.get("overview")) for r in res])
+    q = request.args["q"]
+    year = request.args.get("year") or None
+    try:
+        mp = {"query": q, "include_adult": "true"}
+        tp = {"query": q, "include_adult": "true"}
+        if year:
+            mp["year"] = year
+            tp["first_air_date_year"] = year
+        movies = tmdb("search/movie", key, **mp).get("results") or []
+        tvs = tmdb("search/tv", key, **tp).get("results") or []
+    except Exception as e:
+        return jsonify(error=str(e)), 502
+    out = []
+    for r in movies[:10]:
+        out.append(dict(id=r["id"], title=tmdb_result_title(r), year=tmdb_result_year(r) or "",
+                        kind="movie", poster=r.get("poster_path") and "https://image.tmdb.org/t/p/w185" + r["poster_path"],
+                        overview=r.get("overview")))
+    for r in tvs[:10]:
+        out.append(dict(id=r["id"], title=tmdb_result_title(r), year=tmdb_result_year(r) or "",
+                        kind="tv", poster=r.get("poster_path") and "https://image.tmdb.org/t/p/w185" + r["poster_path"],
+                        overview=r.get("overview")))
+    return jsonify(out)
 
-def fetch_and_apply(c, fid, tid, keep=(), genres=True):
-    """Fetch TMDB movie `tid` and apply it to film `fid`. Returns an error string, or None on success."""
+def fetch_and_apply(c, fid, tid, keep=(), genres=True, tmdb_kind=None):
+    """Fetch a TMDB movie or TV item and apply it to film `fid`. Returns an error string, or None on success."""
     if is_scene(c, fid): return "Scenes use ThePornDB, not TMDB"
     key = db.get_setting(c, "tmdb_key", "")
     if not key: return "No TMDB API key set in Settings"
-    try: m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
+    if not tmdb_kind:
+        row = c.execute("SELECT tmdb_kind FROM films WHERE id=?", (fid,)).fetchone()
+        tmdb_kind = tmdb_kind_of(row=row) if row else "movie"
+    try:
+        m = tmdb_get(key, tid, tmdb_kind)
     except urllib.error.HTTPError as e:
-        return f"TMDB has no movie with id {tid}" if e.code == 404 else "TMDB rejected the API key (401)" if e.code == 401 else f"TMDB error {e.code}"
+        return f"TMDB has no {tmdb_kind} with id {tid}" if e.code == 404 else "TMDB rejected the API key (401)" if e.code == 401 else f"TMDB error {e.code}"
     except Exception as e: return f"Could not reach TMDB: {e}"
-    apply_movie(c, fid, m, respect_edits=True, genres=genres, keep=[k for k in keep if k in FILM_FIELDS])
+    apply_movie(c, fid, m, respect_edits=True, genres=genres, keep=[k for k in keep if k in FILM_FIELDS], tmdb_kind=tmdb_kind)
     c.commit(); after_movie_apply(c, fid); return None
 
 @app.post("/api/films/<int:fid>/tmdb")
@@ -3059,24 +3236,27 @@ def tmdb_apply(fid):
     key = db.get_setting(c, "tmdb_key", "")
     if not key: return jsonify(error="No TMDB API key set in Settings"), 400
     d = request.json or {}
-    try: tid = parse_tmdb_id(d.get("tmdb_id"))
+    try:
+        tid, kind = parse_tmdb_ref(d.get("tmdb_id"))
     except ValueError as e: return jsonify(error=str(e)), 400
+    kind = d.get("tmdb_kind") or kind
     try:
         if not tid:
             f = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
-            p = {"query": f["title"]}
-            if f["year"]: p["year"] = f["year"]
-            res = tmdb("search/movie", key, **p)["results"]
-            if not res: return jsonify(error="No TMDB match"), 404
-            tid = res[0]["id"]
-        m = tmdb(f"movie/{tid}", key, append_to_response="credits,release_dates,alternative_titles", include_adult="true")
+            r, kind = search_tmdb_movie_then_tv(key, f["title"], f["year"])
+            if not r: return jsonify(error="No TMDB match"), 404
+            tid = r["id"]
+        if not kind:
+            row = c.execute("SELECT tmdb_kind FROM films WHERE id=?", (fid,)).fetchone()
+            kind = tmdb_kind_of(row=row) if row else "movie"
+        m = tmdb_get(key, tid, kind)
     except urllib.error.HTTPError as e:
-        if e.code == 404: return jsonify(error=f"TMDB has no movie with id {tid}"), 404
+        if e.code == 404: return jsonify(error=f"TMDB has no {kind or 'movie'} with id {tid}"), 404
         if e.code == 401: return jsonify(error="TMDB rejected the API key (401)"), 502
         return jsonify(error=f"TMDB error {e.code}"), 502
     except Exception as e: return jsonify(error=f"Could not reach TMDB: {e}"), 502
     keep = [k for k in d.get("keep", []) if k in FILM_FIELDS]  # fields the user changed in this edit win
-    apply_movie(c, fid, m, respect_edits=True, genres=d.get("genres", True), keep=keep)
+    apply_movie(c, fid, m, respect_edits=True, genres=d.get("genres", True), keep=keep, tmdb_kind=kind)
     c.commit(); after_movie_apply(c, fid); return get_film(fid)
 
 # ---------- backup ----------
@@ -4229,7 +4409,7 @@ def imdb_years_status():
 def imdb_years_refresh():
     """Start a background download/rebuild of title.basics. Body: {force: bool}. Soft-fails; does not block."""
     d = request.get_json(silent=True) or {}
-    started = imdbmod.kick_refresh(force=bool(d.get("force", True)))
+    started = imdbmod.kick_refresh(force=bool(d.get("force", True)), reuse_gz=bool(d.get("reuse_gz", False)))
     st = imdbmod.status()
     st["started"] = started
     return jsonify(st)

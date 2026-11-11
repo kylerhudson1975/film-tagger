@@ -479,6 +479,7 @@ def connect():
                      ("mc_match_ver", "INTEGER")):
         if col not in cols: c.execute(f"ALTER TABLE films ADD COLUMN {col} {typ}")  # Metacritic scores; cached ~30 days
     if "imdb_id" not in cols: c.execute("ALTER TABLE films ADD COLUMN imdb_id TEXT")  # tt…; from TMDB or an applied IMDb year fix
+    if "tmdb_kind" not in cols: c.execute("ALTER TABLE films ADD COLUMN tmdb_kind TEXT")  # "movie" or "tv"; which TMDB endpoint later fetches should use
     import subtitles as _subs
     c.create_function("sub_lang_in", 2, _subs.lang_in, deterministic=True)
     if not c.execute("SELECT 1 FROM categories LIMIT 1").fetchone():
