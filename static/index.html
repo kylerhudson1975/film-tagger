@@ -35,6 +35,15 @@ button{cursor:pointer}button:hover{border-color:var(--a)}button.pri{background:v
 #fgOv{position:fixed;inset:0;z-index:2000;background:#000e;display:none;flex-direction:column}#fgOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#fpOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#fpOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:8px 12px;align-content:start}#fpOv .gg img{width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:4px;cursor:pointer;background:#2228}#peOv{position:fixed;inset:0;z-index:2100;background:#000e;display:none;flex-direction:column}#peOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff;flex-wrap:wrap}#peStage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center}#peWrap{position:relative;line-height:0;overflow:hidden}#peBox{position:absolute;box-sizing:border-box;border:2px solid #fff;box-shadow:0 0 0 9999px #0009;cursor:move;touch-action:none}#peBox i{position:absolute;width:14px;height:14px;background:#fff;border-radius:2px}#peBox i[data-h=nw]{left:-8px;top:-8px;cursor:nwse-resize}#peBox i[data-h=ne]{right:-8px;top:-8px;cursor:nesw-resize}#peBox i[data-h=sw]{left:-8px;bottom:-8px;cursor:nesw-resize}#peBox i[data-h=se]{right:-8px;bottom:-8px;cursor:nwse-resize}#galOv{position:fixed;inset:0;z-index:2000;background:#000d;display:none;flex-direction:column}#galOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff}#galOv .gg{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:8px 12px;align-content:start}#galOv .gg img{width:100%;height:100px;object-fit:contain;border-radius:4px;cursor:pointer;background:#2228}#galOv .gv{flex:1;display:none;align-items:center;justify-content:center;gap:8px;min-height:0;padding:8px}#galOv .gv{position:relative}#galOv .gz{flex:1;align-self:stretch;min-width:0;overflow:hidden;display:flex;align-items:center;justify-content:center;touch-action:none;user-select:none}
 #galOv .gz img{max-width:100%;max-height:100%;object-fit:contain;transform-origin:50% 50%;will-change:transform}#galOv .gz.zoomed{cursor:grab}#galOv .gz.grabbing{cursor:grabbing}
 #galOv .gzc{position:absolute;right:70px;bottom:14px;display:flex;gap:4px;align-items:center;background:#000a;color:#fff;padding:4px 6px;border-radius:6px;z-index:2;font-size:12px}#galOv .gzc input{width:52px;min-width:0;margin:0;padding:2px 4px;text-align:center;font-size:12px;background:#222;color:#fff;border:1px solid #666;border-radius:4px}#galOv .gzc button{padding:2px 8px;width:auto}
+#geOv{position:fixed;inset:0;z-index:2200;background:#000e;display:none;flex-direction:column}
+#geOv .gh{display:flex;gap:8px;align-items:center;padding:8px 12px;color:#fff;flex-wrap:wrap}
+#geStage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:8px}
+#geStage canvas{max-width:100%;max-height:100%;object-fit:contain;background:#111}
+#geCtrls{padding:8px 16px 14px;color:#fff;display:grid;grid-template-columns:auto 1fr 56px;gap:6px 10px;align-items:center;max-width:720px;width:min(720px,100%);margin:0 auto}
+#geCtrls label{font-size:13px}
+#geCtrls input[type=range]{width:100%;margin:0}
+#geCtrls .ge-val{font-variant-numeric:tabular-nums;font-size:12px;color:#ccc;text-align:right}
+
 table{border-collapse:collapse;width:100%}th,td{padding:6px 8px;border-bottom:1px solid var(--b);text-align:left;vertical-align:top}
 th{position:sticky;top:-12px;background:var(--p);cursor:pointer;user-select:none;color:var(--m)}tr.sel td{background:#1d2a40}tbody tr:hover td{background:var(--p2)}
 .tag{display:inline-block;background:var(--p2);border:1px solid var(--b);border-radius:12px;padding:1px 8px;margin:2px;font-size:12px}
@@ -854,9 +863,10 @@ async function openGallery(id,opt={}){const base=opt.base||`/api/films/${id}/gal
  o.innerHTML=`<div class=gh><b>${esc(opt.title||'Gallery')}</b><span class=muted id=galCount></span><span style="flex:1"></span><button id=galBack style="display:none" onclick="galGrid()">▦ All photos</button><button onclick="galClose()">✕ Close</button></div>
   <div class=gg id=galGrid></div>
   <div class=gv id=galView><button onclick="galShow(S.gal.i-1)" title="Previous (←)">‹</button><div class=gz id=galStage><img id=galImg alt="" draggable=false></div><div class=gzc onclick="event.stopPropagation()"><button onclick="galZoomBy(1/1.25)" title="Zoom out (−)">−</button><input id=galPct value="Fit" title="Zoom (% of the photo's actual pixels): type e.g. 125 and press Enter" onfocus="this.select()" onmouseup="event.preventDefault()" onkeydown="galPctKey(event)" onblur="galApply()"><button onclick="galZoomBy(1.25)" title="Zoom in (+)">+</button><button onclick="galFit()" title="Fit (0)">Fit</button></div><button onclick="galShow(S.gal.i+1)" title="Next (→)">›</button></div>
-  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span>${opt.hideable?'<button id=galHideBtn onclick="galHideAt(S.gal.i)">Hide from gallery</button>':''}${poster?'<button class=pri onclick="galPoster()">Use as poster</button>':''}</div>`;
+  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span><button id=galEditBtn onclick="galEdit()" title="Contrast, brightness, gamma and sharpen (the original is kept)">Edit</button>${opt.hideable?'<button id=galHideBtn onclick="galHideAt(S.gal.i)">Hide from gallery</button>':''}${poster?'<button class=pri onclick="galPoster()">Use as poster</button>':''}</div>`;
  galFill();o.style.display='flex';if(opt.start!=null)galShow(opt.start)}
-function galFill(){const g=S.gal,o=$('galGrid'),u=n=>`${g.base}/thumb?name=${encodeURIComponent(n)}`;if(!g||!o)return;
+function galMedia(kind,n){const g=S.gal,v=g&&g.bust&&g.bust[n];return `${g.base}/${kind}?name=${encodeURIComponent(n)}${v?'&v='+v:''}`}
+function galFill(){const g=S.gal,o=$('galGrid'),u=n=>galMedia('thumb',n);if(!g||!o)return;
  const vis=g.names.filter(n=>!g.hidden||!g.hidden.has(n)),hc=g.hidden?g.hidden.size:0,cnt=$('galCount');
  if(cnt)cnt.textContent=`${vis.length} photo${vis.length==1?'':'s'}`+(g.hideable&&hc?` · ${hc} hidden`:'');
  o.innerHTML=g.names.map((n,i)=>{const k=n.indexOf('/'),fold=k>0?n.slice(0,k):null,pg=i?(g.names[i-1].indexOf('/')>0?g.names[i-1].slice(0,g.names[i-1].indexOf('/')):null):null,hid=g.hidden&&g.hidden.has(n);
@@ -902,10 +912,67 @@ function galClose(){const o=$('galOv');if(o){o.style.display='none';o.innerHTML=
 function galGrid(){S.gal.i=null;$('galView').style.display='none';$('galBar').style.display='none';$('galBack').style.display='none';$('galGrid').style.display='grid'}
 function galShow(i){const g=S.gal,n=g.names.length;if(!n)return;i=(i+n)%n;g.i=i;
  $('galGrid').style.display='none';$('galView').style.display='flex';$('galBar').style.display='flex';$('galBack').style.display='';
- galZ.s=1;galZ.x=0;galZ.y=0;galApply();galZoomInit();$('galImg').src=`${g.base}/image?name=${encodeURIComponent(g.names[i])}`;$('galName').textContent=`${i+1} / ${n} · ${g.names[i]}`;
+ galZ.s=1;galZ.x=0;galZ.y=0;galApply();galZoomInit();$('galImg').src=galMedia('image',g.names[i]);$('galName').textContent=`${i+1} / ${n} · ${g.names[i]}`;
  const b=$('galHideBtn');if(b){const hid=g.hidden&&g.hidden.has(g.names[i]);b.textContent=hid?'Unhide':'Hide from gallery';b.title=hid?'Show this photo in the gallery again':'Hide this photo from the gallery (the file is not moved or deleted)'}}
 async function galPoster(){const g=S.gal;if(!g||g.i==null)return;let f;try{f=await api(`/api/films/${g.id}/gallery/poster`,{method:'POST',body:{name:g.names[g.i]}})}catch(e){return}
  galClose();if($('posterBox'))posterShow(f);else reload();toast('Poster set from the gallery')}
+/* Gallery Edit: contrast / brightness / gamma / sharpen, live canvas preview, Save writes the same adjustments on the server */
+const GE={contrast:1,brightness:1,gamma:1,sharpen:0};
+function geClose(){const o=$('geOv');if(o){o.style.display='none';o.innerHTML=''}S.ge=null}
+async function galEdit(){const g=S.gal;if(!g||g.i==null)return;const name=g.names[g.i];
+ let info;try{info=await api(`${g.base}/adjust?`+new URLSearchParams({name}))}catch(e){toast(e.message||String(e));return}
+ let o=$('geOv');if(!o){o=document.createElement('div');o.id='geOv';document.body.appendChild(o);
+  document.addEventListener('keydown',e=>{if(!$('geOv')||$('geOv').style.display!='flex')return;if(e.key=='Escape'){e.stopImmediatePropagation();e.preventDefault();geClose()}},true)}
+ const slider=(k,lab,min,max,step,val)=>`<label for=ge_${k}>${lab}</label><input id=ge_${k} type=range min=${min} max=${max} step=${step} value="${val}" oninput="geInput()"><span class=ge-val id=ge_${k}v></span>`;
+ o.innerHTML=`<div class=gh><b>Edit photo</b><span class=muted>${esc(name)}${info.width?` · ${info.width}×${info.height}`:''}</span><span style="flex:1"></span>
+  <button onclick="geReset()" title="Put the sliders back to no change (does not revert a saved edit)">Reset</button>
+  <button id=geRevert ${info.has_original?'':'disabled style="display:none"'} title="Put back the original photo (kept when you first saved an edit)" onclick="geRevert()">Revert to original</button>
+  <button onclick="geClose()">Cancel</button><button class=pri id=geSave onclick="geSave()">Save</button></div>
+  <div id=geStage><canvas id=geCv></canvas></div>
+  <div id=geCtrls>${slider('contrast','Contrast',0.2,3,0.05,1)}${slider('brightness','Brightness',0.2,3,0.05,1)}${slider('gamma','Gamma',0.2,3,0.05,1)}${slider('sharpen','Sharpen',0,3,0.05,0)}</div>`;
+ o.style.display='flex';
+ S.ge={name,info,img:new Image(),src:null,w:0,h:0,busy:false};
+ const im=S.ge.img;im.crossOrigin='anonymous';
+ im.onload=()=>geReady();im.onerror=()=>toast('Could not load the photo');
+ im.src=galMedia('image',name)+(galMedia('image',name).includes('?')?'&':'?')+'ge='+Date.now()}
+function geReady(){const g=S.ge,im=g.img,max=1400;let w=im.naturalWidth,h=im.naturalHeight,s=Math.min(1,max/Math.max(w,h));
+ w=Math.max(1,Math.round(w*s));h=Math.max(1,Math.round(h*s));
+ const off=document.createElement('canvas');off.width=w;off.height=h;const x=off.getContext('2d');x.drawImage(im,0,0,w,h);
+ g.src=x.getImageData(0,0,w,h);g.w=w;g.h=h;gePreview()}
+function geParams(){const n=k=>parseFloat($('ge_'+k).value);return{contrast:n('contrast'),brightness:n('brightness'),gamma:n('gamma'),sharpen:n('sharpen')}}
+function geInput(){const p=geParams();['contrast','brightness','gamma','sharpen'].forEach(k=>$('ge_'+k+'v').textContent=p[k].toFixed(2));gePreview()}
+function geReset(){['contrast','brightness','gamma'].forEach(k=>$('ge_'+k).value=1);$('ge_sharpen').value=0;geInput()}
+function geApply(src,w,h,p){
+ const data=new Uint8ClampedArray(src.data);const C=p.contrast,B=p.brightness,G=p.gamma,Sh=p.sharpen;
+ let sum=0,n=0;for(let i=0;i<data.length;i+=4){if(data[i+3]===0)continue;sum+=data[i]*0.299+data[i+1]*0.587+data[i+2]*0.114;n++}
+ const mean=n?Math.floor(sum/n+0.5):128,inv=1/Math.max(G,1e-6);
+ const tone=(v)=>{v=mean+(v-mean)*C;v=Math.min(255,Math.max(0,v));v=v*B;v=Math.min(255,Math.max(0,v));return Math.min(255,Math.max(0,Math.round(Math.pow(v/255,inv)*255)))};
+ for(let i=0;i<data.length;i+=4){if(data[i+3]===0)continue;data[i]=tone(src.data[i]);data[i+1]=tone(src.data[i+1]);data[i+2]=tone(src.data[i+2])}
+ if(Sh>1e-6)geUnsharp(data,w,h,2,Sh*100,3);
+ return new ImageData(data,w,h)}
+function geUnsharp(out,w,h,radius,percent,threshold){
+ const blur=new Float32Array(w*h*4),tmp=new Float32Array(w*h*4);
+ const sigma=Math.max(0.5,radius),kSize=Math.min(21,Math.max(3,Math.round(sigma*3)*2+1)),half=(kSize-1)/2,kern=new Float32Array(kSize);
+ let ks=0;for(let i=0;i<kSize;i++){const x=i-half;kern[i]=Math.exp(-(x*x)/(2*sigma*sigma));ks+=kern[i]}for(let i=0;i<kSize;i++)kern[i]/=ks;
+ const get=(s,x,y,c)=>{x=Math.min(w-1,Math.max(0,x));y=Math.min(h-1,Math.max(0,y));return s[(y*w+x)*4+c]};
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++)for(let c=0;c<3;c++){let v=0;for(let k=0;k<kSize;k++)v+=get(out,x+k-half,y,c)*kern[k];tmp[(y*w+x)*4+c]=v}
+ for(let y=0;y<h;y++)for(let x=0;x<w;x++)for(let c=0;c<3;c++){let v=0;for(let k=0;k<kSize;k++)v+=tmp[(Math.min(h-1,Math.max(0,y+k-half))*w+x)*4+c]*kern[k];blur[(y*w+x)*4+c]=v}
+ const amt=percent/100;for(let i=0;i<w*h;i++){for(let c=0;c<3;c++){const o=out[i*4+c],b=blur[i*4+c],d=o-b;if(Math.abs(d)>=threshold)out[i*4+c]=Math.min(255,Math.max(0,Math.round(o+d*amt))}}}
+function gePreview(){const g=S.ge,cv=$('geCv');if(!g||!g.src||!cv)return;const p=geParams();['contrast','brightness','gamma','sharpen'].forEach(k=>{if($('ge_'+k+'v'))$('ge_'+k+'v').textContent=p[k].toFixed(2)});
+ cv.width=g.w;cv.height=g.h;cv.getContext('2d').putImageData(geApply(g.src,g.w,g.h,p),0,0)}
+async function geSave(){const g=S.ge,gal=S.gal;if(!g||!gal||g.busy)return;g.busy=true;if($('geSave'))$('geSave').disabled=true;
+ try{const r=await api(`${gal.base}/adjust`,{method:'POST',body:{name:g.name,...geParams()}});
+  gal.bust=gal.bust||{};if(r.v)gal.bust[g.name]=r.v;
+  if(S.ppGal&&S.ppGal.pid===gal.id){S.ppGal.bust=S.ppGal.bust||{};if(r.v)S.ppGal.bust[g.name]=r.v;const x=$('ppGal');if(x&&S.ppData)x.innerHTML=ppGalHtml(S.ppData.person)}
+  geClose();if(gal.i!=null){galFill();galShow(gal.i)}toast(r.unchanged?'No change (sliders were at their defaults)':'Photo saved (original kept)')}
+ catch(e){g.busy=false;if($('geSave'))$('geSave').disabled=false;toast(e.message||String(e))}}
+async function geRevert(){const g=S.ge,gal=S.gal;if(!g||!gal||!confirm('Put back the original photo? Your saved adjustments to this photo will be undone.'))return;
+ try{const r=await api(`${gal.base}/adjust/revert`,{method:'POST',body:{name:g.name}});
+  gal.bust=gal.bust||{};if(r.v)gal.bust[g.name]=r.v;
+  if(S.ppGal&&S.ppGal.pid===gal.id){S.ppGal.bust=S.ppGal.bust||{};if(r.v)S.ppGal.bust[g.name]=r.v;const x=$('ppGal');if(x&&S.ppData)x.innerHTML=ppGalHtml(S.ppData.person)}
+  geClose();if(gal.i!=null){galFill();galShow(gal.i)}toast('Original photo restored')}
+ catch(e){toast(e.message||String(e))}}
+
 async function uploadPoster(id,file){if(!file)return;if(!/^image\/(jpeg|png|webp)$/.test(file.type))return toast('Use a JPG, PNG or WebP image');
  if(file.size>200*1024*1024)return toast('Image is too large (max 200 MB)');const fd=new FormData();fd.append('file',file);
  try{const f=await api(`/api/films/${id}/poster`,{method:'POST',body:fd});posterShow(f);toast('Custom poster saved')}catch(e){}}
@@ -1698,7 +1765,7 @@ function ppGalHtml(p){const g=S.ppGal;if(!p.gallery_dir)return '';if(!g||g.pid!=
  if(!d.images)return '';
  if(d.missing)return `<h3 class=ppdept>Gallery</h3><p class=muted>⚠ The gallery folder “${esc(d.folder)}” isn't there (drive unplugged, moved or renamed?). Change it under ✎ Edit profile.</p>`;
  const hid=d.hidden_images||[],hc=d.hidden_count||hid.length,show=!!g.showHidden,items=show? (d.images||[]).map(n=>({n,hid:false})).concat(hid.map(n=>({n,hid:true}))) : (d.images||[]).map(n=>({n,hid:false}));
- const lim=g.lim||60,shown=items.slice(0,lim),u=n=>`/api/person/${p.id}/gallery/thumb?name=${encodeURIComponent(n)}`;
+ const lim=g.lim||60,shown=items.slice(0,lim),u=n=>{const v=g.bust&&g.bust[n];return `/api/person/${p.id}/gallery/thumb?name=${encodeURIComponent(n)}${v?'&v='+v:''}`};
  const head=`<h3 class=ppdept>Gallery <span class=muted>— ${d.count} photo${d.count==1?'':'s'}</span>${d.count?`<button title="${esc(d.folder)}" onclick="ppGalOpen(0)">⛶ View all</button>`:''}${hc?`<button onclick="ppGalToggleHidden()">${hc} hidden, ${show?'showing':'show'}</button>`:''}</h3>`;
  if(!items.length)return head+(hc?`<p class=muted>All ${hc} photo${hc==1?'':'s'} in this folder are hidden. The files are still there — click “${hc} hidden, show” to view or unhide them.</p>`:`<p class=muted>No images in “${esc(d.folder)}” yet. Images added to the folder show up here automatically.</p>`);
  return head+`<div class=ppgal>${shown.map((x,i)=>`<div class="pgc${x.hid?' hid':''}" data-name="${esc(x.n)}"><img loading=lazy src="${u(x.n)}" title="${esc(x.n)}" onclick="ppGalOpen(${i})"><button type=button title="${x.hid?'Show this photo in the gallery again':'Hide this photo from the gallery (the file is not moved or deleted)'}" onclick="ppGalHideEl(this,event)">${x.hid?'Unhide':'Hide'}</button></div>`).join('')}</div>`+(items.length>lim?`<button onclick="S.ppGal.lim=1e9;$('ppGal').innerHTML=ppGalHtml(S.ppData.person)">Show all ${show?items.length:d.count}</button>`:'')}

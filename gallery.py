@@ -62,7 +62,7 @@ def _imgs_in(folder):
 
 def _hidden(path, name):
     """Hidden/system folder (dot-name, Windows hidden/system attribute, $RECYCLE.BIN-style names)."""
-    if name.startswith((".", "$", "~")) or name.lower() in ("@eadir", "__macosx", "thumbs", "_thumbs"): return True
+    if name.startswith((".", "$", "~")) or name.lower() in ("@eadir", "__macosx", "thumbs", "_thumbs", "_originals"): return True
     try: a = getattr(os.stat(path), "st_file_attributes", 0)
     except OSError: return True
     return bool(a & 0x6)  # FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM

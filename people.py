@@ -1481,6 +1481,31 @@ def init(app, tmdb, posters_dir):
         c.commit()
         return jsonify(ok=True, folder=f, **pgmod.listing(gallerymod.images(f), pgmod.hidden_set(c, row["id"])))
 
+    def _pg_adjust(pid, action):
+        import galleryadjust as gamod
+        f, err = _pg_folder(pid)
+        if err: return err
+        d = request.args if action == "info" else (request.get_json(silent=True) or {})
+        name = d.get("name")
+        r, status = gamod.handle(f, name, action, d)
+        return jsonify(r), status
+
+    @app.get("/api/person/<int:pid>/gallery/adjust")
+    def person_gallery_adjust_info(pid):
+        """Size and whether an `_originals` backup exists for ?name= (a gallery-safe relative path)."""
+        return _pg_adjust(pid, "info")
+
+    @app.post("/api/person/<int:pid>/gallery/adjust")
+    def person_gallery_adjust_save(pid):
+        """{name, contrast, brightness, gamma, sharpen}: apply adjustments to that gallery photo.
+        The original is copied to `_originals` once (never deleted) before the first overwrite."""
+        return _pg_adjust(pid, "save")
+
+    @app.post("/api/person/<int:pid>/gallery/adjust/revert")
+    def person_gallery_adjust_revert(pid):
+        """{name}: put the kept original back. The backup in `_originals` is not deleted."""
+        return _pg_adjust(pid, "revert")
+
     @app.post("/api/people/gallery_link")
     def people_gallery_link():
         """{root, apply}: match the root's subfolders (one per performer) to people by name/alias. apply=true links every

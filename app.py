@@ -4744,6 +4744,29 @@ def gallery_image(fid):
     if not p: return jsonify(error="not found"), 404
     return send_file(p, max_age=86400)
 
+def _film_gallery_adjust(fid, action):
+    import galleryadjust as gamod
+    g, err = _gallery_or_404(fid, fresh=False)
+    if err: return err
+    d = request.args if action == "info" else (request.get_json(silent=True) or {})
+    r, status = gamod.handle(g[2], d.get("name"), action, d)
+    return jsonify(r), status
+
+@app.get("/api/films/<int:fid>/gallery/adjust")
+def film_gallery_adjust_info(fid):
+    """Size and whether an `_originals` backup exists for ?name=."""
+    return _film_gallery_adjust(fid, "info")
+
+@app.post("/api/films/<int:fid>/gallery/adjust")
+def film_gallery_adjust_save(fid):
+    """{name, contrast, brightness, gamma, sharpen}: adjust a scene gallery photo. Original kept in `_originals` once."""
+    return _film_gallery_adjust(fid, "save")
+
+@app.post("/api/films/<int:fid>/gallery/adjust/revert")
+def film_gallery_adjust_revert(fid):
+    """{name}: restore the kept original of a scene gallery photo."""
+    return _film_gallery_adjust(fid, "revert")
+
 @app.post("/api/films/<int:fid>/gallery/poster")
 def gallery_poster(fid):
     """{name}: copy that gallery photo into the posters folder and use it as the custom poster (smart crop runs after)."""
