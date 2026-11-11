@@ -2573,14 +2573,31 @@ def run_imdb_id_job(key, ids, csv_path):
                     def _call(path, **params):
                         rl.wait()
                         return tmdb(path, key, **params)
-                    hit, kind = search_tmdb_movie_then_tv(key, film.get("title") or "", film.get("year"), call=_call)
-                    if hit:
+                    def _try_hit(hit, kind):
+                        nonlocal decision
                         rl.wait()
                         movie = tmdb_get(key, hit["id"], kind)
                         decision = imdbmod.decide_imdb_id({**film, "tmdb_id": hit["id"]}, movie, require_close_year=True)
                         rec["tmdb_id"] = hit["id"]
                         rec["tmdb_kind"] = kind
                         film["_found_tmdb"] = True
+                    hit, kind = search_tmdb_movie_then_tv(key, film.get("title") or "", film.get("year"), call=_call)
+                    if hit:
+                        _try_hit(hit, kind)
+                    # A confident movie search is not a solid fill if the IMDb title/year check
+                    # rejects it; fall through to search/tv in that case.
+                    if decision["action"] != "fill" and kind == "movie":
+                        title = film.get("title") or ""
+                        year = film.get("year")
+                        params = {"query": title, "include_adult": "true"}
+                        if year:
+                            params["first_air_date_year"] = year
+                        res = (_call("search/tv", **params) or {}).get("results") or []
+                        if not res and year:
+                            res = (_call("search/tv", query=title, include_adult="true") or {}).get("results") or []
+                        tv_hit = pick_confident(title, year, res)
+                        if tv_hit:
+                            _try_hit(tv_hit, "tv")
                 rec["imdb_id"] = decision.get("imdb_id") or ""
                 rec["action"] = decision["action"]
                 rec["reason"] = decision.get("reason") or rec.get("reason") or ""

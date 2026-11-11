@@ -520,6 +520,35 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(row["tmdb_kind"], "tv")
         self.assertEqual(row["year"], 1977)  # year not changed
 
+    def test_backfill_tries_tv_when_movie_hit_fails_imdb_check(self):
+        fid = self._film("Storm of the Century", 1999, path=rf"D:\\Movies\\Storm\\st2-{self.uid}.mkv")
+        self.c.commit()
+        db.set_setting(self.c, "tmdb_key", "test-key")
+        self.c.commit()
+        def fake_tmdb(path, key, **params):
+            if path.startswith("search/movie"):
+                return {"results": [{"id": 1096624, "title": "Storm of the Century", "release_date": "1999-01-01"}]}
+            if path.startswith("search/tv"):
+                return {"results": [{"id": 14164, "name": "Storm of the Century", "original_name": "Storm of the Century", "first_air_date": "1999-02-14"}]}
+            if path.startswith("movie/1096624"):
+                return {"id": 1096624, "title": "The Storm of the Century", "original_title": "Something Else",
+                        "release_date": "1999-01-01", "external_ids": {"imdb_id": "tt9999999"}}
+            if path.startswith("tv/14164"):
+                return {"id": 14164, "name": "Storm of the Century", "original_name": "Storm of the Century",
+                        "first_air_date": "1999-02-14", "external_ids": {"imdb_id": "tt0132246"}}
+            raise AssertionError("unexpected " + path)
+        path = os.path.join(_TMP, f"backfill-tv-fallback-{self.uid}.csv")
+        with mock.patch.object(A, "tmdb", side_effect=fake_tmdb):
+            rows = [r for r in A._imdb_id_backfill_candidates(self.c) if r["id"] == fid]
+            A.JOB.clear(); A.JOB.update(running=True, kind="imdbids", done=0, total=len(rows),
+                                        matched=0, skipped=0, errors=0, error=None, cancel=False)
+            A.run_imdb_id_job("test-key", rows, path)
+        row = self.c.execute("SELECT imdb_id, tmdb_id, tmdb_kind, year FROM films WHERE id=?", (fid,)).fetchone()
+        self.assertEqual(row["imdb_id"], "tt0132246")
+        self.assertEqual(row["tmdb_id"], 14164)
+        self.assertEqual(row["tmdb_kind"], "tv")
+        self.assertEqual(row["year"], 1999)
+
     def test_refresh_does_not_hit_network_when_not_stale(self):
         with mock.patch.object(iy, "_download", side_effect=AssertionError("should not download")):
             st = iy.refresh(force=False)
