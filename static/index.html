@@ -957,7 +957,7 @@ function geUnsharp(out,w,h,radius,percent,threshold){
  const get=(s,x,y,c)=>{x=Math.min(w-1,Math.max(0,x));y=Math.min(h-1,Math.max(0,y));return s[(y*w+x)*4+c]};
  for(let y=0;y<h;y++)for(let x=0;x<w;x++)for(let c=0;c<3;c++){let v=0;for(let k=0;k<kSize;k++)v+=get(out,x+k-half,y,c)*kern[k];tmp[(y*w+x)*4+c]=v}
  for(let y=0;y<h;y++)for(let x=0;x<w;x++)for(let c=0;c<3;c++){let v=0;for(let k=0;k<kSize;k++)v+=tmp[(Math.min(h-1,Math.max(0,y+k-half))*w+x)*4+c]*kern[k];blur[(y*w+x)*4+c]=v}
- const amt=percent/100;for(let i=0;i<w*h;i++){for(let c=0;c<3;c++){const o=out[i*4+c],b=blur[i*4+c],d=o-b;if(Math.abs(d)>=threshold)out[i*4+c]=Math.min(255,Math.max(0,Math.round(o+d*amt))}}}
+ const amt=percent/100;for(let i=0;i<w*h;i++){for(let c=0;c<3;c++){const o=out[i*4+c],b=blur[i*4+c],d=o-b;if(Math.abs(d)>=threshold)out[i*4+c]=Math.min(255,Math.max(0,Math.round(o+d*amt)))}}}
 function gePreview(){const g=S.ge,cv=$('geCv');if(!g||!g.src||!cv)return;const p=geParams();['contrast','brightness','gamma','sharpen'].forEach(k=>{if($('ge_'+k+'v'))$('ge_'+k+'v').textContent=p[k].toFixed(2)});
  cv.width=g.w;cv.height=g.h;cv.getContext('2d').putImageData(geApply(g.src,g.w,g.h,p),0,0)}
 async function geSave(){const g=S.ge,gal=S.gal;if(!g||!gal||g.busy)return;g.busy=true;if($('geSave'))$('geSave').disabled=true;
