@@ -634,6 +634,22 @@ def init(app, tmdb, posters_dir):
 
     SCN = {}  # pid -> background ThePornDB scene-list load progress
     SCN_LOCK = threading.Lock()
+    def _slim_tpdb_performers(x):
+        """Names (and aliases / birth date when present) of a scene's performers. Never keeps images."""
+        out = []
+        for p in x.get("performers") or []:
+            if not isinstance(p, dict): continue
+            nm = (p.get("name") or "").strip()
+            if not nm: continue
+            extras = p.get("extras") if isinstance(p.get("extras"), dict) else {}
+            als, raw = [], list(p.get("aliases") or []) + list(extras.get("aliases") or [] if isinstance(extras.get("aliases"), list) else [])
+            for a in raw:
+                s = (a.get("name") if isinstance(a, dict) else a) or ""
+                s = str(s).strip()
+                if s and s != nm and s not in als: als.append(s)
+            bd = (extras.get("birthday") or p.get("birthday") or "")[:10] or None
+            out.append(dict(name=nm, aliases=als[:8], birthday=bd))
+        return out
     def _slim_tpdb_scene(x):
         """Keep the fields the person page needs, from a raw ThePornDB scene or an already-slim cached row."""
         site = x.get("site") if isinstance(x.get("site"), dict) else {}
@@ -641,7 +657,8 @@ def init(app, tmdb, posters_dir):
         return dict(id=str(x.get("id") or ""), _id=str(x.get("_id") or ""), title=x.get("title"),
                     date=(x.get("date") or "")[:10], studio=site.get("name") or x.get("studio"),
                     label=site_label(site) if site else x.get("label"), slug=x.get("slug"),
-                    thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"))
+                    thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"),
+                    performers=_slim_tpdb_performers(x))
     def start_scene_load(pid, tok, perf_id, force=False, resume=False):
         """Fetch every page of /performers/{id}/scenes in a background thread (rate-limited by call_retry); the list and the
         API's total are cached in people.tpdb_scenes_json / tpdb_scenes_total. Each page is saved as it arrives. A failed
@@ -1091,7 +1108,7 @@ def init(app, tmdb, posters_dir):
                 msg = (msg + " " if msg else "") + f"Could not load all ThePornDB scenes ({load['error']}); showing the list so far."
             if row["tpdb_scenes_json"]:
                 scenes = [dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
-                               film_id=None, thumb=x["thumb"], poster=None, _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
+                               film_id=None, thumb=x["thumb"], poster=None, cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")], _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
         if adult:  # ThePornDB scene lists cached on alias / merged people rows (another performer id for the same person)
             others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
             if others:
@@ -1102,7 +1119,7 @@ def init(app, tmdb, posters_dir):
                         if ids[0] in seen_tp: continue
                         seen_tp.add(ids[0]); scenes = scenes or []
                         scenes.append(dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
-                                           film_id=None, thumb=x["thumb"], poster=None, _ids=ids))
+                                           film_id=None, thumb=x["thumb"], poster=None, cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")], _ids=ids))
         if adult:  # ALL of the user's library scenes for this person (name/aliases or ThePornDB scene id), listed first
             img = not (set(lib_ids) & review_film_ids(c))
             tp_ids = sorted({i for z in (scenes or []) for i in z["_ids"] if i and i != "-"})
@@ -1718,6 +1735,7 @@ def init(app, tmdb, posters_dir):
                     it.update(title=x.get("title"), date=(x.get("date") or "")[:10], studio=x.get("studio"),
                               url=f"https://theporndb.net/scenes/{x.get('slug') or x.get('id')}")
                     it["year"] = int(it["date"][:4]) if it["date"][:4].isdigit() else None
+                if x.get("performers") and not it.get("performers"): it["performers"] = x["performers"]
                 if "Performer" not in it["xroles"]: it["xroles"].append("Performer")
         return items
 
@@ -1739,6 +1757,36 @@ def init(app, tmdb, posters_dir):
                 if len(CO_ITEMS) > 256: CO_ITEMS.pop(next(iter(CO_ITEMS)))
             P.append(dict(row=row, e=e, keys=co_keys(c, row, e), items=its, bd=_bd(row["birthday"])))
         if len(P) < 2: return dict(people=P, rows=[], excluded=[], ids=set(), error="Pick two different people.")
+        def _perf_keys(perfs):
+            ks = set()
+            for pr in perfs or []:
+                if not isinstance(pr, dict): continue
+                if pr.get("name"): ks.add(fold(pr["name"]))
+                for a in pr.get("aliases") or []:
+                    if isinstance(a, str) and a.strip(): ks.add(fold(a))
+            return ks
+        for p in P:
+            p["items"] = dict(p["items"])
+        allp = {}
+        for p in P:
+            for k, it in p["items"].items():
+                if k[0] == "P": allp.setdefault(k, it)
+        for k, it in allp.items():
+            if all((k in p["items"]) or (_perf_keys(it.get("performers")) & p["keys"]) for p in P):
+                for p in P:
+                    if k not in p["items"]:
+                        p["items"][k] = dict(it, roles=[], xroles=list(it.get("xroles") or ["Performer"]))
+        # Age rule: if a compared person has no profile birth date, use one stored on the cached scene performers.
+        def _bd_from_perfs(keys):
+            for it in allp.values():
+                for pr in it.get("performers") or []:
+                    if not isinstance(pr, dict) or not pr.get("birthday"): continue
+                    nms = [pr.get("name")] + [a for a in (pr.get("aliases") or []) if isinstance(a, str)]
+                    if any(fold(n) in keys for n in nms if n):
+                        return _bd(pr["birthday"])
+            return None
+        for p in P:
+            if not p["bd"]: p["bd"] = _bd_from_perfs(p["keys"])
         adult_ids = adult_film_ids(c)
         anyadult = any(p["e"]["films"] & adult_ids for p in P)
         shared = set(P[0]["items"])
@@ -1893,6 +1941,7 @@ def init(app, tmdb, posters_dir):
                    watched=dict(n=sum(1 for r in libr if r["watched"] == 1), of=len(libr)) if watched_tracked else None,
                    runtime=dict(avg=round(sum(rts) / len(rts)), total=sum(rts), n=len(rts)) if rts else None,
                    adult_rule=bool(d.get("anyadult")))
+        out["loading"] = any(scenes_loading_now(p["row"]["id"]) for p in P)
         return jsonify(out)
 
     @app.get("/api/people/cocredit/suggest")
@@ -1900,7 +1949,8 @@ def init(app, tmdb, posters_dir):
         """People credited with person `pid`, best first by titles shared (same count as the comparison page); `q` matches names and aliases."""
         c = C(); row = co_canon(c, int(request.args.get("pid") or 0))
         if not row: return jsonify(error="Unknown person"), 404
-        return jsonify(people=co_suggest(c, row, request.args.get("q") or "", min(int(request.args.get("limit", 10)), 50)))
+        return jsonify(people=co_suggest(c, row, request.args.get("q") or "", min(int(request.args.get("limit", 10)), 50)),
+                       loading=scenes_loading_now(row["id"]))
 
     def co_suggest(c, row, qtext, lim, extra=4, roles_of=None, pool=False):
         e = person_entry(c, row); F = e["films"]; mine = co_keys(c, row, e)
@@ -1920,6 +1970,24 @@ def init(app, tmdb, posters_dir):
             cur["names"].add(best_name(x)); cur["films"] |= (x["films"] & F)
             for ro, s in x["roles"].items(): cur["roles"][ro] += len(s & F) if F else len(s)
             cur["all"] = cur.get("all", 0) + len(x["films"])
+        # Typed search also matches co-performers on this person's cached ThePornDB scenes (including ones not in the library).
+        if q:
+            names_of = [row["name_norm"]] + [fold(n) for n in db.expand_person(c, row["name"])][1:]
+            for r2 in c.execute(f"SELECT tpdb_scenes_json FROM people WHERE tpdb_scenes_json IS NOT NULL AND (id=? OR name_norm IN ({','.join('?' * len(names_of))}))", [row["id"]] + names_of):
+                try: lst = json.loads(r2[0] or "[]")
+                except Exception: lst = []
+                for scn in lst:
+                    for pr in scn.get("performers") or []:
+                        if not isinstance(pr, dict) or not pr.get("name"): continue
+                        nms = [pr["name"]] + [a for a in (pr.get("aliases") or []) if isinstance(a, str)]
+                        ck = fold(pr["name"])
+                        if ck in mine or any(fold(a) in mine for a in nms): continue
+                        if not any(all(w in fold(nm) for w in q) for nm in nms + [ck]): continue
+                        cur = cand.get(ck)
+                        if not cur: cand[ck] = cur = dict(names=set(), films=set(), roles=Counter_(), key=ck, all=0, tpdb=0)
+                        cur["names"].update(nms)
+                        cur["tpdb"] = cur.get("tpdb", 0) + 1
+                        cur["roles"]["cast"] += 1
         # same age rule as the results page: adult titles only count when both have a known birth date and were 18+
         adult_ids = adult_film_ids(c); my_bd = _bd(row["birthday"])
         FD = {}
@@ -1953,17 +2021,20 @@ def init(app, tmdb, posters_dir):
             role = max(v["roles"].items(), key=lambda kv: kv[1])[0] if v["roles"] else "cast"
             out.append(dict(name=nm, pid=r["id"] if r else None, n=len(v["films"]), total=len(v["films"]), role=role,
                             known_for=(r["known_for"] if r and r["known_for"] else ROLE_DEPT.get(role)), aka=sorted(n for n in v["names"] if n != nm)[:3],
-                            _sc=sc(v)))
+                            _sc=sc(v), _tpdb=v.get("tpdb") or 0))
             if len(out) >= lim + extra: break
         # exact numbers for the ones shown: the same set the comparison page counts (library + cached filmographies, age rule)
         for x in out:
-            if not x["pid"]: continue
-            d = cocredit_data(c, [row["id"], x["pid"]])
-            if d and not d.get("error"): x["n"], x["total"] = len(d["ids"]), len(d["rows"])
+            if x["pid"]:
+                d = cocredit_data(c, [row["id"], x["pid"]])
+                if d and not d.get("error"): x["n"], x["total"] = len(d["ids"]), len(d["rows"])
+            elif x.get("_tpdb"):
+                x["total"] = max(x["total"], x["_tpdb"])
         out.sort(key=lambda x: (-x["total"], -x["n"], x["_sc"][1:]))
         out = [x for x in out if x["total"] or q]
         if not pool: out = out[:lim]  # pool: keep the whole exact-counted pool so the caller can pick its top `lim` by either count
-        for x in out: x.pop("_sc")
+        for x in out:
+            x.pop("_sc", None); x.pop("_tpdb", None)
         return out
 
     # ---------- Person page insights (Dashboard-style summary above the filmography) ----------
