@@ -1754,6 +1754,7 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   h+=`<h3 class=ppdept>Scenes <span class=muted>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
    +(S.ppScOnly&&!d.scenes_loading?`<p class=muted>Showing only your ${d.scenes_owned} scene(s); ${Math.max(0,(d.scenes_total||0)-d.scenes_owned)} more on ThePornDB.</p>`:'')
    +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})</p>`:'')
+   +(d.scenes_error&&!ld?`<p class=muted id=ppLoadErr>⚠ Couldn't load all ThePornDB scenes (${esc(d.scenes_error)})${d.scenes_tpdb_total?`; showing ${(d.scenes||[]).length} of ${d.scenes_tpdb_total}`:''}. <a href="#" onclick="ppScenesRetry(${d.person.id});return false">Retry</a></p>`:'')
    +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
    +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
 }
@@ -1788,6 +1789,7 @@ function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
   if(!n.scenes_loading){ppInsReset(pid);delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}}
 /* Year filter on the person page: click a year's blue (in-library) bar in Insights > Career timeline to show only that
    year's in-library credits below (chip 'YEAR (n) ×'); the same bar again or the × clears it; resets for each person. */
+function ppScenesRetry(pid){api('/api/person/'+pid+'?scenes_retry=1').then(n=>{if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}).catch(e=>toast("Couldn't reach Film Tagger: "+(e.message||e)))}
 function ppYearChip(d){const y=S.ppYear;if(!y)return '';const n=(d.library||[]).filter(f=>+f.year===y).length;
  return `<div style="margin:8px 0"><span class=ppychip id=ppYearChip>${y} (${n}) <a href="#" title="Clear the year filter" onclick="ppYear(null);return false">×</a></span></div>`}
 function ppYear(y){S.ppYear=y==null||S.ppYear===y?null:y;const st=$('content').scrollTop;renderPerson();$('content').scrollTop=st}
