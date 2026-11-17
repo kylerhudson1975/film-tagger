@@ -1261,7 +1261,7 @@ const FTS={cur:null,hist:[],P:{},
   P.studios={t:'Studios',ic:'studio',html:C('studio',F.alias)+C('studio',F.related)};
   P.galleries={t:'Galleries',ic:'gal',html:C('gal',F.vg)};
   P.rename={t:'Rename &amp; Files',ic:'file',html:C('file','<h3>Rename waiting</h3>'+F.rw)+C('file',F.fix)+C('file',F.mkv)+C('file',F.movieMkv)};
-  P.connections={t:'Connections',ic:'plug',html:C('key','<h3>ThePornDB</h3>'+F.tpdb)+C('key',F.tmdb)+C('db',F.imdb)+L('ai','Smart tagging AI','Endpoint, model and key for auto-tagging','smart')+L('askai','Ask a question AI','Groq API key and model for Reports → Ask a question','askai')};
+  P.connections={t:'Connections',ic:'plug',html:C('key','<h3>ThePornDB</h3>'+F.tpdb)+C('key',F.tmdb)+C('db',F.imdb)+L('ai','Smart tagging AI','Endpoint, model and key for auto-tagging','smart')};
   P.askai={t:'Ask a question AI',ic:'ai',parent:'connections',html:C('ai',F.askai)};
   P.about={t:'About',ic:'info',html:C('db','<h3>Database</h3>'+F.dbpath)+C('power',F.stop)};
   return P},
@@ -1925,8 +1925,8 @@ S.azCol=localStorage.azCol=='1';$('azColChk').checked=S.azCol;renderMpaa();setLi
  setInterval(()=>{if(el&&(!document.contains(el)||!el.getClientRects().length)){el=null}upd()},700)})();
 
 // ---------- Reports ----------
-const RP={cur:'ask',opt:null,last:null,
- pages:{ask:['Ask a question','ask'],country:['Films by country','globe'],directors:['Top directors by tag','dir'],tag_decades:['Tags over decades','tag'],genres:['Primary genres','bars'],studios:['Studios (scenes)','studio'],performers:['People','ppl'],synonyms:['Tag synonyms','link']},
+const RP={cur:'country',opt:null,last:null,
+ pages:{country:['Films by country','globe'],directors:['Top directors by tag','dir'],tag_decades:['Tags over decades','tag'],genres:['Primary genres','bars'],studios:['Studios (scenes)','studio'],performers:['People','ppl'],synonyms:['Tag synonyms','link']},
  I:{ask:'<path d="M21 12a8 8 0 0 1-11.6 7.1L4 21l1.9-5.4A8 8 0 1 1 21 12z"/>',globe:'<circle cx=12 cy=12 r=9 /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',dir:'<rect x=3 y=7 width=14 height=12 rx=2 /><path d="m17 11 4-2v8l-4-2"/>',tag:'<path d="M20 12l-8 8-9-9V3h8z"/><circle cx=7.5 cy=7.5 r=1.5 />',bars:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',studio:'<path d="M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6"/>',ppl:'<circle cx=9 cy=8 r=4 /><path d="M2 21c0-4 3-6 7-6s7 2 7 6"/>',link:'<path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',chart:'<path d="M15 18l-6-6 6-6"/>'},
  ic(n,z=18){return `<svg width=${z} height=${z} viewBox="0 0 24 24" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round>${RP.I[n]}</svg>`}};
 async function openReports(){if(!RP.opt)RP.opt=await api('/api/reports/options');
@@ -1934,7 +1934,7 @@ async function openReports(){if(!RP.opt)RP.opt=await api('/api/reports/options')
  $('mbox').classList.add('fts-box');ftsWin('reports');rpGo(RP.cur)}
 function rpSel(id,list,val,lab){return `<label class=rp-l>${lab}<select id=${id} onchange="rpRun()">${list.map(x=>{const v=Array.isArray(x)?x[0]:x,t=Array.isArray(x)?x[1]:x;return `<option value="${esc(v)}"${v==val?' selected':''}>${esc(t)}</option>`}).join('')}</select></label>`}
 function rpTagInp(val){return `<label class=rp-l>Tag<input id=rpTag list=rpTags value="${esc(val||'')}" placeholder="any tag" onchange="rpRun()" style="width:200px"><datalist id=rpTags>${RP.opt.tags.map(t=>`<option value="${esc(t)}">`).join('')}</datalist></label>`}
-function rpGo(k){RP.cur=k;RP.back=null;const o=RP.opt,[t,ic]=RP.pages[k];$('rpCrumb').innerHTML=`Reports › <b>${t}</b>`;$('rpTitle').textContent=t;$('rpBack').disabled=true;
+function rpGo(k){if(!RP.pages[k])k='country';RP.cur=k;RP.back=null;const o=RP.opt,[t,ic]=RP.pages[k];$('rpCrumb').innerHTML=`Reports › <b>${t}</b>`;$('rpTitle').textContent=t;$('rpBack').disabled=true;
  let h='';for(const x in RP.pages){if(x=='country')h+='<div class=rp-ng>Ready-made reports</div>';if(x=='synonyms')h+='<div class=rp-ng>Setup</div>';h+=`<div class="fts-ni${x==k?' on':''}" onclick="rpGo('${x}')">${RP.ic(RP.pages[x][1])}${RP.pages[x][0]}</div>`}$('rpNav').innerHTML=h;
  const dec=[['','Any decade'],...o.decades.map(d=>[d,d])],gen=[['','Any genre'],...o.genres.map(g=>[g,g])];let c='';
  if(k=='ask'){$('rpBody').innerHTML=`<div class=fts-card><div class=fts-cb><div class=rp-ask><input id=rpQ placeholder="e.g. How many films from the 1980s do I have?" onkeydown="if(event.key=='Enter')rpAsk()"><button class=pri onclick="rpAsk()">Ask</button></div>
