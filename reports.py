@@ -1487,6 +1487,8 @@ PCT_COLS = re.compile(r"(?i)percent|pct|share|%")
 
 def _null_problem(cols, rows):
     """Why a result looks broken (a value column entirely NULL, or one aggregate row of only zeros/NULLs), else ''."""
+    if not rows:
+        return ""
     vals = [k for k, cn in enumerate(cols) if cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS]
     dead = [cols[k] for k in vals if all(r[k] is None for r in rows)]
     if dead:
@@ -1510,7 +1512,7 @@ SUMMARY = {"rejected": ""}  # last AI sentence replaced by the plain values (ret
 def _summary(question, cols, rows, chat, reading="", names=()):
     """One plain-English sentence from the real returned values. Row numbers/rank columns are never treated as values;
     a single aggregate row is stated as such (never 'the top result')."""
-    if not rows: return "Nothing matched."
+    if not rows: return "Nobody in your library matched that."
     keep = [k for k, cn in enumerate(cols) if cn not in ("film_ids",) and cn.lower() not in ROWNUM_COLS]
     if not keep: return f"{len(rows)} row(s)."
     sample = [{cols[k]: x[k] for k in keep} for x in rows[:25]]
@@ -1578,12 +1580,16 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
         try:
             reading, sql = _parse_sql_reply(chat(prompt)); sql = fix_sql(sql)
             if attempt == 0:
-                v_sql, v_reading = _verify_sql(question, sql, chat)
-                if v_sql != sql:
-                    sql = v_sql
-                    if v_reading: reading = v_reading
+                try:
+                    v_sql, v_reading = _verify_sql(question, sql, chat)
+                    if v_sql != sql:
+                        sql = v_sql
+                        if v_reading: reading = v_reading
+                except Exception as ve:
+                    # Keep the first query if the double-check times out or can't be reached.
+                    if not (sql and _ai_transport_error(ve)):
+                        raise
             cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
-            if attempt == 0 and not rows: raise ValueError("the query ran but returned no rows; check names, joins and filters")
             if attempt == 0:
                 bad = _null_problem(cols, rows)
                 if bad: raise ValueError(bad)

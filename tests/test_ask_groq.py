@@ -181,3 +181,7 @@ assert "access denied" in r["answer"].lower() and "VPN" in r["answer"]
 assert r.get("notes") in (None, [],) or "ValueError" not in " ".join(r.get("notes") or [])
 
 print("OK test_ask_groq")
+
+# Empty results are valid (e.g. nobody has 80 scenes before age 20); do not treat them as a SQL failure.
+assert R._null_problem(["performer", "scenes"], []) == ""
+assert R._summary("Which performers had 80 scenes by age 20?", ["performer", "scenes"], [], lambda *a, **k: "x") == "Nobody in your library matched that."
