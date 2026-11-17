@@ -1,4 +1,4 @@
-"""Gallery photo adjustments: rotate, flip, crop, then contrast, brightness, gamma and sharpen.
+"""Gallery photo adjustments: rotate, flip, crop, then contrast, brightness, saturation, gamma and sharpen.
 
 The current file is overwritten only after a one-time copy of the original is
 saved in an `_originals` subfolder next to it (never deleted, never listed in
@@ -10,9 +10,9 @@ ORIGINALS = "_originals"
 JPEG_QUALITY = 95
 MAX_BYTES = 200 * 1024 * 1024
 MAX_PIXELS = 50_000_000
-# Neutral defaults: contrast/brightness/gamma 1, sharpen 0 (no unsharp mask).
-DEFAULTS = dict(contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0)
-RANGES = dict(contrast=(0.2, 3.0), brightness=(0.2, 3.0), gamma=(0.2, 3.0), sharpen=(0.0, 3.0))
+# Neutral defaults: contrast/brightness/saturation/gamma 1, sharpen 0 (no unsharp mask).
+DEFAULTS = dict(contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0, saturation=1.0)
+RANGES = dict(contrast=(0.2, 3.0), brightness=(0.2, 3.0), gamma=(0.2, 3.0), sharpen=(0.0, 3.0), saturation=(0.0, 2.0))
 
 
 def original_path(path):
@@ -47,7 +47,7 @@ def ensure_original(path):
 
 
 def parse_params(d):
-    """Pull contrast/brightness/gamma/sharpen from a request dict; raise ValueError if out of range."""
+    """Pull contrast/brightness/gamma/sharpen/saturation from a request dict; raise ValueError if out of range."""
     out = {}
     src = d or {}
     for k, (lo, hi) in RANGES.items():
@@ -134,10 +134,10 @@ def apply_geometry(im, rot=0, flip=False, crop=None):
     return im.crop((x, y, x + cw, y + ch))
 
 
-def apply_edit(im, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
-    """Apply geometry then tone, in this order: rotate, flip, crop, contrast, brightness, gamma, sharpen."""
+def apply_edit(im, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0, saturation=1.0):
+    """Apply geometry then tone, in this order: rotate, flip, crop, contrast, brightness, saturation, gamma, sharpen."""
     im = apply_geometry(im, rot, flip, crop)
-    return apply_adjustments(im, contrast, brightness, gamma, sharpen)
+    return apply_adjustments(im, contrast, brightness, gamma, sharpen, saturation)
 
 
 def cv_to_pil(img):
@@ -195,12 +195,13 @@ def apply_gamma(im, gamma):
     return _with_rgb(im, on)
 
 
-def apply_adjustments(im, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
-    """Apply the four adjustments in this order: contrast, brightness, gamma, sharpen.
-    Contrast/brightness use Pillow ImageEnhance; gamma is a LUT; sharpen > 0 is UnsharpMask
-    (radius=2, percent=sharpen*100, threshold=3). Neutral values leave the image unchanged."""
+def apply_adjustments(im, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0, saturation=1.0):
+    """Apply the tone adjustments in this order: contrast, brightness, saturation, gamma, sharpen.
+    Contrast/brightness/saturation use Pillow ImageEnhance (Color for saturation); gamma is a LUT;
+    sharpen > 0 is UnsharpMask (radius=2, percent=sharpen*100, threshold=3).
+    Neutral values leave the image unchanged. Saturation 0 is grayscale; 1 is no-op; 2 is 2x."""
     from PIL import ImageEnhance, ImageFilter
-    contrast, brightness, gamma, sharpen = float(contrast), float(brightness), float(gamma), float(sharpen)
+    contrast, brightness, gamma, sharpen, saturation = float(contrast), float(brightness), float(gamma), float(sharpen), float(saturation)
 
     def tone(color):
         out = color
@@ -208,6 +209,8 @@ def apply_adjustments(im, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
             out = ImageEnhance.Contrast(out).enhance(contrast)
         if abs(brightness - 1.0) >= 1e-6:
             out = ImageEnhance.Brightness(out).enhance(brightness)
+        if abs(saturation - 1.0) >= 1e-6:
+            out = ImageEnhance.Color(out).enhance(saturation)
         return out
 
     im = _with_rgb(im, tone)

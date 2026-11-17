@@ -2039,7 +2039,7 @@ def init(app, tmdb, posters_dir):
 
     @app.post("/api/person/<int:pid>/gallery/adjust")
     def person_gallery_adjust_save(pid):
-        """{name, rot, flip, crop, contrast, brightness, gamma, sharpen}: apply adjustments to that gallery photo.
+        """{name, rot, flip, crop, contrast, brightness, gamma, sharpen, saturation}: apply adjustments to that gallery photo.
         The original is copied to `_originals` once (never deleted) before the first overwrite."""
         return _pg_adjust(pid, "save")
 

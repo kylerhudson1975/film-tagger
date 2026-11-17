@@ -714,9 +714,9 @@ def pe_result_size(w, h, rot, crop):
     s = min(1.0, POSTER_FIT_PX / max(cw, ch))
     return (cw, ch), ((max(1, round(cw * s)), max(1, round(ch * s))) if s < 1 else (cw, ch))
 
-def pe_apply(img, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
+def pe_apply(img, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0, saturation=1.0):
     """Rotate by rot quarter-turns clockwise (negative = left), then flip horizontally, then crop,
-    then contrast / brightness / gamma / sharpen. Huge results are then shrunk to POSTER_FIT_PX.
+    then contrast / brightness / saturation / gamma / sharpen. Huge results are then shrunk to POSTER_FIT_PX.
     Order matches the shared image editor (gallery Edit and Edit poster)."""
     import cv2
     k = rot % 4
@@ -728,9 +728,10 @@ def pe_apply(img, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, ga
     x, y, cw, ch = pe_clamp_crop(crop, w, h)
     img = img[y:y + ch, x:x + cw]
     if (abs(float(contrast) - 1.0) >= 1e-6 or abs(float(brightness) - 1.0) >= 1e-6
-            or abs(float(gamma) - 1.0) >= 1e-6 or float(sharpen) > 1e-6):
+            or abs(float(gamma) - 1.0) >= 1e-6 or float(sharpen) > 1e-6
+            or abs(float(saturation) - 1.0) >= 1e-6):
         import galleryadjust as gamod
-        im = gamod.apply_adjustments(gamod.cv_to_pil(img), contrast, brightness, gamma, sharpen)
+        im = gamod.apply_adjustments(gamod.cv_to_pil(img), contrast, brightness, gamma, sharpen, saturation)
         img = gamod.pil_to_cv(im)
         h, w = img.shape[:2]
         cw, ch = w, h
@@ -776,7 +777,7 @@ def posteredit_image(fid):
 
 @app.post("/api/films/<int:fid>/posteredit")
 def posteredit_save(fid):
-    """{rot, flip, crop, contrast, brightness, gamma, sharpen}: edit the current poster.
+    """{rot, flip, crop, contrast, brightness, gamma, sharpen, saturation}: edit the current poster.
     Saves the result as the film's protected custom poster; the previous one goes to posters/backup/ (Restore previous)."""
     c = C(); bad = _pe_film(c, fid)
     if bad: return bad
@@ -4931,7 +4932,7 @@ def film_gallery_adjust_info(fid):
 
 @app.post("/api/films/<int:fid>/gallery/adjust")
 def film_gallery_adjust_save(fid):
-    """{name, rot, flip, crop, contrast, brightness, gamma, sharpen}: adjust a gallery photo. Original kept in `_originals` once."""
+    """{name, rot, flip, crop, contrast, brightness, gamma, sharpen, saturation}: adjust a gallery photo. Original kept in `_originals` once."""
     return _film_gallery_adjust(fid, "save")
 
 @app.post("/api/films/<int:fid>/gallery/adjust/revert")

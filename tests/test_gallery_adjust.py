@@ -68,6 +68,19 @@ assert list(box.getdata()) != list(sh.getdata()), "sharpen should change the ima
 ref = box.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
 assert list(sh.getdata()) == list(ref.getdata()), "sharpen 1.5 should be UnsharpMask percent=150"
 
+# 5b. saturation 0 is grayscale; saturation 1 is a no-op; out of range is rejected
+sat0 = ga.apply_adjustments(im.copy(), saturation=0)
+assert all(p[0] == p[1] == p[2] for p in sat0.getdata()), "saturation 0 should be grayscale"
+sat1 = ga.apply_adjustments(im.copy(), saturation=1)
+assert list(im.getdata()) == list(sat1.getdata()), "saturation 1 must not change pixels"
+ref0 = ImageEnhance.Color(im.copy()).enhance(0)
+assert list(sat0.getdata()) == list(ref0.getdata()), "saturation 0 should match ImageEnhance.Color"
+try:
+    ga.parse_params({"saturation": 3})
+    raise SystemExit("saturation range not enforced")
+except ValueError:
+    pass
+
 # 6. parse_params rejects bad values, defaults missing ones
 p = ga.parse_params({})
 assert p == ga.DEFAULTS

@@ -563,7 +563,7 @@ async function review(fid,tagIds,action,refresh){await api('/api/pending/review'
 const posterOf=f=>f.custom_poster||(f.kind=='scene'&&f.poster_wide)||f.poster;
 function posterBoxHtml(f){return `${posterOf(f)?`<img src="${esc(posterOf(f))}" style="max-width:100%">`:'<div class=muted style="padding:30px 0">No poster</div>'}
  <div class=muted style="font-size:.85em">${f.custom_poster?'Custom poster (TMDB won\'t replace it)':'Drop an image here to use your own poster'}</div>
- <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"><button onclick="$('posterFile').click()" title="Upload a JPG, PNG or WebP (max 15 MB)">🖼 Upload…</button><button onclick="posterUrl(${f.id})" title="Use an image from the web">🔗 From URL…</button>${(f.gallery_count||f.gallery_path)&&!/review by hand/i.test(f.notes||'')?`<button onclick="openGallery(${f.id})" title="Pick a poster from this title's stills / gallery">📷 From Gallery${f.gallery_count?` (${f.gallery_count})`:''}</button>`:''}${posterOf(f)&&!/review by hand/i.test(f.notes||'')?`<button onclick="openPosterEditor(${f.id})" title="Crop, rotate, flip, or adjust contrast, brightness, gamma and sharpen (done on the full-size image; the previous poster is backed up)">✂ Edit poster</button>`:''}${f.custom_poster?`<button onclick="removePoster(${f.id})" title="Go back to the TMDB poster">Remove custom poster</button>`:''}</div>${focusBoxHtml(f)}`}
+ <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"><button onclick="$('posterFile').click()" title="Upload a JPG, PNG or WebP (max 15 MB)">🖼 Upload…</button><button onclick="posterUrl(${f.id})" title="Use an image from the web">🔗 From URL…</button>${(f.gallery_count||f.gallery_path)&&!/review by hand/i.test(f.notes||'')?`<button onclick="openGallery(${f.id})" title="Pick a poster from this title's stills / gallery">📷 From Gallery${f.gallery_count?` (${f.gallery_count})`:''}</button>`:''}${posterOf(f)&&!/review by hand/i.test(f.notes||'')?`<button onclick="openPosterEditor(${f.id})" title="Crop, rotate, flip, or adjust contrast, brightness, saturation, gamma and sharpen (done on the full-size image; the previous poster is backed up)">✂ Edit poster</button>`:''}${f.custom_poster?`<button onclick="removePoster(${f.id})" title="Go back to the TMDB poster">Remove custom poster</button>`:''}</div>${focusBoxHtml(f)}`}
 const focusStyle=f=>f.kind=='scene'&&f.poster_focus_x!=null?` style="object-position:${(+f.poster_focus_x*100).toFixed(1)}% 50%"`:'';
 const FOCM={faces:'centred on faces',person:'centred on people',energy:'centred on the busiest area',center:'centred (nothing detected)',manual:'set by hand',failed:'could not read the image',portrait:'portrait image, no crop'};
 function focusBoxHtml(f){if(f.kind!='scene'||!posterOf(f))return '';const x=f.poster_focus_x==null?0.5:+f.poster_focus_x,hand=JSON.stringify(f.edited_fields||'').includes('poster_focus_x');
@@ -733,7 +733,7 @@ async function ufSubs(){const g=S.uf;if(!g||g.busy)return;const paths=[...docume
   toast(`${sum} · renamed ${j.renamed.length} subtitle file${j.renamed.length==1?'':'s'}`);if(j.errors.length)alert('Not renamed:\n'+j.errors.join('\n'))}
  catch(e){g.busy=false;if($('ufSubs'))$('ufSubs').disabled=false}}
 function fpClose(){const o=$('fpOv');if(o){o.style.display='none';o.innerHTML=''}S.fp=null}
-// ---------- Shared image editor (Edit poster + Gallery Edit): crop / rotate / flip + contrast / brightness / gamma / sharpen.
+// ---------- Shared image editor (Edit poster + Gallery Edit): crop / rotate / flip + contrast / brightness / saturation / gamma / sharpen.
 // The server redoes the edit on the full-size original, in this order: rotate, flip, crop, then tone. Posters may then shrink.
 function ieSlider(k,lab,min,max,step,val){return `<label for=pe_${k}>${lab}</label><input id=pe_${k} type=range min=${min} max=${max} step=${step} value="${val}" oninput="peToneInput()"><span class=ge-val id=pe_${k}v></span>`}
 function ieOverlay(){let o=$('peOv');if(!o){o=document.createElement('div');o.id='peOv';document.body.appendChild(o);
@@ -748,7 +748,7 @@ async function galEdit(){const g=S.gal;if(!g||g.i==null)return;const name=g.name
   src:src+(src.includes('?')?'&':'?')+'ge='+Date.now(),label:`${esc(name)}${info.width?` · ${info.width}×${info.height}`:''}`})}
 function peOpen(opt){const o=ieOverlay();
  S.pe={mode:opt.mode,id:opt.id,name:opt.name,W:opt.W,H:opt.H,ext:opt.ext,max:opt.max||0,small:opt.small||0,lock:!!opt.lock,lockDefault:!!opt.lock,can_restore:!!opt.can_restore,
-  rot:0,flip:false,contrast:1,brightness:1,gamma:1,sharpen:0,img:new Image(),busy:false};
+  rot:0,flip:false,contrast:1,brightness:1,gamma:1,sharpen:0,saturation:1,img:new Image(),busy:false};
  const restore=opt.mode=='gallery'
   ?`<button id=peRevert ${opt.can_restore?'':'disabled style="display:none"'} title="Put back the original photo (kept when you first saved an edit)" onclick="peRevert()">Revert to original</button>`
   :(opt.can_restore?`<button onclick="peRestore()" title="Put back the poster this film had before the last edit or Find Posters pick">↶ Restore previous</button>`:'');
@@ -758,21 +758,21 @@ function peOpen(opt){const o=ieOverlay();
   <button onclick="peResetAll()" title="Undo crop, rotate, flip and sliders in this window (does not revert a saved edit)">Reset</button>
   ${restore}<button onclick="peClose()">Cancel</button><button class=pri id=peSave onclick="peSave()">Save</button></div>
   <div id=peMsg style="padding:0 12px;color:#fff"></div><div id=peStage><div id=peWrap><canvas id=peCv></canvas><div id=peBox><i data-h=nw></i><i data-h=ne></i><i data-h=sw></i><i data-h=se></i></div></div></div>
-  <div id=peCtrls>${ieSlider('contrast','Contrast',0.2,3,0.05,1)}${ieSlider('brightness','Brightness',0.2,3,0.05,1)}${ieSlider('gamma','Gamma',0.2,3,0.05,1)}${ieSlider('sharpen','Sharpen',0,3,0.05,0)}</div>`;
+  <div id=peCtrls>${ieSlider('contrast','Contrast',0.2,3,0.05,1)}${ieSlider('brightness','Brightness',0.2,3,0.05,1)}${ieSlider('saturation','Saturation',0,2,0.05,1)}${ieSlider('gamma','Gamma',0.2,3,0.05,1)}${ieSlider('sharpen','Sharpen',0,3,0.05,0)}</div>`;
  o.style.display='flex';$('peMsg').textContent='Loading…';peToneLabels();
  S.pe.img.onload=()=>{peReset();$('peBox').onpointerdown=peDown};S.pe.img.onerror=()=>$('peMsg').textContent='Could not load the image';
  S.pe.img.crossOrigin='anonymous';S.pe.img.src=opt.src}
 function peClose(){const o=$('peOv');if(o){o.style.display='none';o.innerHTML=''}S.pe=null}
 const peOW=()=>S.pe.rot%2?S.pe.H:S.pe.W,peOH=()=>S.pe.rot%2?S.pe.W:S.pe.H;
-function peToneParams(){const n=k=>parseFloat($('pe_'+k)&&$('pe_'+k).value);return{contrast:n('contrast')||1,brightness:n('brightness')||1,gamma:n('gamma')||1,sharpen:n('sharpen')||0}}
-function peToneLabels(){const p=peToneParams(),g=S.pe;if(g)Object.assign(g,p);['contrast','brightness','gamma','sharpen'].forEach(k=>{if($('pe_'+k+'v'))$('pe_'+k+'v').textContent=p[k].toFixed(2)})}
+function peToneParams(){const n=(k,d)=>{const el=$('pe_'+k);if(!el)return d;const v=parseFloat(el.value);return Number.isFinite(v)?v:d};return{contrast:n('contrast',1),brightness:n('brightness',1),gamma:n('gamma',1),sharpen:n('sharpen',0),saturation:n('saturation',1)}}
+function peToneLabels(){const p=peToneParams(),g=S.pe;if(g)Object.assign(g,p);['contrast','brightness','gamma','sharpen','saturation'].forEach(k=>{if($('pe_'+k+'v'))$('pe_'+k+'v').textContent=p[k].toFixed(2)})}
 function peToneInput(){peToneLabels();if(S.pe&&S.pe.crop)peDraw()}
-function peToneOn(p){p=p||peToneParams();return Math.abs(p.contrast-1)>1e-6||Math.abs(p.brightness-1)>1e-6||Math.abs(p.gamma-1)>1e-6||p.sharpen>1e-6}
+function peToneOn(p){p=p||peToneParams();return Math.abs(p.contrast-1)>1e-6||Math.abs(p.brightness-1)>1e-6||Math.abs(p.gamma-1)>1e-6||p.sharpen>1e-6||Math.abs((p.saturation==null?1:p.saturation)-1)>1e-6}
 function peDefault(){const g=S.pe,W=peOW(),H=peOH();if(!g.lock)return{x:0,y:0,w:W,h:H};
  let w=W,h=Math.round(W*1.5);if(h>H){h=H;w=Math.round(H/1.5)}return{x:Math.round((W-w)/2),y:Math.round((H-h)/2),w,h}}
 function peReset(){S.pe.crop=peDefault();peDraw()}
 function peResetAll(){const g=S.pe;if(!g)return;g.rot=0;g.flip=false;g.lock=g.lockDefault;const box=$('peLock');if(box)box.checked=g.lock;
- ['contrast','brightness','gamma'].forEach(k=>{if($('pe_'+k))$('pe_'+k).value=1});if($('pe_sharpen'))$('pe_sharpen').value=0;peToneLabels();peReset()}
+ ['contrast','brightness','gamma','saturation'].forEach(k=>{if($('pe_'+k))$('pe_'+k).value=1});if($('pe_sharpen'))$('pe_sharpen').value=0;peToneLabels();peReset()}
 function peRot(k){const g=S.pe;if(!g)return;g.rot=((g.rot+k)%4+4)%4;peReset()}
 function peFlip(){const g=S.pe;if(!g)return;g.flip=!g.flip;const c=g.crop;c.x=peOW()-c.x-c.w;peDraw()}
 function peFull(){const g=S.pe;g.lock=false;$('peLock').checked=false;peReset()}
@@ -819,11 +819,15 @@ async function peRevert(){const g=S.pe,gal=S.gal;if(!g||!gal||!confirm('Put back
  catch(e){toast(e.message||String(e))}}
 addEventListener('resize',()=>{if(S.pe&&S.pe.crop)peDraw()});
 function geApply(src,w,h,p){
- const data=new Uint8ClampedArray(src.data);const C=p.contrast,B=p.brightness,G=p.gamma,Sh=p.sharpen;
+ const data=new Uint8ClampedArray(src.data);const C=p.contrast,B=p.brightness,G=p.gamma,Sh=p.sharpen,Sat=p.saturation==null?1:p.saturation;
  let sum=0,n=0;for(let i=0;i<data.length;i+=4){if(data[i+3]===0)continue;sum+=data[i]*0.299+data[i+1]*0.587+data[i+2]*0.114;n++}
  const mean=n?Math.floor(sum/n+0.5):128,inv=1/Math.max(G,1e-6);
- const tone=(v)=>{v=mean+(v-mean)*C;v=Math.min(255,Math.max(0,v));v=v*B;v=Math.min(255,Math.max(0,v));return Math.min(255,Math.max(0,Math.round(Math.pow(v/255,inv)*255)))};
- for(let i=0;i<data.length;i+=4){if(data[i+3]===0)continue;data[i]=tone(src.data[i]);data[i+1]=tone(src.data[i+1]);data[i+2]=tone(src.data[i+2])}
+ const tone=(v)=>{v=mean+(v-mean)*C;v=Math.min(255,Math.max(0,v));v=v*B;return Math.min(255,Math.max(0,v))};
+ for(let i=0;i<data.length;i+=4){if(data[i+3]===0)continue;
+  let r=tone(src.data[i]),g=tone(src.data[i+1]),b=tone(src.data[i+2]);
+  if(Math.abs(Sat-1)>1e-6){const y=r*0.299+g*0.587+b*0.114;r=y+(r-y)*Sat;g=y+(g-y)*Sat;b=y+(b-y)*Sat}
+  const gam=v=>Math.min(255,Math.max(0,Math.round(Math.pow(Math.min(255,Math.max(0,v))/255,inv)*255)));
+  data[i]=gam(r);data[i+1]=gam(g);data[i+2]=gam(b)}
  if(Sh>1e-6)geUnsharp(data,w,h,2,Sh*100,3);
  return new ImageData(data,w,h)}
 function geUnsharp(out,w,h,radius,percent,threshold){
@@ -918,7 +922,7 @@ async function openGallery(id,opt={}){const base=opt.base||`/api/films/${id}/gal
  o.innerHTML=`<div class=gh><b>${esc(opt.title||'Gallery')}</b><span class=muted id=galCount></span><span style="flex:1"></span><button id=galBack style="display:none" onclick="galGrid()">▦ All photos</button><button onclick="galClose()">✕ Close</button></div>
   <div class=gg id=galGrid></div>
   <div class=gv id=galView><button onclick="galShow(S.gal.i-1)" title="Previous (←)">‹</button><div class=gz id=galStage><img id=galImg alt="" draggable=false></div><div class=gzc onclick="event.stopPropagation()"><button onclick="galZoomBy(1/1.25)" title="Zoom out (−)">−</button><input id=galPct value="Fit" title="Zoom (% of the photo's actual pixels): type e.g. 125 and press Enter" onfocus="this.select()" onmouseup="event.preventDefault()" onkeydown="galPctKey(event)" onblur="galApply()"><button onclick="galZoomBy(1.25)" title="Zoom in (+)">+</button><button onclick="galFit()" title="Fit (0)">Fit</button></div><button onclick="galShow(S.gal.i+1)" title="Next (→)">›</button></div>
-  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span><button id=galEditBtn onclick="galEdit()" title="Crop, rotate, flip, or adjust contrast, brightness, gamma and sharpen (the original is kept)">Edit</button>${opt.hideable?'<button id=galHideBtn onclick="galHideAt(S.gal.i)">Hide from gallery</button>':''}${poster?'<button class=pri onclick="galPoster()">Use as poster</button>':''}</div>`;
+  <div class=gh id=galBar style="display:none"><span id=galName class=muted></span><span style="flex:1"></span><button id=galEditBtn onclick="galEdit()" title="Crop, rotate, flip, or adjust contrast, brightness, saturation, gamma and sharpen (the original is kept)">Edit</button>${opt.hideable?'<button id=galHideBtn onclick="galHideAt(S.gal.i)">Hide from gallery</button>':''}${poster?'<button class=pri onclick="galPoster()">Use as poster</button>':''}</div>`;
  galFill();o.style.display='flex';if(opt.start!=null)galShow(opt.start)}
 function galMedia(kind,n){const g=S.gal,v=g&&g.bust&&g.bust[n];return `${g.base}/${kind}?name=${encodeURIComponent(n)}${v?'&v='+v:''}`}
 function galFill(){const g=S.gal,o=$('galGrid'),u=n=>galMedia('thumb',n);if(!g||!o)return;
