@@ -328,14 +328,16 @@ def _ro_conn(c):
     """Read-only connection with pre-expanded TEMP tables; returns (conn, names of every cast member, safe names)."""
     path = _db_file(c)
     r = sqlite3.connect("file:" + path.replace("\\", "/").replace("?", "%3F") + "?mode=ro", uri=True, timeout=10)
+    r.execute("PRAGMA busy_timeout=8000")
+    # Views, not copies: copying the whole films table was slow on a large library.
     cols = [x[1] for x in r.execute("PRAGMA table_info(films)") if x[1] != "cast_"]
-    r.execute("CREATE TEMP TABLE films AS SELECT " + ",".join('"%s"' % x for x in cols) + " FROM main.films")
+    r.execute("CREATE TEMP VIEW films AS SELECT " + ",".join('"%s"' % x for x in cols) + " FROM main.films")
     r.execute("CREATE TEMP TABLE film_directors(film_id INTEGER, director TEXT)")
     r.execute("CREATE TEMP TABLE film_cast(film_id INTEGER, person TEXT)")
     people = {}
     try:
         pcols = [x[1] for x in r.execute("PRAGMA main.table_info(people)") if x[1] not in ("birthday", "merged_into")]
-        r.execute("CREATE TEMP TABLE people AS SELECT " + ",".join('"%s"' % x for x in pcols) + ", substr(birthday,1,4)+0 AS birth_year"
+        r.execute("CREATE TEMP VIEW people AS SELECT " + ",".join('"%s"' % x for x in pcols) + ", substr(birthday,1,4)+0 AS birth_year"
                   " FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'")
         for n, b in r.execute("SELECT name,birthday FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
             try: people[n.lower()] = (n, datetime.date.fromisoformat(b))
@@ -344,8 +346,14 @@ def _ro_conn(c):
         r.execute("CREATE TEMP TABLE people(name TEXT, birth_year INTEGER)")
     try:  # linked aliases (people.aliases / merges): credits under an alias count for the person with the birth date
         import db as _db
+        # One alias_groups() pass. Calling expand_person per person re-runs a full
+        # people-table aggregate each time and took minutes on a large library.
+        groups = _db.alias_groups(c) or {}
         for nm, bd in list(people.values()):
-            for al in _db.expand_person(c, nm): people.setdefault(al.lower(), (nm, bd))
+            g = groups.get(_db.fold(nm))
+            if g:
+                for al in g:
+                    people.setdefault(al.lower(), (nm, bd))
     except Exception: pass
     dirs, cast, everyone = [], set(), set()
     for fid, d, ca, rd, y in r.execute("SELECT id,director,cast_,release_date,year FROM main.films"):
@@ -370,7 +378,10 @@ def sql_schema(c):
         " kind ('scene' for scenes, NULL for films))\n"
         " film_directors(film_id, director)  -- one row per film per director (already split)\n"
         " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
-        " people(name, birth_year, ...)  -- performers/people\n"
+        " people(name, birth_year, gender)  -- gender is 'Female', 'Male', 'Non Binary',"
+        " 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty).\n"
+        "  This people table only includes people with a known birth date; film_cast already lists"
+        " only credits from when they were 18+.\n"
         " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'\n"
         "Notes:\n"
         " - 'Classic Porn' / porn / adult films = films WHERE " + _ADULT_ON + ".\n"
@@ -392,6 +403,9 @@ def sql_schema(c):
         " WHERE fc.person LIKE 'Jane Doe' GROUP BY d.director ORDER BY films DESC LIMIT 10\n"
         " Q: How many horror films per decade? -> SELECT (year/10)*10 AS decade, COUNT(*) AS films, group_concat(id) AS film_ids"
         " FROM films WHERE primary_genre LIKE 'Horror' AND year IS NOT NULL GROUP BY decade ORDER BY decade\n"
+        " Q: List the top 5 female performers by most scenes -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
+        " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+        " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.gender='Female' GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 5\n"
         " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n"
         " - Percentages: put the part's condition inside SUM(CASE WHEN ... THEN 1 ELSE 0 END), NOT in WHERE (WHERE limits the total"
         " too). Always multiply by 100.0 first (integer division gives 0) and round: ROUND(100.0*part/total, 1) AS percent. Return"
@@ -1098,6 +1112,9 @@ def _match_clause(hit, alias="f"):
 
 def _q_lookup(c, question, scope_sql, plural):
     """'Do I have any BGGG scenes?', 'films tagged X', 'show me X', 'how many X and Y scenes?'."""
+    # Rankings like "list the top 5 female stars by most scenes" are not tag lookups.
+    if re.search(r"(?i)\b(top|bottom)\s+\d|\blist\b.{0,40}\b(top|most|best)\b|\bmost (?:scenes|films|titles)\b", question):
+        return None
     if not _lookup_trigger(question) and not _extract_lookup_terms(question):
         return None
     terms = _extract_lookup_terms(question)
@@ -1227,7 +1244,20 @@ def ask_direct(c, question):
         return looked
     return None
 
-def ask(c, question, chat):
+def _likely_person_name(q):
+    """True when the question looks like it names a person, not just 'Female Porn Stars' / 'Top 5'."""
+    stop = _ASK_STOPWORDS | {
+        "top", "list", "the", "most", "best", "worst", "female", "male", "porn", "star", "stars",
+        "by", "of", "and", "with", "from", "for", "any", "how", "many", "which", "what", "who",
+    }
+    for m in re.finditer(r"\b[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+\b", q or ""):
+        words = [w.lower().strip(".'-") for w in m.group(0).split()]
+        if any(w and w not in stop for w in words):
+            return True
+    return False
+
+
+def ask(c, question, chat, llm_seconds=12, people_hint=True):
     import db as _db
     q = (question or "").strip()
     if not q:
@@ -1241,7 +1271,7 @@ def ask(c, question, chat):
     if not chat:
         return ask_fallback(q, no_ai=True)
     # mentioned_people() scans every credit and is slow on a large library; only run it when a name is likely.
-    if re.search(r"\b[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+\b", q):
+    if people_hint and _likely_person_name(q):
         people = mentioned_people(c, question)
     else:
         people = []
@@ -1269,7 +1299,7 @@ def ask(c, question, chat):
     if tg: hint.append(("tags", tg))
     try:
         import time as _time
-        deadline = _time.time() + 12
+        deadline = _time.time() + max(5, float(llm_seconds))
         orig_chat = chat
         def bounded(prompt, *a, **k):
             left = deadline - _time.time()

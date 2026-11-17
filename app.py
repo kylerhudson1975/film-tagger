@@ -1535,7 +1535,11 @@ def settings_get():
                    queue=c.execute("SELECT COUNT(*) FROM smart_queue").fetchone()[0],
                    pending=c.execute("SELECT COUNT(DISTINCT film_id) FROM film_tags WHERE status='pending'").fetchone()[0],
                    films=c.execute("SELECT COUNT(*) FROM films").fetchone()[0], db_path=db.DB_PATH,
-                   height_units=peoplemod.height_units(c))
+                   height_units=peoplemod.height_units(c),
+                   ask_ai_key_set=bool(db.get_setting(c, "ask_ai_key", "")),
+                   ask_ai_key_hint=_ask_key_hint(db.get_setting(c, "ask_ai_key", "")),
+                   ask_ai_model=db.get_setting(c, "ask_ai_model", "") or ASK_GROQ_DEFAULT,
+                   ask_ai_models=ASK_GROQ_MODELS)
 
 @app.put("/api/settings")
 def settings_put():
@@ -1558,6 +1562,12 @@ def settings_put():
         db.set_setting(c, "height_units", d["height_units"])
     if d.get("ai_key") is not None and d.get("ai_key") != "":  # blank = keep existing; "-" = clear
         db.set_setting(c, "ai_key", "" if d["ai_key"].strip() == "-" else d["ai_key"].strip().strip('"').strip("'"))
+    if "ask_ai_model" in d:
+        m = (d.get("ask_ai_model") or "").strip()
+        allowed = {x[0] for x in ASK_GROQ_MODELS}
+        db.set_setting(c, "ask_ai_model", m if m in allowed else ASK_GROQ_DEFAULT)
+    if d.get("ask_ai_key") is not None and d.get("ask_ai_key") != "":
+        db.set_setting(c, "ask_ai_key", "" if d["ask_ai_key"].strip() == "-" else d["ask_ai_key"].strip().strip('"').strip("'"))
     c.commit(); return settings_get()
 
 def _ps_files(root):
@@ -3221,6 +3231,19 @@ def prompt_text():
     except OSError: return Response("", mimetype="text/plain")
 AI_BATCH = 8
 
+ASK_GROQ_URL = "https://api.groq.com/openai/v1"
+ASK_GROQ_DEFAULT = "openai/gpt-oss-120b"
+# Current Groq production/preview chat models for the free/developer tier (llama-3.3-70b-versatile is Enterprise-only as of Aug 2026).
+ASK_GROQ_MODELS = [
+    ("openai/gpt-oss-120b", "GPT-OSS 120B (recommended)"),
+    ("openai/gpt-oss-20b", "GPT-OSS 20B (faster)"),
+    ("qwen/qwen3.8-27b", "Qwen3.8 27B"),
+]
+
+def _ask_key_hint(k):
+    k = k or ""
+    return (("…" + k[-4:]) if len(k) > 8 else ("set" if k else ""))
+
 def ai_endpoint(url):
     u = (url or "").strip().rstrip("/")
     if not u: return None
@@ -3230,11 +3253,15 @@ def ai_endpoint(url):
 
 def ai_chat(url, key, model, prompt, timeout=180, temperature=0.3):
     body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": temperature}
-    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "FilmTagger/1.4.1"}
     if key: headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(ai_endpoint(url), data=json.dumps(body).encode(), headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r: data = json.load(r)
-    return data["choices"][0]["message"]["content"]
+    msg = (data.get("choices") or [{}])[0].get("message") or {}
+    content = msg.get("content") or msg.get("reasoning") or ""
+    if isinstance(content, list):
+        content = "".join((x.get("text") or "") if isinstance(x, dict) else str(x) for x in content)
+    return content
 
 def parse_ai_json(text):
     t = _re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", (text or "").strip())
@@ -5338,6 +5365,7 @@ import reports as repmod
 def reports_options():
     c = C(); o = repmod.options(c)
     o["ai_configured"] = bool(db.get_setting(c, "ai_url", "") and db.get_setting(c, "ai_model", ""))
+    o["ask_ai_configured"] = bool(db.get_setting(c, "ask_ai_key", ""))
     return jsonify(o)
 
 @app.post("/api/reports/run")
@@ -5361,18 +5389,46 @@ def reports_synonyms_put():
 def reports_ask():
     c = C(); q = ((request.json or {}).get("question") or "").strip()
     if not q: return jsonify(error="Type a question first."), 400
+    ask_key = db.get_setting(c, "ask_ai_key", "")
+    ask_model = db.get_setting(c, "ask_ai_model", "") or ASK_GROQ_DEFAULT
     url, model, key = db.get_setting(c, "ai_url", ""), db.get_setting(c, "ai_model", ""), db.get_setting(c, "ai_key", "")
-    chat = (lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0)) if (url and model) else None
+    if ask_key:
+        chat = lambda p, timeout=20, **k: ai_chat(ASK_GROQ_URL, ask_key, ask_model, p, timeout=timeout, temperature=0)
+        llm_seconds, people_hint, has_ai = 20, False, True
+    elif url and model:
+        chat = lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0)
+        llm_seconds, people_hint, has_ai = 12, True, True
+    else:
+        chat, llm_seconds, people_hint, has_ai = None, 12, True, False
     try:
-        res = repmod.ask(c, q, chat)  # built-in answers first; AI only for leftovers, 12s cap
+        res = repmod.ask(c, q, chat, llm_seconds=llm_seconds, people_hint=people_hint)
     except Exception as e:
         res = repmod.ask_fallback(q, notes=[type(e).__name__])
     if not res:
-        res = repmod.ask_fallback(q, no_ai=not (url and model))
+        res = repmod.ask_fallback(q, no_ai=not has_ai)
     if res.get("mode") == "sql":
         try: ask_charts(c, res)
         except Exception as e: res["chart_error"] = type(e).__name__
     return jsonify(res)
+
+
+@app.post("/api/ask/test")
+def ask_ai_test():
+    """Try the Ask a question Groq connection. Body may include unsaved ask_ai_key / ask_ai_model."""
+    c = C(); d = request.json or {}
+    key = (d.get("ask_ai_key") or "").strip() or db.get_setting(c, "ask_ai_key", "")
+    model = (d.get("ask_ai_model") or "").strip() or db.get_setting(c, "ask_ai_model", "") or ASK_GROQ_DEFAULT
+    if not key:
+        return jsonify(error="Paste a Groq API key first (or Save one)."), 400
+    if model not in {x[0] for x in ASK_GROQ_MODELS}:
+        model = ASK_GROQ_DEFAULT
+    try:
+        reply = ai_chat(ASK_GROQ_URL, key, model, "Reply with the single word pong.", timeout=15, temperature=0)
+    except urllib.error.HTTPError as e:
+        return jsonify(error=f"Groq answered HTTP {e.code}"), 502
+    except Exception as e:
+        return jsonify(error=f"Could not reach Groq: {type(e).__name__}"), 502
+    return jsonify(ok=True, endpoint=ai_endpoint(ASK_GROQ_URL), model=model, reply=(reply or "").strip()[:200])
 
 
 def _ids_for(c, f):
