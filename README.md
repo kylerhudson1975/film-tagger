@@ -7,7 +7,19 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.4.1](#whats-new-in-v141) · [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.4.1
+More reliable person pages, ThePornDB movies as well as scenes, a From Gallery poster button for Mainstream films, and one shared image editor for posters and gallery photos.
+
+### Person pages
+- ThePornDB lists load in parallel, retry after timeouts, and render as you scroll — no more hanging on "still loading," and the page no longer flashes.
+- Person pages now include ThePornDB **movies as well as scenes**, so large catalogues finish loading.
+- **Credited with** searches the full ThePornDB catalogue, even for people you don't have a title with.
+
+### Posters and galleries
+- Mainstream films with a stills folder get the same **📷 From Gallery** button as scenes (the old Open stills folder button is gone from those titles).
+- **Edit poster** and gallery **Edit** now share one editor: crop, rotate, flip, contrast, brightness, gamma and sharpen. Lock 2:3 starts on for posters and off for gallery photos. Originals and hand-picked posters stay protected.
 
 ## What's new in v1.4.0
 Critic scores, IMDb-checked years, TV miniseries as films, person renames, a photo darkroom for galleries, and performer galleries — everything since v1.3.5.
