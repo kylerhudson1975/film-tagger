@@ -32,6 +32,7 @@ BAD = ("SELECT ROUND(100*SUM(CASE WHEN f.year BETWEEN 1970 AND 1990 THEN 1 ELSE 
        " group_concat(f.id) AS film_ids FROM film_directors fd JOIN films f ON f.id=fd.film_id"
        " WHERE fd.director LIKE 'Jesus Franco' AND f.year BETWEEN 1970 AND 1990")
 def fake(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     sent.append(prompt)
     if "ONE SQLite SELECT" in prompt:
         if "Your previous query" not in prompt: return json.dumps({"reading": "percent", "sql": BAD})
@@ -54,6 +55,7 @@ assert "top result" not in r["answer"].lower() and "57.1%" in r["answer"] and "4
 assert any("You said 209 films; your library has 7 titles directed by Jesús Franco (counting their aliases)" in n for n in r["notes"]), r["notes"]
 # a good AI sentence with the real numbers is kept as is
 def fake2(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt: return fake(url, key, model, prompt + "\nYour previous query", timeout)
     assert "single aggregate result row" in prompt and "#=" not in prompt
     return "57.1% of Jesús Franco's 7 directed films in your library (4) were released 1970–1990."
@@ -61,12 +63,13 @@ app.ai_chat = fake2
 r = ask(Q)
 assert r["answer"] == "57.1% of Jesús Franco's 7 directed films in your library (4) were released 1970–1990.", r["answer"]
 # a sentence with wrong numbers is replaced by the plain values
-app.ai_chat = lambda u, k, m, p, timeout=180, **kw: fake(u, k, m, p + "\nYour previous query", timeout) if "ONE SQLite SELECT" in p else "21% of his 209 films (44)."
+app.ai_chat = lambda u, k, m, p, timeout=180, **kw: fake(u, k, m, p + "\nYour previous query", timeout, **kw) if "ONE SQLite SELECT" in ((kw.get("system") or "") + "\n" + p) else "21% of his 209 films (44)."
 r = ask(Q)
 assert r["answer"] == "57.1% (4 of 7) \u2014 Franco films 1970-1990 as a share of all his films.", r["answer"]
 
 # 2) ratio (single row)
 def fake_ratio(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         assert "ROUND(1.0*a/NULLIF(b,0), 2)" in prompt
         return json.dumps({"reading": "hardcore vs horror", "sql":
@@ -80,6 +83,7 @@ assert not any("You said" in n for n in r["notes"])
 
 # 3) single-row count: '#'/rank columns are never values; the fallback states the real number
 def fake_count(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         return json.dumps({"reading": "count", "sql": "SELECT 1 AS rank, COUNT(*) AS films FROM films WHERE director='Other Dir'"})
     return "The top result is 1."
@@ -90,6 +94,7 @@ assert r["rows"] == [[1, 2]] and r["answer"] == "films: 2.", r
 # 4) multi-row ranking: a rank column is left out of what the summariser sees
 seen = []
 def fake_rank(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         return json.dumps({"reading": "ranking", "sql": "SELECT ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC) AS rank, director, COUNT(*) AS films"
                            " FROM films GROUP BY director ORDER BY films DESC"})
@@ -103,7 +108,7 @@ else:
     assert r.get("direct")
 
 # 5) a column that stays NULL after the retry is flagged
-app.ai_chat = lambda u, k, m, p, timeout=180, **kw: json.dumps({"reading": "x", "sql": "SELECT NULL AS percent, COUNT(*) AS films FROM films"}) if "ONE SQLite SELECT" in p else "?"
+app.ai_chat = lambda u, k, m, p, timeout=180, **kw: json.dumps({"reading": "x", "sql": "SELECT NULL AS percent, COUNT(*) AS films FROM films"}) if "ONE SQLite SELECT" in ((kw.get("system") or "") + "\n" + p) else "?"
 r = ask("What percent of my films are blue?")
 assert r["retried"] and any("empty even after a retry" in n for n in r["notes"]), r
 print("OK test_ask_aggregates")

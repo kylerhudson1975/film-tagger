@@ -58,6 +58,7 @@ c.execute("INSERT INTO people(name,name_norm,birthday,aliases) VALUES(?,?,?,?)",
 db.set_setting(c, "ai_url", "http://ai.invalid/v1"); db.set_setting(c, "ai_model", "m"); c.commit()
 cl = app.app.test_client()
 def fake(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         assert '"chart": "<optional: ring' in prompt
         lst = prompt.split("Match with fd.director IN (")[1].split(")")[0]
@@ -78,6 +79,7 @@ assert cl.get("/api/films", query_string={"ids": "1,5"}).json["total"] == 2
 print("OK test_askcharts")
 # a director bar counting only the credited spelling (not the alias) opens exactly its own titles, not the alias-expanded filter
 def fake_rank(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         return json.dumps({"reading": "rank", "sql": "SELECT d.director, COUNT(*) AS films, group_concat(DISTINCT d.film_id) AS film_ids FROM film_directors d GROUP BY d.director ORDER BY films DESC"})
     return "Jesús Franco leads with 5 films."

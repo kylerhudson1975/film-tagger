@@ -67,7 +67,7 @@ assert r.status_code == 200 and "couldn't answer that" in r.json["answer"].lower
 db.set_setting(c, "ai_url", "http://ai.invalid/v1"); db.set_setting(c, "ai_model", "m"); c.commit()
 sent = []
 def fake(url, key, model, prompt, timeout=180, **kw):
-    sent.append(prompt)
+    sent.append(((kw.get("system") or "") + "\n" + (prompt or "")).strip())
     return '```json\n{"report":"directors","tag":"Blowjob","decade":"1970s","scope":"adult","sql":"DROP TABLE films"}\n```'
 app.ai_chat = fake
 r = cl.post("/api/reports/ask", json={"question": "Which 1970s porn director made the most films tagged Blowjob?"}).json
@@ -78,6 +78,7 @@ assert not any("S1" in p for p in sent)  # no titles from the library are sent
 assert c.execute("SELECT COUNT(*) FROM films").fetchone()[0] == 9  # the DROP never ran
 # a valid SELECT is run read-only and summarised
 def fake_sql(url, key, model, prompt, timeout=180, **kw):
+    prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
     if "ONE SQLite SELECT" in prompt:
         return '{"reading": "films per director", "sql": "SELECT director, COUNT(*) AS n FROM films WHERE director<>\'\' GROUP BY director ORDER BY n DESC"}'
     return "Dir One made the most, with 4 films."

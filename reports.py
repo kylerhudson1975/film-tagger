@@ -374,110 +374,123 @@ def _ro_conn(c):
     return r, everyone, safe
 
 
-def sql_schema(c):
-    tags = [t for t in options(c)["tags"][:60]]
-    return (
+def sql_schema(c, question=""):
+    """Compact library schema for Ask SQL. Long examples are included only when the question needs them."""
+    q = (question or "").lower()
+    # Core is always sent (and kept stable) so Groq can cache it and tests can see the key rules.
+    core = (
         "SQLite tables (use ONLY these):\n"
         " films(id, title, year, release_date 'YYYY-MM-DD' or NULL, director (comma-separated), country, studio, primary_genre,"
-        " runtime (minutes), rating (0-10 or NULL), watched (0/1),"
-        " kind ('scene' for scenes, NULL for films))\n"
-        " film_directors(film_id, director)  -- one row per film per director (already split)\n"
-        " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
-        " people(name, birthday 'YYYY-MM-DD', birth_year, gender, favorite)  -- gender is 'Female', 'Male', 'Non Binary',"
-        " 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty);"
-        " favorite is 0/1 (1 = starred in People → Favorites).\n"
-        "  This people table only includes people with a known birth date; film_cast already lists"
-        " only credits from when they were 18+.\n"
-        "  Other people columns: height TEXT (almost always like 170cm; may also be 162, 1.62 m,"
-        "  5 ft 4 in, or 64 in), measurements TEXT (for example 34B-24-34), ethnicity, nationality,"
-        "  gender, birthday, place, career. There is no weight column.\n"
-        "  Use height_cm(p.height) for centimetres (NULL if unreadable). Inches = height_cm(p.height)/2.54."
-        "  5 feet 0 inches = 60 in = 152.4 cm, so 5 ft 0 in or shorter is height_cm(p.height) <= 152.4.\n"
-        " - 'Porn stars' / 'porn performers' means people with a film_cast credit on an adult title"
-        " (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'') IN ('Hardcore','Softcore'))."
-        " Do NOT filter on a tag named 'porn stars' or any tag the user did not mention.\n"
-        " Q: How many porn stars are 5'0\" or shorter? -> SELECT COUNT(DISTINCT p.name) AS n FROM people p"
-        " WHERE height_cm(p.height) <= 152.4 AND EXISTS (SELECT 1 FROM film_cast fc JOIN films f ON f.id=fc.film_id"
-        " WHERE lower(fc.person)=lower(p.name) AND (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'')"
-        " IN ('Hardcore','Softcore')))\n"
-        " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'\n"
-        "Notes:\n"
-        " - 'Classic Porn' / adult / porn *films* (not scenes, not performers) = films WHERE " + _ADULT_ON + "."
-        " Only use that predicate when the question is about those films. 'Porn stars', 'scenes',"
-        " or a performer ranking is not a reason to filter primary_genre.\n"
+        " runtime (minutes), rating (0-10 or NULL), watched (0/1), kind ('scene' for scenes, NULL for films))\n"
+        " film_directors(film_id, director)  -- one row per director, already split\n"
+        " film_cast(film_id, person)  -- one row per performer, already split; join people with lower(fc.person)=lower(p.name)."
+        " film_cast already lists only credits from when they were 18+.\n"
+        " people(name, birthday 'YYYY-MM-DD', birth_year, gender, favorite, height, measurements, ethnicity, nationality, place, career)."
+        " This people table only includes people with a known birth date."
+        " p.gender is 'Female', 'Male', 'Non Binary', 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty)."
+        " favorite is 0/1. There is no weight column and no films.favorite column.\n"
+        " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'.\n"
+        "Rules:\n"
         " - Only filter on what the question asks. Do not add primary_genre, Hardcore, Softcore,"
         " watched, rated, favorite, year, or any other WHERE/JOIN condition the user did not mention.\n"
-        " - Common flags (use these exact predicates):\n"
-        "   unwatched: COALESCE(f.watched,0)=0  (0 or NULL).  watched: f.watched=1\n"
-        "   unrated: f.rating IS NULL.  rated: f.rating IS NOT NULL.  a rating of N: f.rating=N\n"
-        "   favorite people: p.favorite=1.  There is no films.favorite column.\n"
+        " - 'Porn stars' / 'porn performers' means people with a film_cast credit on an adult title"
+        " (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'') IN ('Hardcore','Softcore'))."
+        " Do NOT filter on a tag named 'porn stars' or any tag the user did not mention."
+        " A performer ranking is not a reason to filter primary_genre.\n"
+        " - 'Classic Porn' / adult / porn *films* (not scenes, not performers) = films WHERE " + _ADULT_ON + ".\n"
+        " - 'films' means COALESCE(f.kind,'')<>'scene' (kind is NULL or '' for films; never write kind<>'')."
+        " 'scenes' means kind='scene'."
+        " 'in my library' / 'in my collection' is not a tag and not a filter — the query already runs only on this library.\n"
+        " - unwatched: COALESCE(f.watched,0)=0. watched: f.watched=1."
+        " unrated: f.rating IS NULL. rated: f.rating IS NOT NULL. favorite people: p.favorite=1.\n"
         " Q: How many unwatched films do I have? -> SELECT COUNT(*) AS films FROM films f"
         " WHERE COALESCE(f.kind,'')<>'scene' AND COALESCE(f.watched,0)=0\n"
-        " Q: How many unrated titles do I have? -> SELECT COUNT(*) AS n FROM films f WHERE f.rating IS NULL\n"
         " Q: How many films have I marked as watched? -> SELECT COUNT(*) AS films FROM films f"
         " WHERE COALESCE(f.kind,'')<>'scene' AND f.watched=1\n"
-        " Q: Which favorite performers have the most scenes? -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
-        " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
-        " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.favorite=1 GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 10\n"
+        " Q: How many unrated titles do I have? -> SELECT COUNT(*) AS n FROM films f WHERE f.rating IS NULL\n"
+        " - Height is TEXT (almost always like 170cm). Use height_cm(p.height) for centimetres (NULL if unreadable)."
+        " Inches = height_cm(p.height)/2.54."
+        " 5 ft 0 in = 60 in = 152.4 cm (height_cm(p.height) <= 152.4)."
+        " 5 ft 10 in = 70 in = 177.8 cm (height_cm(p.height) >= 177.8).\n"
         " - Age at a scene: scene date is COALESCE(f.release_date, printf('%04d-01-01', f.year))."
         " age = CAST(strftime('%Y', scene_date) AS INT) - p.birth_year"
         " - CASE WHEN strftime('%m-%d', scene_date) < substr(p.birthday,6,5) THEN 1 ELSE 0 END."
-        " If release_date is missing, f.year - p.birth_year is the age that calendar year."
-        " 'by the time they were 20' / 'before they turned 20' means age < 20. film_cast already"
-        " excludes credits before age 18, so those rows are ages 18-19 only. Never invent a birthday.\n"
-        " Q: Which performers were in 80 or more scenes by the time they were 20? ->"
-        " SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes, group_concat(DISTINCT fc.film_id) AS film_ids"
-        " FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
-        " JOIN people p ON lower(p.name)=lower(fc.person)"
-        " WHERE (CAST(strftime('%Y', COALESCE(f.release_date, printf('%04d-01-01', f.year))) AS INT) - p.birth_year"
-        " - CASE WHEN strftime('%m-%d', COALESCE(f.release_date, printf('%04d-01-01', f.year))) < substr(p.birthday,6,5)"
-        " THEN 1 ELSE 0 END) < 20"
-        " GROUP BY lower(p.name) HAVING COUNT(DISTINCT fc.film_id) >= 80"
-        " ORDER BY scenes DESC, p.name\n"
-        " - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres. Common tags: " + json.dumps(tags) + "\n"
-        " - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(synonyms(c)) + "\n"
-        " - 'Classic Porn' is NOT a tag: use the films condition above. Wrap OR conditions in parentheses: (a OR b) AND c.\n"
-        " - Performers who appear WITH someone: self-join film_cast (fc2.film_id=fc1.film_id AND fc1.person LIKE '<them>') and"
-        " leave them out (fc2.person NOT LIKE '<them>'), GROUP BY fc2.person.\n"
-        " - Missing values: a column is empty when it IS NULL or = '' (e.g. no director: COALESCE(f.director,'')='').\n"
-        " - Name columns after what they hold: year AS year (a single year is never a decade); only (year/10)*10 AS decade.\n"
-        " - Decade: (year/10)*10. Compare names case-insensitively (LIKE or COLLATE NOCASE).\n"
-        " - When each row is ONE film, include films.id AS id. When rows are groups (GROUP BY a person, country, decade...),"
-        " do NOT select films.id; instead include group_concat(DISTINCT films.id) AS film_ids so the user can click through.\n"
-        " - For 'which ... the most' questions return the top 10 ranked rows (ORDER BY count DESC LIMIT 10), not just 1.\n"
-        " - Give columns readable aliases (e.g. director, films, decade).\n"
-        "Examples:\n"
-        " Q: Which director did Jane Doe work with the most? -> SELECT d.director, COUNT(DISTINCT d.film_id) AS films,"
-        " group_concat(DISTINCT d.film_id) AS film_ids FROM film_directors d JOIN film_cast fc ON fc.film_id=d.film_id"
-        " WHERE fc.person LIKE 'Jane Doe' GROUP BY d.director ORDER BY films DESC LIMIT 10\n"
-        " Q: How many horror films per decade? -> SELECT (year/10)*10 AS decade, COUNT(*) AS films, group_concat(id) AS film_ids"
-        " FROM films WHERE primary_genre LIKE 'Horror' AND year IS NOT NULL GROUP BY decade ORDER BY decade\n"
-        " Q: List the top 5 female performers by most scenes -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
-        " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
-        " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.gender='Female' GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 5\n"
-        " - Never add NOT IN / NOT EXISTS sub-queries that exclude the person's own films; at most add d.director NOT LIKE '<that person>'.\n"
-        " - Percentages: put the part's condition inside SUM(CASE WHEN ... THEN 1 ELSE 0 END), NOT in WHERE (WHERE limits the total"
-        " too). Always multiply by 100.0 first (integer division gives 0) and round: ROUND(100.0*part/total, 1) AS percent. Return"
-        " the part, the total and the percent as three columns (e.g. matching, total, percent). Use NULLIF(total,0) to avoid /0.\n"
-        " - Ratios: ROUND(1.0*a/NULLIF(b,0), 2) AS ratio, and also return a and b.\n"
-        " - A question about ONE thing (one person, one tag...) needs ONE aggregate row: no GROUP BY.\n"
-        " - 'How many films/titles ...' wants ONE number: SELECT COUNT(DISTINCT f.id) AS films ... with NO GROUP BY (never one row"
-        " per film with a count of 1). Only GROUP BY when the question asks 'per X', 'by X' or 'each X'.\n"
-        " - Share of a person's/genre's films that have a tag: never JOIN film_tags into the query (it drops untagged films from"
-        " the total and counts films once per tag). Use EXISTS: SUM(CASE WHEN EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON"
-        " t.id=ft.tag_id WHERE ft.film_id=f.id AND ft.status='approved' AND lower(t.name) IN (...)) THEN 1 ELSE 0 END) AS matching,"
-        " COUNT(DISTINCT f.id) AS total.\n"
-        " - Tags joined by 'or' ('tagged oral or fellatio') match films with ANY of them: lower(t.name) IN (...) including"
-        " their synonym group members; tags joined by 'and' must all be present (one EXISTS per tag).\n"
-        " Q: How many films did Jane Doe act in that are tagged comedy or satire? -> SELECT COUNT(DISTINCT f.id) AS films FROM films f"
-        " JOIN film_cast fc ON fc.film_id=f.id JOIN film_tags ft ON ft.film_id=f.id AND ft.status='approved' JOIN tags t ON"
-        " t.id=ft.tag_id WHERE fc.person LIKE 'Jane Doe' AND lower(t.name) IN ('comedy','satire')\n"
-        " - 'between 1970 and 1990' = year BETWEEN 1970 AND 1990 (inclusive). Names in the question may be typed without accents;"
-        " use the stored spelling given below when there is one.\n"
-        " Q: What percent of Jane Doe's directed films are from the 1970s? -> SELECT SUM(CASE WHEN f.year BETWEEN 1970 AND 1979 THEN 1"
-        " ELSE 0 END) AS matching, COUNT(DISTINCT f.id) AS total, ROUND(100.0*SUM(CASE WHEN f.year BETWEEN 1970 AND 1979 THEN 1 ELSE 0"
-        " END)/NULLIF(COUNT(DISTINCT f.id),0), 1) AS percent, group_concat(DISTINCT CASE WHEN f.year BETWEEN 1970 AND 1979 THEN f.id END)"
-        " AS film_ids FROM film_directors fd JOIN films f ON f.id=fd.film_id WHERE fd.director IN ('Jane Doe')\n")
+        " 'by the time they were 20' / 'before they turned 20' means age < 20."
+        " film_cast already excludes credits before age 18. Never invent a birthday.\n"
+        " - How many / one number: SELECT COUNT(DISTINCT f.id) AS films ... with NO GROUP BY."
+        " Only GROUP BY for 'per X' / 'by X'. For 'which ... the most' return top 10 (ORDER BY count DESC LIMIT 10)."
+        " Groups use group_concat(DISTINCT films.id) AS film_ids; single titles use films.id AS id.\n"
+        " - Compare names case-insensitively. Decade = (year/10)*10. Empty means IS NULL or = ''.\n"
+    )
+    extra = []
+    want_height = bool(re.search(r"height|tall|short|cm\b|centimet|\b\d+\s*(ft|foot|feet|in|inch)", q) or re.search(r"\d+\s*'\s*\d+", q))
+    want_age = bool(re.search(r"\b(age|birthday|birth date|years? old|year-old|by the time|turned \d|before they|after they)\b", q))
+    want_tags = bool(q) and bool(re.search(r"\b(tag|tagged|tags|genre|giallo|exploitation)\b", q))
+    want_pct = bool(q) and bool(re.search(r"percent|%|share|proportion|ratio|of all", q))
+    if want_height:
+        extra.append(
+            " Q: How many porn stars are 5'0\" or shorter? -> SELECT COUNT(DISTINCT p.name) AS n FROM people p"
+            " WHERE height_cm(p.height) <= 152.4 AND EXISTS (SELECT 1 FROM film_cast fc JOIN films f ON f.id=fc.film_id"
+            " WHERE lower(fc.person)=lower(p.name) AND (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'')"
+            " IN ('Hardcore','Softcore')))\n"
+        )
+    if want_age:
+        extra.append(
+            " Q: Which performers were in 80 or more scenes by the time they were 20? ->"
+            " SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes, group_concat(DISTINCT fc.film_id) AS film_ids"
+            " FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+            " JOIN people p ON lower(p.name)=lower(fc.person)"
+            " WHERE (CAST(strftime('%Y', COALESCE(f.release_date, printf('%04d-01-01', f.year))) AS INT) - p.birth_year"
+            " - CASE WHEN strftime('%m-%d', COALESCE(f.release_date, printf('%04d-01-01', f.year))) < substr(p.birthday,6,5)"
+            " THEN 1 ELSE 0 END) < 20"
+            " GROUP BY lower(p.name) HAVING COUNT(DISTINCT fc.film_id) >= 80"
+            " ORDER BY scenes DESC, p.name\n"
+        )
+    if want_tags:
+        tags = [t for t in options(c)["tags"][:60]]
+        extra.append(" - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres."
+                     " Common tags: " + json.dumps(tags) + "\n")
+        try:
+            syn = synonyms(c)
+        except Exception:
+            syn = []
+        if syn:
+            extra.append(" - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(syn) + "\n")
+    if want_pct:
+        extra.append(
+            " - Percentages: ROUND(100.0*part/NULLIF(total,0), 1) AS percent; put the part's condition inside"
+            " SUM(CASE WHEN ... THEN 1 ELSE 0 END), not in WHERE. Return part, total and percent."
+            " Share of a person's films with a tag: do not JOIN film_tags into the main query (it drops untagged films)."
+            " Use EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE ft.film_id=f.id AND ft.status='approved' AND lower(t.name) IN (...)). Ratios: ROUND(1.0*a/NULLIF(b,0), 2) AS ratio, and also return a and b.\n"
+        )
+    if q and re.search(r"\bfemale\b|\bmale\b|gender", q):
+        extra.append(
+            " Q: List the top 5 female performers by most scenes -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
+            " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+            " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.gender='Female' GROUP BY lower(p.name)"
+            " ORDER BY scenes DESC, p.name LIMIT 5\n"
+        )
+    if q and re.search(r"\bfavorite|\bfavourite|\bstarred\b", q):
+        extra.append(
+            " Q: Which favorite performers have the most scenes? -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
+            " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+            " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.favorite=1 GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 10\n"
+        )
+    return core + "".join(extra)
+
+
+def sql_system_prompt(c):
+    """Stable prefix (cacheable on Groq). Cached tokens do not count toward the token-per-minute limit."""
+    return (
+        "You answer questions about a personal film library by writing ONE SQLite SELECT query.\n"
+        + sql_schema(c)
+        + 'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>",'
+        ' "chart": "<optional: ring, stat, bar, line, hbar, grouped, stacked, heatmap or table>"}\n'
+        "Chart guide: ring = one row with part, total and percent; stat = one row of plain numbers; bar/line = per year, decade"
+        " or month; hbar = a ranking of names; grouped = names with 2-3 numbers each; stacked/heatmap = counts by two categories.\n"
+        "Limit results to at most 50 rows unless asked otherwise.\n"
+        "Before you answer, check the SQL against the question: every stated filter is present, and you have not added any filter the user did not ask for."
+    )
 
 
 def sql_prompt(c, question, hint=()):
@@ -494,12 +507,38 @@ def sql_prompt(c, question, hint=()):
         else:
             a, b = x[-2], x[-1]
             h += f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n"
-    return ("You answer questions about a personal film library by writing ONE SQLite SELECT query.\n" + sql_schema(c) + h +
-            'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>",'
-            ' "chart": "<optional: ring, stat, bar, line, hbar, grouped, stacked, heatmap or table>"}\n'
-            "Chart guide: ring = one row with part, total and percent; stat = one row of plain numbers; bar/line = per year, decade"
-            " or month; hbar = a ranking of names; grouped = names with 2-3 numbers each; stacked/heatmap = counts by two categories.\n"
-            "Limit results to at most 50 rows unless asked otherwise.\nQuestion: " + question.strip()[:500])
+    extras = sql_schema(c, question)
+    # User message carries the question plus any question-specific examples (height, tags, ...).
+    # The stable core is also passed as a system prompt for prefix caching.
+    topic = extras[len(sql_schema(c, "")):] if extras.startswith(sql_schema(c, "")) else extras
+    return (
+        "You answer questions about a personal film library by writing ONE SQLite SELECT query.\n"
+        + extras + h
+        + 'Reply with JSON only: {"reading": "<one short line: how you understood the question>", "sql": "<one SELECT or WITH query, no semicolon>",'
+        ' "chart": "<optional: ring, stat, bar, line, hbar, grouped, stacked, heatmap or table>"}\n'
+        "Limit results to at most 50 rows unless asked otherwise.\n"
+        "Before you answer, check the SQL against the question: every stated filter is present, and you have not added any filter the user did not ask for.\n"
+        "Question: " + question.strip()[:500]
+    )
+
+
+def sql_user_prompt(c, question, hint=()):
+    """Shorter user message when the compact core schema is sent as the system prompt."""
+    h = ""
+    for x in hint:
+        if len(x) == 2 and x[0] == "tags":
+            for asked, stored in x[1]:
+                h += f" - The tag '{asked}' means tags.name IN ({', '.join(chr(39) + n.replace(chr(39), chr(39) * 2) + chr(39) for n in stored)}).\n"
+            continue
+        if len(x) == 3 and x[0] == "director":
+            lst = ", ".join("'" + n.replace("'", "''") + "'" for n in x[2])
+            h += (f" - The director '{x[1]}' is stored in film_directors.director as {lst} (all the same person)."
+                  f" Match with fd.director IN ({lst}).\n")
+        else:
+            a, b = x[-2], x[-1]
+            h += f" - The performer '{a}' is stored in film_cast.person as exactly '{b}'.\n"
+    topic = sql_schema(c, question)[len(sql_schema(c, "")):]
+    return ((topic + h) if (topic or h) else "") + "Question: " + (question or "").strip()[:500]
 
 
 PARSED = {"chart": ""}  # the AI's optional chart hint from the last parsed reply (validated in askcharts.pick)
@@ -530,6 +569,7 @@ def sql_verify_prompt(question, sql):
         "Rules:\n"
         " - Every condition in the question must appear in the SQL (watched/unwatched, rated/unrated, favorites, year, genre, film vs scene, person, tag, limit).\n"
         " - Do not add filters the user did not ask for (no primary_genre, Hardcore, Softcore, or extra WHERE unless asked).\n"
+        " - 'in my library' is not a tag. If the question does not say 'tagged' or name a tag, the SQL must not join tags or film_tags.\n"
         " - unwatched = COALESCE(watched,0)=0; watched = watched=1; unrated = rating IS NULL; rated = rating IS NOT NULL; favorite people = people.favorite=1.\n"
         " - 'films' means COALESCE(kind,'')<>'scene'; 'scenes' means kind='scene'.\n"
         'Reply with JSON only: {"ok": true} if the SQL is already correct, or {"ok": false, "sql": "<corrected SELECT, no semicolon>", "reading": "<one short line>"} if you must fix it.'
@@ -569,6 +609,32 @@ def _verify_sql(question, sql, chat):
     except ValueError:
         return sql, ""
     return fix_sql(new), reading
+
+def _invented_tag_filter(question, sql):
+    """True when the SQL joins tags/film_tags but the question never mentioned a tag."""
+    q, s = (question or "").lower(), (sql or "").lower()
+    return bool(re.search(r"\bfilm_tags\b|\bjoin tags\b", s) and not re.search(r"\btag(?:s|ged| named)?\b", q))
+
+
+def _sql_looks_suspicious(question, sql):
+    """True when the SQL may have dropped or invented a filter the main prompt should not have missed."""
+    q, s = (question or "").lower(), (sql or "").lower()
+    if not s:
+        return True
+    # "in my library" is not a request to filter on a tag. Any tag join on a question that never mentioned a tag is invented.
+    if _invented_tag_filter(question, sql):
+        return True
+    if re.search(r"\b(unwatched|not watched|haven.t watched|have not watched)\b", q) and "watched" not in s:
+        return True
+    if re.search(r"\b(unrated|not rated|without a rating|no rating)\b", q) and "rating" not in s:
+        return True
+    if re.search(r"\bfavorite|\bfavourite", q) and "favorite" not in s:
+        return True
+    if re.search(r"\bunwatched\b", q) is None and re.search(r"\bwatched\b", q) and "watched" not in s:
+        return True
+    return False
+
+
 
 
 def check_sql(sql):
@@ -781,17 +847,29 @@ _ASK_STOPWORDS = frozenset({
 def _ai_transport_error(e):
     """Friendly message when the AI could not be reached; None if this is a normal SQL/parse error."""
     import urllib.error
-    if isinstance(e, urllib.error.HTTPError):
-        if e.code in (401, 403):
+    code = getattr(e, "code", None)
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if isinstance(e, urllib.error.HTTPError) or code in (401, 403, 429) or type(e).__name__ == "AIRequestError":
+        if code in (401, 403):
             return ("Couldn't reach the Ask a question AI (access denied). "
                     "If a VPN is on, try turning it off and ask again.")
-        return f"Couldn't reach the Ask a question AI (HTTP {e.code}). Please try again."
+        if code == 429:
+            return ("Groq's free limit was reached (too many tokens this minute). "
+                    "Wait a minute and try again.")
+        if code:
+            return f"Couldn't reach the Ask a question AI (HTTP {code}). Please try again."
     name = type(e).__name__
     msg = str(e) or ""
     low = (name + " " + msg).lower()
     if isinstance(e, (TimeoutError, urllib.error.URLError)) or "timed out" in low or "ran out of time" in low:
         return "The Ask a question AI timed out. Please try again."
-    if "http error" in low or "access denied" in low:
+    if "429" in low or "too many requests" in low or "rate limit" in low:
+        return ("Groq's free limit was reached (too many tokens this minute). "
+                "Wait a minute and try again.")
+    if "access denied" in low or "http error 401" in low or "http error 403" in low:
         return ("Couldn't reach the Ask a question AI (access denied). "
                 "If a VPN is on, try turning it off and ask again.")
     return None
@@ -1490,6 +1568,11 @@ def _null_problem(cols, rows):
     if not rows:
         return ""
     vals = [k for k, cn in enumerate(cols) if cn not in ("film_ids", "id") and cn.lower() not in ROWNUM_COLS]
+    countish = {"n", "films", "scenes", "count", "people", "performers", "titles", "total", "matching"}
+    if len(rows) == 1 and vals:
+        nums = [k for k in vals if not isinstance(rows[0][k], str)]
+        if nums and all(rows[0][k] in (0, 0.0) for k in nums) and all(cols[k].lower() in countish for k in nums):
+            return ""
     dead = [cols[k] for k in vals if all(r[k] is None for r in rows)]
     if dead:
         return (f"the query ran but column(s) {', '.join(dead)} came back empty (NULL) in every row - check the names"
@@ -1574,12 +1657,15 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
         r, everyone, safe = _ro_conn(c)
     except Exception as e:
         r, err = None, e
-    prompt = sql_prompt(c, question, hint) if r else None
+    system = sql_system_prompt(c) if r else None
+    user_prompt = sql_user_prompt(c, question, hint) if r else None
+    prompt = sql_prompt(c, question, hint) if r else None  # full text, used on retry fallbacks
+
     for attempt in range(3):
         if not r: break
         try:
-            reading, sql = _parse_sql_reply(chat(prompt)); sql = fix_sql(sql)
-            if attempt == 0:
+            reading, sql = _parse_sql_reply(chat(user_prompt, system=system) if system else chat(prompt)); sql = fix_sql(sql)
+            if attempt == 0 and _sql_looks_suspicious(question, sql):
                 try:
                     v_sql, v_reading = _verify_sql(question, sql, chat)
                     if v_sql != sql:
@@ -1589,7 +1675,25 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
                     # Keep the first query if the double-check times out or can't be reached.
                     if not (sql and _ai_transport_error(ve)):
                         raise
+                if _invented_tag_filter(question, sql):
+                    try:
+                        fix = (user_prompt or prompt or "") + "\nIMPORTANT: Do not join tags or film_tags. 'in my library' is not a tag and not a filter.\n"
+                        reading, sql = _parse_sql_reply(chat(fix, system=system) if system else chat(fix)); sql = fix_sql(sql)
+                    except Exception as ve:
+                        if not (sql and _ai_transport_error(ve)):
+                            raise
             cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
+            if attempt == 0 and (_null_problem(cols, rows) or (count_question(question) and _degenerate(cols, rows))
+                    or (not rows and re.search(r"(?i)\b(which|who|top|most)\b", question or ""))):
+                try:
+                    v_sql, v_reading = _verify_sql(question, sql, chat)
+                    if v_sql != sql:
+                        sql = v_sql
+                        if v_reading: reading = v_reading
+                        cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
+                except Exception as ve:
+                    if not (sql and _ai_transport_error(ve)):
+                        raise
             if attempt == 0:
                 bad = _null_problem(cols, rows)
                 if bad: raise ValueError(bad)
@@ -1607,7 +1711,9 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
                     pass
                 return _msg(question, te, answer_from_error=True)
             tries.append(dict(sql=sql, error=str(e)))
-            prompt = (sql_prompt(c, question, hint) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
+            fix = f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before."
+            user_prompt = (sql_user_prompt(c, question, hint) if user_prompt is not None else sql_prompt(c, question, hint)) + fix
+            prompt = sql_prompt(c, question, hint) + fix
     else:
         r = None
     if r is None and not allow_fallback:

@@ -3251,17 +3251,152 @@ def ai_endpoint(url):
     if not _re.search(r"/v\d+[a-z]*$", u): u += "/v1"
     return u + "/chat/completions"
 
-def ai_chat(url, key, model, prompt, timeout=180, temperature=0.3):
-    body = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": temperature}
+class AIRequestError(Exception):
+    """HTTP failure from an AI provider, with rate-limit headers when present."""
+    def __init__(self, code, reason="", body="", headers=None, model=""):
+        self.code = int(code)
+        self.reason = reason or ""
+        self.body = body or ""
+        self.headers = {str(k).lower(): v for k, v in dict(headers or {}).items()}
+        self.model = model or ""
+        self.retry_after = _parse_retry_after(self.headers, self.body)
+        super().__init__(f"HTTP Error {self.code}: {self.reason or self.body[:180]}")
+
+
+def _parse_groq_duration(text):
+    """Parse Groq reset headers like '644ms', '7.66s', '1m12s', '36m0s' into seconds."""
+    s = (text or "").strip().lower().replace(" ", "")
+    if not s:
+        return None
+    total, rest, ok = 0.0, s, False
+    m = _re.match(r"(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$", rest)
+    if not m:
+        return None
+    h, mi, sec, ms = m.groups()
+    if h: total += int(h) * 3600; ok = True
+    if mi: total += int(mi) * 60; ok = True
+    if sec: total += float(sec); ok = True
+    if ms: total += float(ms) / 1000.0; ok = True
+    return total if ok else None
+
+
+def _parse_retry_after(headers, body=""):
+    h = {str(k).lower(): v for k, v in dict(headers or {}).items()}
+    ra = h.get("retry-after")
+    if ra:
+        try:
+            return max(0.5, float(str(ra).strip()))
+        except ValueError:
+            pass
+    for key in ("x-ratelimit-reset-tokens", "x-ratelimit-reset-requests"):
+        d = _parse_groq_duration(h.get(key, ""))
+        if d is not None:
+            return max(0.5, d)
+    m = _re.search(r"try again in (?:(\d+)m)?\s*(\d+(?:\.\d+)?)s", body or "", _re.I)
+    if m:
+        return max(0.5, int(m.group(1) or 0) * 60 + float(m.group(2)))
+    return 10.0
+
+
+def _rate_limit_headers(hdrs):
+    out = {}
+    for k, v in dict(hdrs or {}).items():
+        lk = str(k).lower()
+        if "ratelimit" in lk or lk == "retry-after" or lk.startswith("x-groq"):
+            out[lk] = v
+    return out
+
+
+def _ask_ai_log(line):
+    """Append one line about an Ask AI call (never the key or the prompt)."""
+    try:
+        import db as _db
+        folder = _db.user_data_dir()
+        if not folder:
+            return
+        path = os.path.join(folder, "ask_ai.log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line.rstrip() + "\n")
+        if os.path.getsize(path) > 200_000:
+            lines = open(path, encoding="utf-8").read().splitlines()[-200:]
+            open(path, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+
+def ai_chat(url, key, model, prompt, timeout=180, temperature=0.3, system=None):
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    body = {"model": model, "messages": messages, "temperature": temperature}
+    # gpt-oss writes hidden reasoning tokens that also count toward the 8k tokens/minute cap.
+    if str(model or "").startswith("openai/gpt-oss"):
+        body["reasoning_effort"] = "low"
+        body["max_completion_tokens"] = 1024
     headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "FilmTagger/1.4.1"}
     if key: headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(ai_endpoint(url), data=json.dumps(body).encode(), headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r: data = json.load(r)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw_headers = _rate_limit_headers(r.headers)
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        raw = b""
+        try:
+            raw = e.read() or b""
+        except Exception:
+            pass
+        body_text = raw.decode("utf-8", "replace") if raw else ""
+        hdrs = _rate_limit_headers(e.headers)
+        _ask_ai_log("%s model=%s status=%s retry_after=%s headers=%s body=%s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"), model, e.code,
+            _parse_retry_after(hdrs, body_text), hdrs, body_text[:300].replace("\n", " ")))
+        raise AIRequestError(e.code, e.reason, body_text, dict(e.headers or {}), model)
+    usage = data.get("usage") or {}
+    if raw_headers or usage:
+        _ask_ai_log("%s model=%s status=200 remaining_tokens=%s remaining_requests=%s prompt_tokens=%s completion_tokens=%s" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"), model,
+            raw_headers.get("x-ratelimit-remaining-tokens"),
+            raw_headers.get("x-ratelimit-remaining-requests"),
+            usage.get("prompt_tokens") or usage.get("input_tokens"),
+            usage.get("completion_tokens") or usage.get("output_tokens")))
     msg = (data.get("choices") or [{}])[0].get("message") or {}
     content = msg.get("content") or msg.get("reasoning") or ""
     if isinstance(content, list):
         content = "".join((x.get("text") or "") if isinstance(x, dict) else str(x) for x in content)
     return content
+
+
+ASK_GROQ_FALLBACK = "openai/gpt-oss-20b"
+
+
+def ask_groq_chat(key, model, prompt, timeout=30, temperature=0, system=None, fallback=None):
+    """Call Groq, honoring 429 retry-after (up to 20s) once, then a second model with its own token budget."""
+    import time as _t
+    primary = model or ASK_GROQ_DEFAULT
+    alt = fallback if fallback is not None else (ASK_GROQ_FALLBACK if primary != ASK_GROQ_FALLBACK else ASK_GROQ_DEFAULT)
+    last = None
+    for i, mid in enumerate((primary, alt) if alt and alt != primary else (primary,)):
+        try:
+            return ai_chat(ASK_GROQ_URL, key, mid, prompt, timeout=timeout, temperature=temperature, system=system)
+        except AIRequestError as e:
+            last = e
+            if e.code != 429:
+                raise
+            if i == 0:
+                wait = min(20.0, max(0.5, float(e.retry_after or 10)))
+                _ask_ai_log("%s model=%s status=429 waiting=%.1fs then retry" % (_t.strftime("%Y-%m-%d %H:%M:%S"), mid, wait))
+                _t.sleep(wait)
+                try:
+                    return ai_chat(ASK_GROQ_URL, key, mid, prompt, timeout=timeout, temperature=temperature, system=system)
+                except AIRequestError as e2:
+                    last = e2
+                    if e2.code != 429:
+                        raise
+                    continue
+            break
+    raise last or AIRequestError(429, "Too Many Requests", "rate limited", {}, primary)
 
 def parse_ai_json(text):
     t = _re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", (text or "").strip())
@@ -5393,10 +5528,10 @@ def reports_ask():
     ask_model = db.get_setting(c, "ask_ai_model", "") or ASK_GROQ_DEFAULT
     url, model, key = db.get_setting(c, "ai_url", ""), db.get_setting(c, "ai_model", ""), db.get_setting(c, "ai_key", "")
     if ask_key:
-        chat = lambda p, timeout=20, **k: ai_chat(ASK_GROQ_URL, ask_key, ask_model, p, timeout=timeout, temperature=0)
-        llm_seconds, people_hint, has_ai = 45, False, True
+        chat = lambda p, timeout=30, **k: ask_groq_chat(ask_key, ask_model, p, timeout=timeout, temperature=0, system=k.get("system"))
+        llm_seconds, people_hint, has_ai = 70, False, True
     elif url and model:
-        chat = lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0)
+        chat = lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0, system=k.get("system"))
         llm_seconds, people_hint, has_ai = 12, True, True
     else:
         chat, llm_seconds, people_hint, has_ai = None, 12, True, False

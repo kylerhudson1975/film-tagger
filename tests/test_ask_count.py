@@ -31,6 +31,7 @@ NARROW = "SELECT COUNT(DISTINCT f.id) AS films " + JOIN.format("'fellatio'")
 sent = []
 def ai(first, second, summary="Brigitte Test acted in 4 films tagged oral sex or fellatio."):
     def f(url, key, model, prompt, timeout=180, **kw):
+        prompt = ((kw.get("system") or "") + "\n" + (prompt or "")).strip()
         sent.append(prompt)
         if "checking a SQLite query" in prompt: return json.dumps({"ok": True})
         if "ONE SQLite SELECT" in prompt: return json.dumps({"reading": "count", "sql": second if "Your previous query" in prompt else first})
