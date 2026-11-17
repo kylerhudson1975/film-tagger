@@ -336,7 +336,7 @@ def _ro_conn(c):
     r.execute("CREATE TEMP TABLE film_cast(film_id INTEGER, person TEXT)")
     people = {}
     try:
-        pcols = [x[1] for x in r.execute("PRAGMA main.table_info(people)") if x[1] not in ("birthday", "merged_into")]
+        pcols = [x[1] for x in r.execute("PRAGMA main.table_info(people)") if x[1] not in ("merged_into",)]
         r.execute("CREATE TEMP VIEW people AS SELECT " + ",".join('"%s"' % x for x in pcols) + ", substr(birthday,1,4)+0 AS birth_year"
                   " FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'")
         for n, b in r.execute("SELECT name,birthday FROM main.people WHERE merged_into IS NULL AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
@@ -378,7 +378,7 @@ def sql_schema(c):
         " kind ('scene' for scenes, NULL for films))\n"
         " film_directors(film_id, director)  -- one row per film per director (already split)\n"
         " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
-        " people(name, birth_year, gender, favorite)  -- gender is 'Female', 'Male', 'Non Binary',"
+        " people(name, birthday 'YYYY-MM-DD', birth_year, gender, favorite)  -- gender is 'Female', 'Male', 'Non Binary',"
         " 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty);"
         " favorite is 0/1 (1 = starred in People → Favorites).\n"
         "  This people table only includes people with a known birth date; film_cast already lists"
@@ -402,6 +402,21 @@ def sql_schema(c):
         " Q: Which favorite performers have the most scenes? -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
         " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
         " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.favorite=1 GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 10\n"
+        " - Age at a scene: scene date is COALESCE(f.release_date, printf('%04d-01-01', f.year))."
+        " age = CAST(strftime('%Y', scene_date) AS INT) - p.birth_year"
+        " - CASE WHEN strftime('%m-%d', scene_date) < substr(p.birthday,6,5) THEN 1 ELSE 0 END."
+        " If release_date is missing, f.year - p.birth_year is the age that calendar year."
+        " 'by the time they were 20' / 'before they turned 20' means age < 20. film_cast already"
+        " excludes credits before age 18, so those rows are ages 18-19 only. Never invent a birthday.\n"
+        " Q: Which performers were in 80 or more scenes by the time they were 20? ->"
+        " SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes, group_concat(DISTINCT fc.film_id) AS film_ids"
+        " FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+        " JOIN people p ON lower(p.name)=lower(fc.person)"
+        " WHERE (CAST(strftime('%Y', COALESCE(f.release_date, printf('%04d-01-01', f.year))) AS INT) - p.birth_year"
+        " - CASE WHEN strftime('%m-%d', COALESCE(f.release_date, printf('%04d-01-01', f.year))) < substr(p.birthday,6,5)"
+        " THEN 1 ELSE 0 END) < 20"
+        " GROUP BY lower(p.name) HAVING COUNT(DISTINCT fc.film_id) >= 80"
+        " ORDER BY scenes DESC, p.name\n"
         " - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres. Common tags: " + json.dumps(tags) + "\n"
         " - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(synonyms(c)) + "\n"
         " - 'Classic Porn' is NOT a tag: use the films condition above. Wrap OR conditions in parentheses: (a OR b) AND c.\n"
@@ -1064,6 +1079,22 @@ def _example_titles(c, where, args, limit=5):
     return ", ".join((f"{t} ({y})" if y else str(t)) for t, y in rows), sql, rows
 
 
+def _ask_extra_conditions(q):
+    """True when the question has comparisons, ages, thresholds, or other conditions built-ins cannot apply."""
+    if not q:
+        return False
+    if re.search(
+        r"(?i)\b(by the time|more than|less than|fewer than|at least|at most|"
+        r"or more|or fewer|or less|no more than|no fewer than|"
+        r"older than|younger than|years? old|year-old|aged\s+\d|age of|"
+        r"they were|before they|after they|until they|turned \d|"
+        r"when|between|per)\b", q):
+        return True
+    # A number that isn't a 4-digit year or a decade (1980s, 80s) is a threshold or age.
+    rest = re.sub(r"(?i)\b(?:1[89]|20)\d{2}s?\b|\b[1-9]0s\b", " ", q)
+    return bool(re.search(r"\b\d+\b", rest))
+
+
 def _lookup_trigger(q):
     ql = q.lower()
     return bool(re.search(
@@ -1124,25 +1155,39 @@ def _resolve_lookup_term(c, term, tags, genres, categories, studios):
     except sqlite3.OperationalError:
         pass
 
-    # contains: tags first, then genres, unique if possible
-    def contains(items):
-        hits = [n for n in items if n and (tl in n.lower() or (len(n) >= 4 and n.lower() in tl))]
+    # Near-exact only: term is a token inside the name (BGGG in "Foursome (BGGG)"),
+    # or the two strings are almost the same. Never treat a short name as a hit
+    # just because it appears inside a longer leftover phrase.
+    def near(items):
+        hits = []
+        tt = re.sub(r"[^a-z0-9]+", " ", tl).strip()
+        for n in items:
+            if not n:
+                continue
+            nl = n.lower()
+            nt = re.sub(r"[^a-z0-9]+", " ", nl).strip()
+            if not nt:
+                continue
+            token = bool(re.search(r"(?:^|[^a-z0-9])" + re.escape(tl) + r"(?:[^a-z0-9]|$)", nl)) if len(tl) >= 3 else False
+            close = nt == tt or (len(tt) >= 4 and abs(len(nt) - len(tt)) <= 4 and (nt.startswith(tt) or tt.startswith(nt)))
+            if token or close:
+                hits.append(n)
         if not hits:
             return None
         hits.sort(key=lambda n: (0 if n.lower().startswith(tl) else 1, abs(len(n) - len(tl)), len(n), n.lower()))
         return hits[0]
 
-    n = contains(tags)
+    n = near(tags)
     if n:
         return dict(kind="tag", name=n, names=tag_group(c, n))
-    n = contains(genres)
+    n = near(genres)
     if n:
         return dict(kind="genre", name=n, names=[n])
-    n = contains(categories)
+    n = near(categories)
     if n:
         return dict(kind="category", name=n, names=[n])
     if len(tl) >= 4:
-        n = contains(studios)
+        n = near(studios)
         if n:
             return dict(kind="studio", name=n, names=[n])
         try:
@@ -1179,10 +1224,14 @@ def _match_clause(hit, alias="f"):
 
 def _q_lookup(c, question, scope_sql, plural):
     """'Do I have any BGGG scenes?', 'films tagged X', 'show me X', 'how many X and Y scenes?'."""
-    # Rankings like "list the top 5 female stars by most scenes" are not tag lookups.
+    # Rankings and questions with extra conditions are not tag lookups.
     if re.search(r"(?i)\b(top|bottom)\s+\d|\blist\b.{0,40}\b(top|most|best)\b|\bmost (?:scenes|films|titles)\b", question):
         return None
-    if not _lookup_trigger(question) and not _extract_lookup_terms(question):
+    if _ask_extra_conditions(question):
+        return None
+    # Need a simple "do I have / tagged / show / how many X scenes" shape, not leftover words from any sentence.
+    if not _lookup_trigger(question) and not re.search(
+            r"(?i)\b(how many|number of|count of|films? tagged|scenes? tagged|titles? tagged)\b", question):
         return None
     terms = _extract_lookup_terms(question)
     if not terms:
@@ -1272,6 +1321,8 @@ def ask_direct(c, question):
     if re.search(r"(?i)\b(which|who|top|most)\b.{0,40}\b(directors?|actors?|performers?)\b.{0,80}\btagged\b", q):
         return None
     ql = q.lower()
+    if _ask_extra_conditions(q):
+        return None
     # Built-ins don't apply watched/unwatched/favorite filters; leave those questions to the LLM.
     if re.search(r"(?i)\b(unwatched|not watched|haven't watched|have not watched|marked as watched)\b", q) or \
        re.search(r"(?i)\bwatched\b", q) or re.search(r"(?i)\b(favorites?|favourites?|starred)\b", q):

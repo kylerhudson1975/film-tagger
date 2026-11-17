@@ -60,6 +60,8 @@ assert "COALESCE(f.watched,0)=0" in schema and "f.watched=1" in schema
 assert "f.rating IS NULL" in schema and "p.favorite=1" in schema
 assert "Do not add primary_genre" in schema
 assert "How many unwatched films do I have?" in schema
+assert "birthday" in schema and "by the time they were 20" in schema
+assert "strftime" in schema and "birth_year" in schema
 
 # 2) the documented SQL works on the age-safe read-only connection
 rconn, everyone, safe = R._ro_conn(c)

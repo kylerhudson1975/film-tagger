@@ -113,4 +113,20 @@ assert r["direct"] and r["rows"][0][0] == 0 and "don't have" in r["answer"].lowe
 # unknown term is not claimed as a built-in miss
 assert R.ask_direct(c, "Do I have any ZZZNOTATAG scenes?") is None
 
+# Complex questions (counts, ages, "by the time") must not be claimed as a tag lookup,
+# even if a tag happens to be a substring of the question. Typo "the the" included.
+c.execute("INSERT OR IGNORE INTO tags(name,category) VALUES('Porn stars','Content')")
+c.commit()
+Q_AGE = "Which porn stars in my library were in 80 or more scenes by the the time they were 20?"
+assert R.ask_direct(c, Q_AGE) is None, R.ask_direct(c, Q_AGE)
+assert R._q_lookup(c, Q_AGE, "COALESCE(f.kind,'')='scene'", "scenes") is None
+# simple BGGG lookup still works after that tag is added
+r = ask("Do I have any BGGG scenes?")
+assert r["direct"] and r["rows"][0][0] == 1 and "S1" in r["answer"], r
+# leftover long phrases must not contain-match a short tag
+assert R._resolve_lookup_term(c, "porn stars in 80 or more scenes by the the time they were 20",
+                              ["Porn stars", "BGGG"], [], [], []) is None
+# BGGG still near-matches a longer stored tag
+assert R._resolve_lookup_term(c, "BGGG", ["Foursome (BGGG)"], [], [], [])["name"] == "Foursome (BGGG)"
+
 print("OK test_ask_direct")
