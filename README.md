@@ -146,7 +146,7 @@ A new **Performers** section, smarter people lists and a batch of fixes.
 - **One-click profile build:** the person page now waits for the ThePornDB scene list to finish loading, then refreshes Insights and graphs on its own.
 - **Career info in the background:** a *Not opened yet* list and a background ThePornDB job that fills in people's career info.
 - **Safer TMDB matching:** scene performers are never matched to a non-adult TMDB person with the same name.
-- **Make stills:** saves about 20 full-size frames from a title's video as its gallery, picking only sharp frames (no motion blur, fades or black frames). An *Open stills folder* button is in the Edit window.
+- **Make stills:** saves about 20 full-size frames from a title's video as its gallery, picking only sharp frames (no motion blur, fades or black frames). The Edit window's **📷 From Gallery** button uses any still as the poster.
 - **Hand-set person photos are protected:** an uploaded, URL or cropped photo is never replaced by a refresh or profile build, and a replaced photo goes to a backup folder instead of being deleted.
 - **Person edit window stays open** until you click Close or Save. Background refreshes no longer close it or lose what you typed.
 - **Home and Dashboard reset the Tags sidebar:** categories collapse, cleared tags disappear and the sidebar scrolls to the top.
@@ -397,7 +397,7 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Fix all file names** (Library & Settings) shows every planned rename (current → new) with a count first, then applies them with the same rules. Scenes with **`[Hold rename]`** in their notes are skipped (useful for shaky matches); remove the marker to include them again.
 
 ### Scene photo galleries and Find Gallery
-- **Galleries:** a folder named `<video stem> - GALLERY` beside a scene's video is its photo gallery. Scenes with one show a 📷 badge with the photo count; **📷 From Gallery** in the Edit window uses any photo as the poster. *Fix all* moves the gallery with its video and scans never catalogue gallery photos as films.
+- **Galleries:** a folder named `<video stem> - GALLERY` beside a scene's video is its photo gallery. Scenes with one show a 📷 badge with the photo count; **📷 From Gallery** in the Edit window (films and scenes) uses any photo as the poster. *Fix all* moves the gallery with its video and scans never catalogue gallery photos as films.
 - **Find Gallery** (🔎 in the Edit window) searches ViperGirls' *Adult Photo Sets* as a guest (no login). Searches are throttled (one at a time, at least 20 s apart), cached, time-limited (3 minutes) and shown step by step. Results are text only, ranked by performers and studio found plus a small boost for a close release date. You can edit the query, untick the studio prefix or paste a thread or post link.
 - **Downloads** run [gallery-dl](https://github.com/mikf/gallery-dl) into the gallery folder with a live file count and **Cancel**. Nothing downloads until you click **Download**; adding to an existing gallery asks first. Scenes marked *Review by hand* are blocked from searching and downloading.
 - **Learned ViperGirls rules:** a thread link you paste teaches Find Gallery the studio's real prefix and whether its titles name performers; manage the rules in Library & Settings. Long gallery folder names are shortened safely, and re-pasting a thread resumes a download.
@@ -416,7 +416,7 @@ Mark one or more folders as **Scenes libraries** (Library & Settings) for indivi
 - **Re-link** a person to a different ThePornDB performer or TMDB person by id or URL, or go back to automatic matching.
 - **+ Person** adds someone by hand (name, photo, bio, links), for people neither service knows.
 - **Rename a person:** *Edit profile → Name (primary)* or *make primary* on an alias; the old name is kept as an alias and credits follow.
-- **Performer galleries:** link a photo folder to a person for a Gallery grid and viewer on their profile; *Hide from gallery* hides a photo without touching the file, and **Edit** adjusts contrast, brightness, gamma and sharpen (original kept in `_originals`).
+- **Performer galleries:** link a photo folder to a person for a Gallery grid and viewer on their profile; *Hide from gallery* hides a photo without touching the file, and **Edit** crops, rotates, flips, and adjusts contrast, brightness, gamma and sharpen (original kept in `_originals`).
 - **Crop photo** frames a person's photo in a 2:3 portrait box (drag and zoom) without losing the original; **Reset crop** undoes it.
 
 ### Metadata and AI

@@ -1,4 +1,4 @@
-"""Gallery photo adjustments: contrast, brightness, gamma and sharpen.
+"""Gallery photo adjustments: rotate, flip, crop, then contrast, brightness, gamma and sharpen.
 
 The current file is overwritten only after a one-time copy of the original is
 saved in an `_originals` subfolder next to it (never deleted, never listed in
@@ -66,6 +66,102 @@ def parse_params(d):
 
 def is_identity(p):
     return all(abs(p[k] - DEFAULTS[k]) < 1e-6 for k in DEFAULTS)
+
+
+def parse_geometry(d):
+    """Pull rot (quarter-turns clockwise), flip, and optional crop {x,y,w,h} from a request dict."""
+    src = d or {}
+    try:
+        rot = int(src.get("rot") or 0)
+    except (TypeError, ValueError) as e:
+        raise ValueError("Bad rot") from e
+    flip = src.get("flip")
+    if flip in (None, "", False, 0, "0", "false", "False"):
+        flip = False
+    elif flip in (True, 1, "1", "true", "True"):
+        flip = True
+    else:
+        raise ValueError("Bad flip")
+    crop = src.get("crop")
+    if crop in (None, "", False):
+        crop = None
+    else:
+        if not isinstance(crop, dict):
+            raise ValueError("Bad crop")
+        try:
+            crop = {k: float(crop[k]) for k in ("x", "y", "w", "h")}
+        except (KeyError, TypeError, ValueError) as e:
+            raise ValueError("Bad crop") from e
+    return dict(rot=rot, flip=flip, crop=crop)
+
+
+def clamp_crop(crop, w, h):
+    """crop {x,y,w,h} in pixels of the current image -> integer (x, y, cw, ch) clamped inside w x h."""
+    if not crop:
+        return 0, 0, w, h
+    x = int(round(float(crop.get("x", 0)))); y = int(round(float(crop.get("y", 0))))
+    cw = int(round(float(crop.get("w", w)))); ch = int(round(float(crop.get("h", h))))
+    x = min(max(0, x), w - 1); y = min(max(0, y), h - 1)
+    cw = min(max(1, cw), w - x); ch = min(max(1, ch), h - y)
+    return x, y, cw, ch
+
+
+def geometry_is_identity(g, size):
+    """True when rot/flip/crop would leave a size=(w,h) image unchanged."""
+    w, h = size
+    if (g["rot"] % 4) or g["flip"]:
+        return False
+    x, y, cw, ch = clamp_crop(g["crop"], w, h)
+    return x == 0 and y == 0 and cw == w and ch == h
+
+
+def apply_geometry(im, rot=0, flip=False, crop=None):
+    """Rotate by rot quarter-turns clockwise, then flip horizontally, then crop. Matches the poster editor."""
+    from PIL import Image
+    k = rot % 4
+    if k == 1:
+        im = im.transpose(Image.ROTATE_270)  # 90° clockwise
+    elif k == 2:
+        im = im.transpose(Image.ROTATE_180)
+    elif k == 3:
+        im = im.transpose(Image.ROTATE_90)  # 90° counter-clockwise
+    if flip:
+        im = im.transpose(Image.FLIP_LEFT_RIGHT)
+    w, h = im.size
+    x, y, cw, ch = clamp_crop(crop, w, h)
+    if x == 0 and y == 0 and cw == w and ch == h:
+        return im
+    return im.crop((x, y, x + cw, y + ch))
+
+
+def apply_edit(im, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
+    """Apply geometry then tone, in this order: rotate, flip, crop, contrast, brightness, gamma, sharpen."""
+    im = apply_geometry(im, rot, flip, crop)
+    return apply_adjustments(im, contrast, brightness, gamma, sharpen)
+
+
+def cv_to_pil(img):
+    """OpenCV BGR/BGRA/gray uint8 array -> Pillow RGB/RGBA/L image."""
+    from PIL import Image
+    import cv2, numpy as np
+    if img.ndim == 2:
+        return Image.fromarray(img, "L")
+    if img.shape[2] == 4:
+        return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA), "RGBA")
+    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), "RGB")
+
+
+def pil_to_cv(im):
+    """Pillow RGB/RGBA/L image -> OpenCV BGR/BGRA uint8 array (L is promoted to BGR)."""
+    import cv2, numpy as np
+    arr = np.array(im)
+    if im.mode == "L":
+        return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    if im.mode == "RGBA":
+        return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA)
+    if im.mode != "RGB":
+        im = im.convert("RGB"); arr = np.array(im)
+    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
 def _with_rgb(im, fn):
@@ -221,23 +317,28 @@ def adjust(path, params):
         return None, "Image is too large (max 200 MB)"
     try:
         p = parse_params(params)
+        g = parse_geometry(params)
     except ValueError as e:
         return None, str(e)
-    if is_identity(p):
+    # Fast path: no need to open the file when every control is at its default
+    if is_identity(p) and (g["rot"] % 4) == 0 and not g["flip"] and not g["crop"]:
         return dict(ok=True, unchanged=True, has_original=has_original(path), v=_mtime(path)), None
     try:
         im = open_image(path)
     except Exception as e:
         return None, f"Could not read the photo ({type(e).__name__})"
+    if is_identity(p) and geometry_is_identity(g, im.size):
+        return dict(ok=True, unchanged=True, has_original=has_original(path), v=_mtime(path)), None
     if im.size[0] * im.size[1] > MAX_PIXELS:
         return None, "Image has too many pixels"
     try:
         ensure_original(path)
-        out = apply_adjustments(im, **p)
+        out = apply_edit(im, rot=g["rot"], flip=g["flip"], crop=g["crop"], **p)
         save_image(out, path)
     except Exception as e:
         return None, f"Could not save the photo ({type(e).__name__})"
-    return dict(ok=True, unchanged=False, has_original=True, v=_mtime(path), **{k: p[k] for k in DEFAULTS}), None
+    return dict(ok=True, unchanged=False, has_original=True, v=_mtime(path),
+                rot=g["rot"], flip=g["flip"], **{k: p[k] for k in DEFAULTS}), None
 
 
 def revert(path):

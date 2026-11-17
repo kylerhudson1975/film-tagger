@@ -185,4 +185,46 @@ assert cl.post(f"/api/person/{pid}/gallery/adjust/revert", json={"name": "b.png"
 sv2 = cl.post(f"/api/person/{pid}/gallery/adjust", json={"name": "set1/c.jpg", "contrast": 1.2})
 assert sv2.status_code == 200 and os.path.isfile(os.path.join(api_folder, "set1", "_originals", "c.jpg"))
 
+# 12. rotate / flip / crop: order is rotate, then flip, then crop; identity crop is a no-op
+def quad_pil(w=100, h=60):
+    im = Image.new("RGB", (w, h), (0, 0, 0))
+    px = im.load(); hw, hh = w // 2, h // 2
+    for y in range(h):
+        for x in range(w):
+            px[x, y] = (255, 0, 0) if x < hw and y < hh else (0, 255, 0) if x >= hw and y < hh else (0, 0, 255) if x < hw else (255, 255, 255)
+    return im
+q = quad_pil()
+r90 = ga.apply_geometry(q.copy(), rot=1)
+assert r90.size == (60, 100) and r90.getpixel((0, 0)) == (0, 0, 255)  # TL <- BL
+rflip = ga.apply_geometry(q.copy(), flip=True)
+assert rflip.getpixel((0, 0)) == (0, 255, 0) and rflip.getpixel((99, 0)) == (255, 0, 0)
+# rotate then flip: TL becomes red (same as the OpenCV poster editor)
+rf = ga.apply_geometry(q.copy(), rot=1, flip=True)
+assert rf.getpixel((0, 0)) == (255, 0, 0)
+cropped = ga.apply_geometry(q.copy(), crop={"x": 10, "y": 5, "w": 30, "h": 20})
+assert cropped.size == (30, 20) and cropped.getpixel((0, 0)) == (255, 0, 0)
+# whole-image crop + default tone does not write a new file
+plain3 = make_photo(os.path.join(folder, "plain3.jpg"), size=(100, 60))
+before3 = open(plain3, "rb").read()
+r6, err = ga.adjust(plain3, {"rot": 0, "flip": False, "crop": {"x": 0, "y": 0, "w": 100, "h": 60}, "contrast": 1, "brightness": 1, "gamma": 1, "sharpen": 0})
+assert err is None and r6["unchanged"]
+assert open(plain3, "rb").read() == before3 and not os.path.isfile(ga.original_path(plain3))
+# crop + brightness changes size, keeps a backup, and changes bytes
+r7, err = ga.adjust(plain3, {"crop": {"x": 10, "y": 10, "w": 40, "h": 30}, "brightness": 1.3})
+assert err is None and not r7["unchanged"] and r7["has_original"]
+assert open(ga.original_path(plain3), "rb").read() == before3
+assert Image.open(plain3).size == (40, 30)
+assert open(plain3, "rb").read() != before3
+# API: rotate a person-gallery photo (synthetic)
+before_b = open(os.path.join(api_folder, "b.png"), "rb").read()
+sz = Image.open(os.path.join(api_folder, "b.png")).size
+sv3 = cl.post(f"/api/person/{pid}/gallery/adjust", json={"name": "b.png", "rot": 1, "flip": False})
+assert sv3.status_code == 200 and sv3.json["ok"] and not sv3.json.get("unchanged")
+out_b = Image.open(os.path.join(api_folder, "b.png"))
+assert out_b.size == (sz[1], sz[0])
+assert open(os.path.join(api_folder, "_originals", "b.png"), "rb").read() == before_b
+# bad geometry
+assert cl.post(f"/api/person/{pid}/gallery/adjust", json={"name": "a.jpg", "rot": "nope"}).status_code == 400
+assert cl.post(f"/api/person/{pid}/gallery/adjust", json={"name": "a.jpg", "crop": [1, 2, 3, 4]}).status_code == 400
+
 print("ok")

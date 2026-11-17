@@ -69,6 +69,35 @@ cl.post(f"/api/films/{fid}/poster", data={"file": (__import__("io").BytesIO(pn.t
 r = cl.post(f"/api/films/{fid}/posteredit", json={"crop": {"x": 0, "y": 0, "w": 150, "h": 225}})
 assert r.status_code == 200 and r.json["custom_poster"].endswith(".png")
 assert cv2.imread(os.path.join(A.POSTERS_DIR, os.path.basename(r.json["custom_poster"]))).shape[:2] == (225, 150)
+# tone adjustments change pixels but not size; custom_poster stays protected
+ok, enc = cv2.imencode(".jpg", quad(400, 600), [cv2.IMWRITE_JPEG_QUALITY, 98])
+cl.post(f"/api/films/{fid}/poster", data={"file": (__import__("io").BytesIO(enc.tobytes()), "t.jpg", "image/jpeg")}, content_type="multipart/form-data")
+# clear review flag from the previous test so the next edits are allowed
+c = db.connect(); c.execute("UPDATE films SET notes=NULL WHERE id=?", (fid,)); c.commit()
+before = cl.get(f"/api/films/{fid}/posteredit").json
+src_path = os.path.join(A.POSTERS_DIR, os.path.basename(db.connect().execute("SELECT custom_poster FROM films WHERE id=?", (fid,)).fetchone()[0]))
+src_im = cv2.imread(src_path); src_hash = open(src_path, "rb").read()
+# identity tone must match a crop-only edit (size unchanged here: 400x600)
+r = cl.post(f"/api/films/{fid}/posteredit", json={"rot": 0, "flip": False, "contrast": 1, "brightness": 1, "gamma": 1, "sharpen": 0})
+assert r.status_code == 200, r.json
+# brightness up: same dimensions, different bytes, edited_fields still has custom_poster
+r = cl.post(f"/api/films/{fid}/posteredit", json={"brightness": 1.4, "crop": {"x": 0, "y": 0, "w": 400, "h": 600}})
+assert r.status_code == 200, r.json
+out_path = os.path.join(A.POSTERS_DIR, os.path.basename(r.json["custom_poster"]))
+out_im = cv2.imread(out_path)
+assert out_im.shape[:2] == (600, 400)
+assert open(out_path, "rb").read() != src_hash
+assert "custom_poster" in json.loads(db.connect().execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0])
+# helper: brightness alone raises mid-gray, keeps size (saturated red would clip and look unchanged)
+gray = np.full((120, 80, 3), 80, np.uint8)
+tone = A.pe_apply(gray, 0, False, None, contrast=1, brightness=1.5, gamma=1, sharpen=0)
+assert tone.shape[:2] == (120, 80) and int(tone[10, 10, 0]) > 90
+# crop then brightness: result is the cropped size
+tone_c = A.pe_apply(quad(80, 120), 0, False, {"x": 0, "y": 0, "w": 40, "h": 60}, brightness=1.2)
+assert tone_c.shape[:2] == (60, 40)
+# bad tone
+assert cl.post(f"/api/films/{fid}/posteredit", json={"contrast": 99}).status_code == 400
+
 # bad input, missing film, review-flagged scene
 assert cl.post(f"/api/films/{fid}/posteredit", json={"crop": {"x": "a"}}).status_code == 400
 assert cl.post("/api/films/999999/posteredit", json={}).status_code == 404

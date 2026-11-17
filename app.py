@@ -714,8 +714,10 @@ def pe_result_size(w, h, rot, crop):
     s = min(1.0, POSTER_FIT_PX / max(cw, ch))
     return (cw, ch), ((max(1, round(cw * s)), max(1, round(ch * s))) if s < 1 else (cw, ch))
 
-def pe_apply(img, rot=0, flip=False, crop=None):
-    """Rotate by rot quarter-turns clockwise (negative = left), then flip horizontally, then crop. Order matches the editor."""
+def pe_apply(img, rot=0, flip=False, crop=None, contrast=1.0, brightness=1.0, gamma=1.0, sharpen=0.0):
+    """Rotate by rot quarter-turns clockwise (negative = left), then flip horizontally, then crop,
+    then contrast / brightness / gamma / sharpen. Huge results are then shrunk to POSTER_FIT_PX.
+    Order matches the shared image editor (gallery Edit and Edit poster)."""
     import cv2
     k = rot % 4
     if k == 1: img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
@@ -725,6 +727,13 @@ def pe_apply(img, rot=0, flip=False, crop=None):
     h, w = img.shape[:2]
     x, y, cw, ch = pe_clamp_crop(crop, w, h)
     img = img[y:y + ch, x:x + cw]
+    if (abs(float(contrast) - 1.0) >= 1e-6 or abs(float(brightness) - 1.0) >= 1e-6
+            or abs(float(gamma) - 1.0) >= 1e-6 or float(sharpen) > 1e-6):
+        import galleryadjust as gamod
+        im = gamod.apply_adjustments(gamod.cv_to_pil(img), contrast, brightness, gamma, sharpen)
+        img = gamod.pil_to_cv(im)
+        h, w = img.shape[:2]
+        cw, ch = w, h
     if max(cw, ch) > POSTER_FIT_PX:
         s = POSTER_FIT_PX / max(cw, ch)
         img = cv2.resize(img, (max(1, round(cw * s)), max(1, round(ch * s))), interpolation=cv2.INTER_AREA)
@@ -767,22 +776,23 @@ def posteredit_image(fid):
 
 @app.post("/api/films/<int:fid>/posteredit")
 def posteredit_save(fid):
-    """{rot: quarter-turns clockwise, flip: bool, crop: {x,y,w,h} in pixels of the rotated/flipped original}.
+    """{rot, flip, crop, contrast, brightness, gamma, sharpen}: edit the current poster.
     Saves the result as the film's protected custom poster; the previous one goes to posters/backup/ (Restore previous)."""
     c = C(); bad = _pe_film(c, fid)
     if bad: return bad
     d = (request.json or {}) if request.is_json else {}
+    import galleryadjust as gamod
     try:
-        rot = int(d.get("rot") or 0); flip = bool(d.get("flip")); crop = d.get("crop")
-        if crop is not None and not isinstance(crop, dict): raise ValueError
-        if crop: [float(crop[k]) for k in ("x", "y", "w", "h")]
+        g = gamod.parse_geometry(d); rot, flip, crop = g["rot"], g["flip"], g["crop"]
+        if d.get("crop") is not None and not isinstance(d.get("crop"), dict): raise ValueError
+        tone = gamod.parse_params(d)
     except Exception: return jsonify(error="Bad edit parameters"), 400
     data, ext = _pe_load(_pe_current(c, fid))
     if data is None: return jsonify(error=ext), 400
     img = pe_decode(data)
     if img is None: return jsonify(error="Could not read the poster"), 400
     if img.shape[0] * img.shape[1] > POSTER_SRC_PIXELS: return jsonify(error="Image has too many pixels"), 413
-    out, oext = pe_encode(pe_apply(img, rot, flip, crop), ext)
+    out, oext = pe_encode(pe_apply(img, rot, flip, crop, **tone), ext)
     if out is None: return jsonify(error="Could not encode the edited poster"), 500
     prev = _fp_backup_current(c, fid)
     os.makedirs(POSTERS_DIR, exist_ok=True)
@@ -4685,7 +4695,7 @@ def kick_gallery(fid):
     threading.Thread(target=work, daemon=True).start()
 
 def scene_gallery(c, fid):
-    """-> (kind, folder) for a scene's first file with a gallery; updates films.gallery_path/count if they changed."""
+    """-> (kind, folder) for a title's first file with a gallery or stills folder; updates films.gallery_path/count if they changed."""
     kind = folder = None
     for (p,) in c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall():
         kind, folder = gallerymod.find(p, db.VIDEO_EXT)
@@ -4717,7 +4727,7 @@ def _gallery_or_404(fid, fresh=True):
     kind, folder = scene_gallery(c, fid)
     if folder: GAL_CACHE[fid] = (time.time(), kind, folder)
     else: GAL_CACHE.pop(fid, None)
-    if not folder: return None, (jsonify(error="No gallery for this scene"), 404)
+    if not folder: return None, (jsonify(error="No gallery for this title"), 404)
     return (c, kind, folder), None
 
 @app.get("/api/films/<int:fid>/gallery")
@@ -4759,7 +4769,7 @@ def film_gallery_adjust_info(fid):
 
 @app.post("/api/films/<int:fid>/gallery/adjust")
 def film_gallery_adjust_save(fid):
-    """{name, contrast, brightness, gamma, sharpen}: adjust a scene gallery photo. Original kept in `_originals` once."""
+    """{name, rot, flip, crop, contrast, brightness, gamma, sharpen}: adjust a gallery photo. Original kept in `_originals` once."""
     return _film_gallery_adjust(fid, "save")
 
 @app.post("/api/films/<int:fid>/gallery/adjust/revert")
