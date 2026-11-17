@@ -1,5 +1,5 @@
 """Person pages: library people index, TMDB person resolution/caching, filmography with owned-film matching."""
-import os, re, json, time, datetime, threading, unicodedata, urllib.request, urllib.error, urllib.parse
+import os, re, json, time, datetime, threading, unicodedata, urllib.request, urllib.error, urllib.parse, http.client
 from collections import Counter as Counter_
 from flask import request, jsonify, send_from_directory
 import db
@@ -634,6 +634,56 @@ def init(app, tmdb, posters_dir):
 
     SCN = {}  # pid -> background ThePornDB scene-list load progress
     SCN_LOCK = threading.Lock()
+    TPDB_GATE = threading.Lock()  # one ThePornDB scene-page request at a time; released during backoff
+    STALE_BEAT_S = 150  # no heartbeat this long: the job is stuck, drop "running" so the UI can Retry
+    def _tpdb_scene_page(tok, perf_id, page, st, gen, pid):
+        """Fetch one /performers/{id}/scenes page. Holds TPDB_GATE only during the HTTP call so a stall
+        does not queue other people's pages behind the sleep/retry window."""
+        import tpdb as tpdbmod
+        last = None
+        for i in range(4):
+            if (SCN.get(pid) or {}).get("gen") != gen:
+                return None  # abandoned by the watchdog; a newer load owns this person
+            st.update(beat=time.time(), retry=i)
+            got = TPDB_GATE.acquire(timeout=40)
+            try:
+                if (SCN.get(pid) or {}).get("gen") != gen:
+                    return None
+                st["beat"] = time.time()
+                return tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, tries=1, per_page=100, page=page)
+            except urllib.error.HTTPError as e:
+                last = e
+                ra = e.headers.get("Retry-After") if e.headers else None
+                if e.code == 429 and i < 3:
+                    retryable, delay = True, min(8, float(ra) if ra and str(ra).replace(".", "").isdigit() else 1 * (i + 1))
+                elif e.code in (500, 502, 503, 504) and i < 1:
+                    retryable, delay = True, 1
+                else:
+                    retryable, delay = False, 0
+            except (urllib.error.URLError, TimeoutError, http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ConnectionError) as e:
+                last = e
+                retryable, delay = (True, min(12, 2 * (i + 1))) if i < 3 else (False, 0)
+            finally:
+                if got:
+                    TPDB_GATE.release()
+            if not retryable:
+                raise last
+            st.update(beat=time.time())
+            time.sleep(delay)
+        raise last
+    def _abandon_stale_load(pid):
+        """If a load is marked running but has not heartbeated, clear it so Insights is not stuck on 'still loading'."""
+        with SCN_LOCK:
+            load = SCN.get(pid)
+            if not load or not load.get("running"):
+                return load
+            beat = load.get("beat") or load.get("started") or 0
+            if time.time() - beat < STALE_BEAT_S:
+                return load
+            load["gen"] = (load.get("gen") or 0) + 1
+            load["running"] = False
+            # do not set error here: the next person/Insights request will start a fresh load
+            return load
     def _slim_tpdb_performers(x):
         """Names (and aliases / birth date when present) of a scene's performers. Never keeps images."""
         out = []
@@ -660,21 +710,34 @@ def init(app, tmdb, posters_dir):
                     thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"),
                     performers=_slim_tpdb_performers(x))
     def start_scene_load(pid, tok, perf_id, force=False, resume=False):
-        """Fetch every page of /performers/{id}/scenes in a background thread (rate-limited by call_retry); the list and the
-        API's total are cached in people.tpdb_scenes_json / tpdb_scenes_total. Each page is saved as it arrives. A failed
-        page keeps the partial list and an error; the load is not restarted until Retry or Refresh."""
+        """Fetch every page of /performers/{id}/scenes in a background thread. Pages go through TPDB_GATE one at a time
+        so one person's long load does not pile stalling requests on top of another's. Each page is saved as it arrives;
+        Insights is invalidated so figures update. A stuck job (no heartbeat) is abandoned. A failed page keeps the
+        partial list and an error; the load is not restarted until Retry or Refresh."""
+        now = time.time()
         with SCN_LOCK:
-            if (SCN.get(pid) or {}).get("running"): return
-            if (SCN.get(pid) or {}).get("error") and not force: return
-            SCN[pid] = dict(running=True, done=0, total=None, page=0, pages=None, error=None)
+            load = SCN.get(pid) or {}
+            if load.get("running"):
+                beat = load.get("beat") or load.get("started") or 0
+                if now - beat < STALE_BEAT_S and not force:
+                    return
+                load["gen"] = (load.get("gen") or 0) + 1  # abandon a stuck job (force or stale beat)
+                load["running"] = False
+            if load.get("error") and not force:
+                return
+            SCN[pid] = dict(running=True, done=load.get("done") or 0, total=load.get("total"), page=load.get("page") or 0,
+                            pages=load.get("pages"), error=None, gen=(load.get("gen") or 0) + 1, beat=now, started=now)
+            gen = SCN[pid]["gen"]
         def run():
-            import tpdb as tpdbmod
             st = SCN[pid]; c2 = C()
             allsc, page, seen = [], 1, set()
             def save(final):
+                if (SCN.get(pid) or {}).get("gen") != gen:
+                    return
                 keep = [_slim_tpdb_scene(x) for x in allsc]
                 c2.execute("UPDATE people SET tpdb_scenes_json=?, tpdb_scenes_at=?, tpdb_scenes_total=? WHERE id=?",
                            (json.dumps(keep), time.time() if final else 0, st["total"] or len(keep), pid)); c2.commit()
+                for k in [k for k in list(INS) if k[0] == pid]: INS.pop(k, None)
             try:
                 if resume:
                     row2 = c2.execute("SELECT tpdb_scenes_json, tpdb_scenes_total FROM people WHERE id=?", (pid,)).fetchone()
@@ -690,11 +753,24 @@ def init(app, tmdb, posters_dir):
                                   page=max(1, (len(allsc) + 99) // 100))
                         if tot is not None and len(allsc) >= int(tot):
                             save(True); return
+                        # A handful of missing ids after the last expected page are almost always
+                        # duplicates ThePornDB counted twice, not a missing page. Stop instead of
+                        # hanging on a page past last_page.
+                        gap = int(tot) - len(allsc) if tot is not None else None
+                        expected = (int(tot) + 99) // 100 if tot is not None else None
+                        have_pages = (len(allsc) + 99) // 100
+                        if tot is not None and gap is not None and 0 < gap <= max(10, int(tot * 0.005)) and have_pages >= expected:
+                            st.update(done=len(allsc), total=int(tot), page=have_pages, pages=expected, beat=time.time())
+                            save(True); return
                         page = len(allsc) // 100 + 1
                 stalls = 0
                 while page <= TPDB_MAX_PAGES:
+                    if (SCN.get(pid) or {}).get("gen") != gen:
+                        return
                     try:
-                        r = tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, per_page=100, page=page)
+                        r = _tpdb_scene_page(tok, perf_id, page, st, gen, pid)
+                        if r is None:
+                            return
                         stalls = 0
                     except urllib.error.HTTPError as ex:
                         # A page past last_page can return 401 Unauthenticated; stop cleanly if the list is already complete.
@@ -704,11 +780,12 @@ def init(app, tmdb, posters_dir):
                         ):
                             st.update(done=len(allsc)); save(True); break
                         raise
-                    except (urllib.error.URLError, TimeoutError):
+                    except (urllib.error.URLError, TimeoutError, http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ConnectionError):
                         stalls += 1
-                        if stalls >= 10:
+                        if stalls >= 5:
                             raise
-                        time.sleep(min(20, 2 * stalls))
+                        st.update(beat=time.time())
+                        time.sleep(min(15, 2 * stalls))
                         continue
                     d = r.get("data") or []
                     new = [x for x in d if str(x.get("id") or "") not in seen]
@@ -717,12 +794,18 @@ def init(app, tmdb, posters_dir):
                     meta = r.get("meta") if isinstance(r.get("meta"), dict) else {}
                     last, tot = meta.get("last_page") or meta.get("last"), meta.get("total")
                     st.update(done=len(allsc), page=page, pages=int(last) if last else None,
-                              total=int(tot) if tot is not None else None)
+                              total=int(tot) if tot is not None else None, beat=time.time())
                     have_all = st["total"] is not None and len(allsc) >= st["total"]
                     known_last = bool(last) and page >= int(last)
                     # An empty or repeated page is not the end if ThePornDB still reports more pages/items.
                     more = (st["total"] is not None and len(allsc) < st["total"]) or (last and page < int(last))
-                    final = have_all or known_last or page >= TPDB_MAX_PAGES or (not more and (not d or not new or len(d) < 100))
+                    expected = (int(st["total"]) + 99) // 100 if st["total"] is not None else None
+                    close_enough = (
+                        st["total"] is not None and expected is not None
+                        and 0 < (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
+                        and page >= expected
+                    )
+                    final = have_all or known_last or close_enough or page >= TPDB_MAX_PAGES or (not more and (not d or not new or len(d) < 100))
                     save(final)
                     if final: break
                     if not d or not new:
@@ -735,9 +818,12 @@ def init(app, tmdb, posters_dir):
                 except Exception:
                     pass
             finally:
-                st["running"] = False; c2.close()
-                try: scenes_changed(pid)
-                except Exception: pass
+                if (SCN.get(pid) or {}).get("gen") == gen:
+                    st["running"] = False
+                    st["beat"] = time.time()
+                    try: scenes_changed(pid)
+                    except Exception: pass
+                c2.close()
         threading.Thread(target=run, daemon=True).start()
     def scenes_changed(pid):
         """A scene list finished loading: drop every cache built from the partial list (insights, credits, built list)."""
@@ -1110,14 +1196,16 @@ def init(app, tmdb, posters_dir):
             refresh, scenes_retry = request.args.get("refresh"), request.args.get("scenes_retry")
             try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
             except Exception: _nsc = 0
-            incomplete = bool(row["tpdb_scenes_json"]) and (
-                (row["tpdb_scenes_at"] or 0) == 0 or ((row["tpdb_scenes_total"] or 0) > _nsc))
+            incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
             stale = time.time() - (row["tpdb_scenes_at"] or 0) > STALE_S
+            _abandon_stale_load(pid)
             if tok and (not row["tpdb_scenes_json"] or refresh or scenes_retry or incomplete or stale):
                 start_scene_load(pid, tok, row["tpdb_performer_id"], force=bool(refresh or scenes_retry),
                                  resume=bool(incomplete) and not refresh)
             load = SCN.get(pid)
-            if load and load.get("running"): scenes_loading = dict(done=load["done"], total=load["total"], pages=load["pages"], page=load["page"])
+            if load and load.get("running"):
+                scenes_loading = dict(done=load["done"], total=load["total"], pages=load["pages"], page=load["page"],
+                                      retry=load.get("retry") or 0)
             elif load and load.get("error"):
                 scenes_error = load["error"]
                 msg = (msg + " " if msg else "") + f"Could not load all ThePornDB scenes ({load['error']}); showing the list so far."
@@ -1898,8 +1986,7 @@ def init(app, tmdb, posters_dir):
                 if not tpid: continue
                 try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
                 except Exception: _nsc = 0
-                incomplete = bool(row["tpdb_scenes_json"]) and (
-                    (row["tpdb_scenes_at"] or 0) == 0 or ((row["tpdb_scenes_total"] or 0) > _nsc))
+                incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
                 if incomplete or not row["tpdb_scenes_json"]:
                     start_scene_load(row["id"], tok, tpid, force=True, resume=bool(incomplete))
         d = cocredit_data(c, pids)
@@ -2322,9 +2409,12 @@ def init(app, tmdb, posters_dir):
         c = C(); row = co_canon(c, pid)
         if not row: return jsonify(error="Unknown person"), 404
         dk = co_dkey(c); ck = (row["id"], dk, psig(row))
+        _abandon_stale_load(row["id"])
         loading = scenes_loading_now(row["id"])  # ThePornDB scene list still loading: figures are partial, the page asks again
+        sc_err = (SCN.get(row["id"]) or {}).get("error")
         hit = INS.get(ck)
-        if hit and time.time() - hit[0] < 600 and not request.args.get("force"): return jsonify(dict(hit[1], cached=True, loading=loading))
+        if hit and time.time() - hit[0] < 600 and not request.args.get("force"):
+            return jsonify(dict(hit[1], cached=True, loading=loading, scenes_error=sc_err))
         rows, excluded, e, F, xrows = person_rows(c, row, dk)
         from collections import Counter
         lib = [r for r in rows if r["in_library"]]
@@ -2366,7 +2456,7 @@ def init(app, tmdb, posters_dir):
         if not loading:  # never cache figures from a part-loaded scene list
             INS[ck] = (time.time(), res)
             if len(INS) > 128: INS.pop(next(iter(INS)))
-        return jsonify(dict(res, cached=False, loading=loading))
+        return jsonify(dict(res, cached=False, loading=loading, scenes_error=sc_err))
 
     # ---------- built / not-yet-opened profiles (people credited on adult titles: Porn Scenes + Classic Porn) ----------
     # Built = the person page has its career data: a ThePornDB scene list (scene performers, loaded when the page is first

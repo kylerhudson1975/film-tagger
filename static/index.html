@@ -1707,7 +1707,7 @@ async function showPerson(pid,opt={}){
  S.page='person:'+pid;S.pageId=pid;dashNav(false);$('personHdr').style.display='none';
  if(!opt.keep){$('content').innerHTML='<div class=pp><p class=muted>Loading…</p></div>';$('content').scrollTop=0}
  let d;try{d=await api('/api/person/'+pid+(opt.refresh?'?refresh=1':''))}catch(e){$('content').innerHTML='<div class=pp><p>Could not load this person.</p></div>';return}
- if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppLim=200;S.ppYear=null;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;if(!opt.keep&&S.ppGal&&S.ppGal.pid===pid)S.ppGal.at=0;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
+ if(S.page!=='person:'+pid)return;if(!opt.keep){S.ppVis=0;S.ppVisPid=pid;S.ppYear=null;if(!opt.nohist||opt.refresh)ppInsReset(pid)}S.ppData=d;if(!opt.keep&&S.ppGal&&S.ppGal.pid===pid)S.ppGal.at=0;const st=$('content').scrollTop;renderPerson();if(opt.keep)$('content').scrollTop=st}
 function fmtDate(s){if(!s)return '';const d=new Date(s+'T00:00:00');return isNaN(d)?s:d.toLocaleDateString(undefined,{year:'numeric',month:'long',day:'numeric'})}
 function ageAt(b,e){if(!b)return '';const x=new Date(b),y=e?new Date(e):new Date();let a=y.getFullYear()-x.getFullYear();if(y.getMonth()<x.getMonth()||(y.getMonth()==x.getMonth()&&y.getDate()<x.getDate()))a--;return isNaN(a)?'':` (${e?'aged':'age'} ${a})`}
 function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').textContent='';
@@ -1747,19 +1747,18 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
  if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id&&yOk(x.date)),rest=S.ppScOnly||PY?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
-  const lim=S.ppLim||200,shown=rest.slice(0,lim),ld=d.scenes_loading;
-  const card=x=>{const img=x.film_id&&x.poster?x.poster:x.thumb,
-   inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
-   return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`};
+  if(S.ppVisPid!==d.person.id){S.ppVis=0;S.ppVisPid=d.person.id}
+  const shown=rest.slice(0,S.ppVis||0),ld=d.scenes_loading;
+  const card=ppSceneCard;
   h+=`<h3 class=ppdept>Scenes <span class=muted>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
    +(S.ppScOnly&&!d.scenes_loading?`<p class=muted>Showing only your ${d.scenes_owned} scene(s); ${Math.max(0,(d.scenes_total||0)-d.scenes_owned)} more on ThePornDB.</p>`:'')
-   +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})</p>`:'')
+   +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})${ld.retry?' — waiting on ThePornDB…':''}</p>`:'')
    +(d.scenes_error&&!ld?`<p class=muted id=ppLoadErr>⚠ Couldn't load all ThePornDB scenes (${esc(d.scenes_error)})${d.scenes_tpdb_total?`; showing ${(d.scenes||[]).length} of ${d.scenes_tpdb_total}`:''}. <a href="#" onclick="ppScenesRetry(${d.person.id});return false">Retry</a></p>`:'')
    +`<h4 class=muted>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist>${mine.map(card).join('')}</div>`:'<p class=muted>None in your library.</p>')
-   +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist>${shown.map(card).join('')}</div>`+(rest.length>lim?`<button onclick="S.ppLim=(S.ppLim||200)+500;renderPerson()">Load more (${rest.length-lim} more)</button> <button onclick="S.ppLim=1e9;renderPerson()">Show all</button>`:''):'');
+   +(rest.length?`<h4 class=muted>Not in library (${rest.length})</h4><div class=pplist id=ppRestList>${shown.map(card).join('')}</div>`+(rest.length>(S.ppVis||0)?`<div class=muted id=ppRestSent>Loading the rest of the list…</div>`:''):'');
 }
  const oe=$('ppEdit'),keepE=oe&&oe.style.display=='block'&&+oe.dataset.pid===d.person.id?oe:null;
- c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppPollStart(d);ppGalLoad(p)}
+ c.innerHTML=h+'</div>';if(keepE){const ne=$('ppEdit');if(ne)ne.replaceWith(keepE)}ppBindSceneScroll();requestAnimationFrame(ppFillScenes);ppPollStart(d);ppGalLoad(p)}
 /* Performer gallery: the person's linked folder of photos (Edit profile → Gallery folder), listed on every visit, thumbnails lazy-loaded */
 function ppGalHtml(p){const g=S.ppGal;if(!p.gallery_dir)return '';if(!g||g.pid!==p.id||g.dir!==p.gallery_dir)return `<h3 class=ppdept>Gallery <span class=muted>— loading…</span></h3>`;const d=g.data;
  if(d.hidden)return `<h3 class=ppdept>Gallery</h3><p class=muted>Hidden: this person is in a title flagged for review by hand.</p>`;
@@ -1781,15 +1780,23 @@ async function ppGalHide(name,hidden,ev){if(ev)ev.stopPropagation();const g=S.pp
  S.ppGal.data=d;S.ppGal.at=Date.now();const x=$('ppGal');if(x)x.innerHTML=ppGalHtml(S.ppData.person);toast(hidden?'Hidden from gallery (the file is still in the folder)':'Shown in gallery again')}
 (()=>{const st=document.createElement('style');st.textContent='.ppgal{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px;margin:6px 0 10px}.ppgal .pgc{position:relative}.ppgal .pgc img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:4px;cursor:zoom-in;background:#8882;display:block}.ppgal .pgc button{position:absolute;top:4px;right:4px;padding:2px 6px;font-size:11px;width:auto;opacity:0;background:#000c;color:#fff;border:0;border-radius:4px;cursor:pointer}.ppgal .pgc:hover button,.ppgal .pgc button:focus{opacity:1}.ppgal .pgc.hid img{opacity:.45}.ppgal .pgc.hid button{opacity:1}#galOv .gg .gc{position:relative}#galOv .gg .gc button{position:absolute;top:4px;right:4px;padding:2px 6px;font-size:11px;width:auto;opacity:0;background:#000c;color:#fff;border:0;border-radius:4px;cursor:pointer}#galOv .gg .gc:hover button,#galOv .gg .gc button:focus{opacity:1}#galOv .gg .gc.hid img{opacity:.45}#galOv .gg .gc.hid button{opacity:1}';document.head.appendChild(st)})();
 /* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
+function ppSceneCard(x){const img=x.film_id&&x.poster?x.poster:x.thumb,
+ inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
+ return x.film_id?`<div class="ppi own" data-id="${x.film_id}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`}
+function ppBindSceneScroll(){const c=$('content');if(!c||c._ppFill)return;c._ppFill=1;c.addEventListener('scroll',()=>{if(S.page&&String(S.page).startsWith('person:'))ppFillScenes()},{passive:true})}
+function ppFillScenes(){const d=S.ppData;if(!d||!d.scenes||S.ppScOnly||S.ppYear)return;let rest=d.scenes.filter(x=>!x.film_id);if(S.ppDesc)rest=[...rest].reverse();const el=$('ppRestList');if(!el)return;const CHUNK=80,content=$('content');
+ if(!S.ppVis)S.ppVis=0;if(S.ppVisPid!==d.person.id){S.ppVis=0;S.ppVisPid=d.person.id}
+ while(S.ppVis<rest.length){const sent=$('ppRestSent');const room=!content||content.scrollHeight<=content.clientHeight+280;const near=sent&&sent.getBoundingClientRect().top<(content?content.getBoundingClientRect().bottom:innerHeight)+500;if(S.ppVis>0&&!room&&!near)break;const n=Math.min(rest.length,(S.ppVis||0)+CHUNK);let html='';for(let i=S.ppVis;i<n;i++)html+=ppSceneCard(rest[i]);if(sent)sent.insertAdjacentHTML('beforebegin',html);else el.insertAdjacentHTML('beforeend',html);S.ppVis=n}
+ const sent=$('ppRestSent');if(sent)sent.style.display=S.ppVis>=rest.length?'none':'';if(S.ppVis<rest.length&&content&&content.scrollHeight<=content.clientHeight+280)requestAnimationFrame(ppFillScenes)}
 function ppPollStart(d){const ld=d.scenes_loading,pid=d.person.id;if(!ld)return;
  if(S.ppPoll){if(S.ppPoll.pid===pid)return;clearTimeout(S.ppPoll.t);S.ppPoll=null}  // one poll per person: an old person's timer never blocks this one
  if(!(d.scenes&&(d.scenes.length||ld))){const x=$('content').querySelector('.pp');if(x&&!$('ppLoad'))x.insertAdjacentHTML('afterbegin',`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''}</p>`)}
- S.ppPoll={pid,t:setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const n=await api('/api/person/'+pid);if(S.page!=='person:'+pid)return;
+ S.ppPoll={pid,t:setTimeout(async()=>{S.ppPoll=null;if(S.page!=='person:'+pid)return;const gen=S.ppGen||0;try{const ac=typeof AbortController!=='undefined'?new AbortController():null;const to=ac&&setTimeout(()=>ac.abort(),20000);const n=await api('/api/person/'+pid,ac?{signal:ac.signal}:{});if(to)clearTimeout(to);if(S.page!=='person:'+pid)return;
   if((S.ppGen||0)!==gen){if(S.ppData)ppPollStart(S.ppData);return}
   if(!n.scenes_loading){ppInsReset(pid);delete PI.all[pid]}const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}catch(e){S.ppPoll=null;setTimeout(()=>{if(S.page==='person:'+pid&&S.ppData)ppPollStart(S.ppData)},3000)}},3000)}}
 /* Year filter on the person page: click a year's blue (in-library) bar in Insights > Career timeline to show only that
    year's in-library credits below (chip 'YEAR (n) ×'); the same bar again or the × clears it; resets for each person. */
-function ppScenesRetry(pid){api('/api/person/'+pid+'?scenes_retry=1').then(n=>{if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st}).catch(e=>toast("Couldn't reach Film Tagger: "+(e.message||e)))}
+function ppScenesRetry(pid){ppInsReset(pid);if(PI.all)delete PI.all[pid];api('/api/person/'+pid+'?scenes_retry=1').then(n=>{if(S.page!=='person:'+pid)return;const st=$('content').scrollTop;S.ppData=n;renderPerson();$('content').scrollTop=st;if(n.scenes_loading)ppInsLater(pid)}).catch(e=>toast("Couldn't reach Film Tagger: "+(e.message||e)))}
 function ppYearChip(d){const y=S.ppYear;if(!y)return '';const n=(d.library||[]).filter(f=>+f.year===y).length;
  return `<div style="margin:8px 0"><span class=ppychip id=ppYearChip>${y} (${n}) <a href="#" title="Clear the year filter" onclick="ppYear(null);return false">×</a></span></div>`}
 function ppYear(y){S.ppYear=y==null||S.ppYear===y?null:y;const st=$('content').scrollTop;renderPerson();$('content').scrollTop=st}
@@ -2352,8 +2359,8 @@ async function ppInsLoad(pid,force){const g=PI.gen[pid]||0;if(PI.fly[pid]===g)re
  try{r=await api('/api/people/'+pid+'/insights'+(force?'?force=1':''))}catch(e){r={error:true}}
  if(PI.fly[pid]===g)delete PI.fly[pid];if(PI.busy===pid)PI.busy=null;
  if((PI.gen[pid]||0)!==g){if(S.page==='person:'+pid)ppInsLoad(pid);return}
- PI.d[pid]=r;ppInsDraw(pid);if(r&&r.loading)ppInsLater(pid)}
-function ppInsLater(pid){if(PI.tm[pid])return;PI.tm[pid]=setTimeout(()=>{delete PI.tm[pid];if(S.page==='person:'+pid&&PI.fly[pid]!==(PI.gen[pid]||0))ppInsLoad(pid)},3000)}
+ PI.d[pid]=r;ppInsDraw(pid);if(r&&(r.loading||r.error))ppInsLater(pid)}
+function ppInsLater(pid){if(PI.tm[pid])return;PI.tm[pid]=setTimeout(()=>{delete PI.tm[pid];if(S.page!=='person:'+pid)return;if(PI.fly[pid]===(PI.gen[pid]||0)){PI.hung=(PI.hung||{});if(!PI.hung[pid])PI.hung[pid]=Date.now();if(Date.now()-PI.hung[pid]>20000){delete PI.fly[pid];delete PI.hung[pid]}ppInsLater(pid);return}if(PI.hung)delete PI.hung[pid];ppInsLoad(pid)},3000)}
 function ppInsDraw(pid){const el=$('ppIns');if(el&&S.page==='person:'+pid)el.innerHTML=ppInsInner(pid)}
 function ppGo(pid,add={}){dshGo({pin:String(pid),...add})}
 async function ppCo(pid,name,opid){const id=await coPid({name,pid:opid});showCo([pid,id])}
@@ -2374,7 +2381,7 @@ function ppInsInner(pid){const open=localStorage.ppInsOpen!=='0',d=PI.d[pid];
   stat('ppl',d.top_role?esc(d.top_role.name):'—','Top role',d.top_role?`${dN(d.top_role.n)} credit${d.top_role.n==1?'':'s'}${d.roles.length>1?' · then '+esc(d.roles[1].name.toLowerCase()):''}`:'',''),
   ...(d.rating?[stat('heart',(+d.rating.avg).toFixed(1),'Your average rating',`${dN(d.rating.n)} rated`,'ok')]:[])];
  const xn=d.excluded?`<div class=co-note style="margin:6px 0 8px">${dIc('info',15)}<div><b>${dN(d.excluded)} of ${esc(coFirst(d.name))}'s credit${d.excluded==1?' is':'s are'} hidden by the age rule</b>${d.excluded_lib?` (${dN(d.excluded_lib)} of them in your library)`:''}: ${d.excluded_why=='no_birthday'?`there is no known birth date, so adult titles can't be checked as 18+ at release. Everything below counts only the ${dN(d.total)} credit${d.total==1?'':'s'} that pass. Add the birth date (Edit on this page, or pick a match under Dashboard → People without a birth date) and they'll be counted.`:'they were released before this person turned 18.'}</div></div>`:'';
- const ldn=d.loading?`<p class=muted id=ppInsLd style="margin:4px 2px 8px">⟳ ThePornDB scenes are still loading: these figures update on their own when the list is complete.</p>`:'';
+ const ldn=d.loading?`<p class=muted id=ppInsLd style="margin:4px 2px 8px">⟳ ThePornDB scenes are still loading: these figures update as new pages arrive.</p>`:(d.scenes_error?`<p class=muted id=ppInsLd style="margin:4px 2px 8px">⚠ Couldn't load all ThePornDB scenes (${esc(d.scenes_error)}). <a href="#" onclick="ppScenesRetry(${pid});return false">Retry</a></p>`:'');
  let h=head+xn+ldn+`<div class="dsh-stats ${tiles.length==6?'six':'five'}">${tiles.join('')}</div><div class=dsh-grid>`;
  if(!d.years.length&&d.loading)h+=card('dsh-w2','bars','Career timeline','<p class=muted>Waiting for the scene list to finish loading…</p>','credits per year');
  if(d.years.length){const y0=d.years[0].k,y1=d.years[d.years.length-1].k,line=localStorage.ppInsChart=='line';
