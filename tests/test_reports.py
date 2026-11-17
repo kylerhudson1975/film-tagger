@@ -1,5 +1,5 @@
 """Reports: whitelisted specs, tag synonyms, adult scope/share ranking, performers (known birth dates, adults only),
-and Ask a question (AI picks a spec; never SQL; no AI -> helpful 400). Temp DB, no network.
+and Ask a question (built-in queries first; AI leftover; no hang). Temp DB, no network.
 Run: python tests/test_reports.py"""
 import os, sys, tempfile, json
 os.environ["FILMTAGGER_DB"] = os.path.join(tempfile.mkdtemp(), "films.db")
@@ -57,9 +57,11 @@ assert c.execute("SELECT COUNT(*) FROM films").fetchone()[0] == 9
 # film list
 ids = run(report="studios")["rows"][0]["ids"]
 assert [f["title"] for f in cl.post("/api/reports/films", json={"ids": ids}).json["films"]] == ["S2", "S1"]
-# ask: no AI configured -> helpful 400
-r = cl.post("/api/reports/ask", json={"question": "Which country made the most exploitation films?"})
-assert r.status_code == 400 and "No AI service" in r.json["error"]
+# ask: no AI configured -> built-in answer, or a helpful fallback (never a hang or 400)
+r = cl.post("/api/reports/ask", json={"question": "Which director has the most films in my library?"})
+assert r.status_code == 200 and r.json["direct"] and r.json["rows"][0][0] == "Dir One" and r.json["rows"][0][1] == 4, r.json
+r = cl.post("/api/reports/ask", json={"question": "hm?"})
+assert r.status_code == 200 and "couldn't answer that" in r.json["answer"].lower() and r.json.get("answer_from_error")
 # ask with AI (mocked). The AI first writes one read-only SELECT; a refused/failed query (here DROP TABLE, twice) falls
 # back to a whitelisted report spec. Only the question + schema/vocabulary is sent, never library rows.
 db.set_setting(c, "ai_url", "http://ai.invalid/v1"); db.set_setting(c, "ai_model", "m"); c.commit()
@@ -81,8 +83,9 @@ def fake_sql(url, key, model, prompt, timeout=180, **kw):
     return "Dir One made the most, with 4 films."
 app.ai_chat = fake_sql
 r = cl.post("/api/reports/ask", json={"question": "Which director has the most films?"}).json
-assert r["mode"] == "sql" and r["columns"] == ["director", "n"] and r["rows"][0] == ["Dir One", 4] and r["answer"].startswith("Dir One"), r
+assert r["mode"] == "sql" and r.get("direct") and r["rows"][0][0] == "Dir One" and r["rows"][0][1] == 4 and "Dir One" in r["answer"], r
 app.ai_chat = lambda *a, **k: "sorry, no idea"
-assert cl.post("/api/reports/ask", json={"question": "hm?"}).status_code == 502  # no query and no spec
+r = cl.post("/api/reports/ask", json={"question": "hm?"})
+assert r.status_code == 200 and "couldn't answer that" in r.json["answer"].lower()
 assert cl.get("/api/reports/options").json["ai_configured"] is True
 print("OK test_reports")

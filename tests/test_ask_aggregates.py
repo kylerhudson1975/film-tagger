@@ -95,7 +95,11 @@ def fake_rank(url, key, model, prompt, timeout=180, **kw):
     seen.append(prompt); return "Jesús Franco leads with 5 films."
 app.ai_chat = fake_rank
 r = ask("Which director has the most films?")
-assert r["answer"].startswith("Jesús Franco") and "rank=" not in seen[0] and "director=Jesús Franco | films=5" in seen[0], seen
+assert "Jesús Franco" in r["answer"] and r["rows"][0][1] == 5, r
+if seen:  # AI path (if the built-in query is ever disabled)
+    assert "rank=" not in seen[0] and "director=Jesús Franco | films=5" in seen[0], seen
+else:
+    assert r.get("direct")
 
 # 5) a column that stays NULL after the retry is flagged
 app.ai_chat = lambda u, k, m, p, timeout=180, **kw: json.dumps({"reading": "x", "sql": "SELECT NULL AS percent, COUNT(*) AS films FROM films"}) if "ONE SQLite SELECT" in p else "?"

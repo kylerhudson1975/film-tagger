@@ -650,9 +650,602 @@ def _msg(question, text, **kw):
                 notes=kw.pop("notes", []), retried=False, **kw)
 
 
+
+_BLANK_NAMES = frozenset({"", "none", "n/a", "na", "unknown", "tbd", "-", "–", "—", "null", "?"})
+_SKIP_DIRECT_RE = re.compile(r"(?i)\b(percent(?:age)?|ratio|proportion|share of)\b|%")
+_ASK_STOPWORDS = frozenset({
+    "director", "directors", "actor", "actors", "actress", "actresses",
+    "performer", "performers", "cast", "studio", "studios", "film", "films",
+    "movie", "movies", "scene", "scenes", "title", "titles", "library",
+    "rating", "ratings", "year", "years", "decade", "decades", "genre", "genres",
+    "tag", "tags", "country", "countries", "average", "mean", "avg",
+    "most", "least", "top", "bottom", "best", "worst", "highest", "lowest",
+    "unrated", "rated", "watched", "unwatched", "recently", "added", "newest",
+    "item", "items", "entry", "entries", "name", "names", "person", "people",
+})
+
+
+def ask_fallback(question, notes=None, no_ai=False):
+    """Honest canned reply when a question can't be answered (no hang, no invented numbers)."""
+    text = ("I couldn't answer that. Try a more specific question, like "
+            "“How many films from the 1980s do I have?”, "
+            "“Which director has the most films in my library?”, "
+            "“What is my average rating for horror films?”, "
+            "or “How many titles are unrated?”.")
+    if no_ai:
+        text += " Unusual questions need an AI service (Library & Settings → Tags & Categories → Smart tagging)."
+    return _msg(question, text, notes=list(notes or []), answer_from_error=True)
+
+
+def _ask_scope(q):
+    ql = q.lower()
+    has_film = bool(re.search(r"\bfilms?\b", ql))
+    has_scene = bool(re.search(r"\bscenes?\b", ql))
+    if has_scene and not has_film:
+        return "scenes", "COALESCE(f.kind,'')='scene'", "scene", "scenes"
+    if re.search(r"\b(titles?|items?|entries|everything)\b", ql) and not has_film and not has_scene:
+        return "titles", "1=1", "title", "titles"
+    return "films", "COALESCE(f.kind,'')<>'scene'", "film", "films"
+
+
+def _ask_decade(q):
+    m = re.search(r"\b((?:19|20)\d0)\s*['’]?s\b", q, re.I)
+    if not m:
+        return None
+    y = int(m.group(1))
+    return y, y, y + 9, f"the {y}s"
+
+
+def _ask_year(q):
+    if _ask_decade(q):
+        return None
+    m = re.search(r"\bbetween\s+((?:19|20)\d{2})\s+and\s+((?:19|20)\d{2})\b", q, re.I)
+    if m:
+        a, b = int(m.group(1)), int(m.group(2))
+        if a > b:
+            a, b = b, a
+        return a, a, b, f"{a}–{b}"
+    m = re.search(r"\b(?:in|from|of|year|released(?: in)?)\s+((?:19|20)\d{2})\b", q, re.I)
+    if m:
+        y = int(m.group(1))
+        return y, y, y, str(y)
+    return None
+
+
+def _ask_vocab(c):
+    genres = [r[0] for r in c.execute(
+        "SELECT DISTINCT primary_genre FROM films WHERE COALESCE(TRIM(primary_genre),'')<>''")]
+    tags = []
+    try:
+        tags = [r[0] for r in c.execute("SELECT name FROM tags")]
+    except sqlite3.OperationalError:
+        pass
+    return genres, tags
+
+
+def _ask_period_name(t):
+    """True when a tag/genre is just a year or decade, so it isn't also used as a tag filter."""
+    return bool(t) and bool(re.fullmatch(r"(?:19|20)\d{2}s?", t.strip(), re.I) or re.fullmatch(r"(?:19|20)\d0['’]?s", t.strip(), re.I))
+
+
+def _ask_match_term(q, terms):
+    best = None
+    for t in terms:
+        if not t or _ask_period_name(t) or t.lower() in _ASK_STOPWORDS:
+            continue
+        if re.search(r"(?i)(?:^|[^a-z0-9])" + re.escape(t) + r"(?:[^a-z0-9]|$)", q):
+            if best is None or len(t) > len(best):
+                best = t
+    return best
+
+
+def _ask_period_sql(period, alias="f"):
+    if not period:
+        return "1=1", []
+    _, lo, hi, _ = period
+    if lo == hi:
+        return f"{alias}.year=?", [lo]
+    return f"{alias}.year BETWEEN ? AND ?", [lo, hi]
+
+
+def _ask_label_ok(expr):
+    return f"TRIM(COALESCE({expr},''))<>'' AND lower(TRIM({expr})) NOT IN ({','.join('?' for _ in _BLANK_NAMES)})"
+
+
+def _ask_rows(c, sql, args=()):
+    cur = c.execute(sql, args)
+    cols = [d[0] for d in cur.description]
+    rows = [list(r) for r in cur.fetchall()]
+    return cols, rows
+
+
+def _ask_ok(question, reading, sql, cols, rows, answer, notes=None, chart_hint=None):
+    out = dict(mode="sql", question=question, reading=reading, sql=sql, columns=cols, rows=rows,
+               answer=answer, notes=list(notes or []), retried=False, direct=True)
+    if chart_hint:
+        out["chart_hint"] = chart_hint
+    return out
+
+
+def _ask_genre_sql(genre, tag, alias="f"):
+    """Match a primary genre and/or a tag. Prefer an exact genre; a tag of the same name also counts."""
+    parts, args = [], []
+    if genre:
+        parts.append(f"lower({alias}.primary_genre)=lower(?)")
+        args.append(genre)
+    if tag and (not genre or tag.lower() != genre.lower()):
+        parts.append(
+            f"EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id"
+            f" WHERE ft.film_id={alias}.id AND COALESCE(ft.status,'approved') IN ('approved','') AND lower(t.name)=lower(?))")
+        args.append(tag)
+    elif tag and genre and tag.lower() == genre.lower():
+        parts.append(
+            f"EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id"
+            f" WHERE ft.film_id={alias}.id AND COALESCE(ft.status,'approved') IN ('approved','') AND lower(t.name)=lower(?))")
+        args.append(tag)
+    if not parts:
+        return "1=1", []
+    return "(" + " OR ".join(parts) + ")", args
+
+
+def _ask_where(scope_sql, period, genre, tag):
+    bits, args = [scope_sql], []
+    ps, pa = _ask_period_sql(period)
+    if ps != "1=1":
+        bits.append(ps); args.extend(pa)
+    gs, ga = _ask_genre_sql(genre, tag)
+    if gs != "1=1":
+        bits.append(gs); args.extend(ga)
+    return " AND ".join(bits), args
+
+
+def _about_noun(plural, genre=None, tag=None, period=None):
+    """Noun phrase for templates, e.g. 'Horror films from the 1980s'."""
+    mid = genre or ""
+    if tag and (not genre or tag.lower() != genre.lower()):
+        mid = (mid + " tagged " + tag).strip()
+    if mid and period:
+        return f"{mid} {plural} from {period[3]}"
+    if mid:
+        return f"{mid} {plural}"
+    if period:
+        return f"{plural} from {period[3]}"
+    return plural
+
+
+def _q_recent(c, question, scope_sql, plural):
+    sql = (f"SELECT f.title, f.year FROM films f WHERE {scope_sql} AND f.added_at IS NOT NULL "
+           f"ORDER BY f.added_at DESC, f.id DESC LIMIT 10")
+    cols, rows = _ask_rows(c, sql)
+    if not rows:
+        return _ask_ok(question, "recently added", sql, cols, rows,
+                       f"No recently added {plural} were found.", chart_hint="table")
+    def lab(t, y):
+        return f"{t} ({y})" if y else str(t)
+    listed = ", ".join(lab(t, y) for t, y in rows)
+    return _ask_ok(question, "recently added", sql, cols, rows,
+                   f"Recently added: {listed}.", chart_hint="table")
+
+
+def _q_unrated(c, question, where, args, plural, about):
+    sql = f"SELECT COUNT(*) AS n FROM films f WHERE {where} AND f.rating IS NULL"
+    cols, rows = _ask_rows(c, sql, args)
+    n = rows[0][0] if rows else 0
+    return _ask_ok(question, "unrated", sql, cols, rows,
+                   f"You have {n} unrated {about}." if n else f"You have no unrated {about}.",
+                   chart_hint="stat")
+
+
+def _q_avg_rating(c, question, where, args, plural, about):
+    sql = (f"SELECT ROUND(AVG(f.rating), 1) AS average, COUNT(*) AS n "
+           f"FROM films f WHERE {where} AND f.rating IS NOT NULL")
+    cols, rows = _ask_rows(c, sql, args)
+    avg, n = (rows[0] if rows else (None, 0))
+    if not n or avg is None:
+        return _ask_ok(question, "average rating", sql, cols, rows,
+                       f"None of your {about} have a rating yet.", chart_hint="stat")
+    unit = about if n != 1 else about[:-1] if about.endswith("s") else about
+    return _ask_ok(question, "average rating", sql, cols, rows,
+                   f"Your average rating for {about} is {avg} (across {n} rated {unit}).",
+                   chart_hint="stat")
+
+
+def _q_rated_titles(c, question, where, args, plural, about, lowest=False):
+    order = "ASC" if lowest else "DESC"
+    word = "lowest" if lowest else "highest"
+    sql = (f"SELECT f.title, f.year, f.rating FROM films f WHERE {where} AND f.rating IS NOT NULL "
+           f"ORDER BY f.rating {order}, f.title LIMIT 10")
+    cols, rows = _ask_rows(c, sql, args)
+    if not rows:
+        return _ask_ok(question, f"{word} rated", sql, cols, rows,
+                       f"No rated {about} were found.", chart_hint="table")
+    listed = ", ".join((f"{t} ({y}) — {r}" if y else f"{t} — {r}") for t, y, r in rows[:5])
+    return _ask_ok(question, f"{word} rated", sql, cols, rows,
+                   f"Your {word}-rated {about}: {listed}.", chart_hint="hbar")
+
+
+def _q_count(c, question, where, args, plural, about):
+    sql = f"SELECT COUNT(*) AS n FROM films f WHERE {where}"
+    cols, rows = _ask_rows(c, sql, args)
+    n = rows[0][0] if rows else 0
+    if n == 0:
+        text = f"You have no {about}."
+    else:
+        text = f"You have {n} {about}."
+    return _ask_ok(question, "count", sql, cols, rows, text, chart_hint="stat")
+
+
+def _q_by_decade(c, question, scope_sql, genre, tag, plural, about):
+    gsql, gargs = _ask_genre_sql(genre, tag)
+    where = scope_sql if gsql == "1=1" else f"{scope_sql} AND {gsql}"
+    sql = (f"SELECT CAST(f.year/10*10 AS INTEGER) AS decade, COUNT(*) AS n "
+           f"FROM films f WHERE {where} AND f.year IS NOT NULL "
+           f"GROUP BY decade ORDER BY decade")
+    cols, rows = _ask_rows(c, sql, gargs)
+    if not rows:
+        return _ask_ok(question, "by decade", sql, cols, rows,
+                       f"No {about} were found.", chart_hint="series")
+    top = max(rows, key=lambda r: r[1])
+    bits = ", ".join(f"{d}s: {n}" for d, n in rows if n)
+    return _ask_ok(question, "by decade", sql, cols, rows,
+                   f"By decade for {about}: {bits}. The most were in the {top[0]}s ({top[1]}).",
+                   chart_hint="series")
+
+
+def _q_top(c, question, scope_sql, period, genre, tag, role, about, plural):
+    """Top directors / performers / studios, ignoring blank and placeholder names.
+
+    Directors and performers are split on commas in Python so we don't have to
+    build the heavy read-only temp DB that _ro_conn creates for the AI path.
+    Performers still use the library's age rule (known birth date, 18+).
+    """
+    where, args = _ask_where(scope_sql, period, genre, tag)
+    blanks = tuple(_BLANK_NAMES)
+    tail = "" if about == plural else f" among {about}"
+
+    def pack(label, noun, rows, sql, cols):
+        if not rows:
+            return _ask_ok(question, f"top {label}s", sql, cols, rows,
+                           f"No {label}s were found{tail}.", chart_hint="hbar")
+        def lab(r):
+            return f"{r[0]} ({r[1]})"
+        top = rows[0]
+        if len(rows) == 1:
+            text = f"The {label} with the most {noun}{tail} is {lab(top)}."
+        else:
+            rest = ", ".join(lab(r) for r in rows[1:5])
+            text = f"The {label} with the most {noun}{tail} is {lab(top)}. Next are {rest}."
+        return _ask_ok(question, f"top {label}s", sql, cols, rows, text, chart_hint="hbar")
+
+    if role in ("studio", "studios"):
+        sql = (f"SELECT TRIM(f.studio) AS studio, COUNT(*) AS titles, "
+               f"group_concat(f.id) AS film_ids "
+               f"FROM films f WHERE {where} AND {_ask_label_ok('f.studio')} "
+               f"GROUP BY lower(TRIM(f.studio)) ORDER BY titles DESC, studio LIMIT 10")
+        cols, rows = _ask_rows(c, sql, list(args) + list(blanks))
+        return pack("studio", "titles", rows, sql, cols)
+
+    if role in ("director", "directors"):
+        sql = f"SELECT f.id, f.director FROM films f WHERE {where} AND {_ask_label_ok('f.director')}"
+        counts = {}
+        for fid, d in c.execute(sql, list(args) + list(blanks)):
+            for name in _split(d):
+                if name.lower() in _BLANK_NAMES:
+                    continue
+                rec = counts.get(name.lower())
+                if rec is None:
+                    counts[name.lower()] = [name, 0, []]
+                    rec = counts[name.lower()]
+                rec[1] += 1
+                rec[2].append(fid)
+        ranked = sorted(counts.values(), key=lambda r: (-r[1], r[0].lower()))[:10]
+        cols = ["director", "films", "film_ids"]
+        rows = [[n, cnt, ",".join(map(str, ids))] for n, cnt, ids in ranked]
+        return pack("director", "films", rows, sql, cols)
+
+    # performers / actors
+    sql = f"SELECT f.id, f.year, f.release_date, f.cast_ FROM films f WHERE {where}"
+    people = {}
+    try:
+        for n, b in c.execute("SELECT name, birthday FROM people WHERE merged_into IS NULL "
+                              "AND birthday GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"):
+            try:
+                people[n.lower()] = (n, datetime.date.fromisoformat(b))
+            except ValueError:
+                pass
+    except sqlite3.OperationalError:
+        people = {}
+    counts = {}
+    for fid, y, rd, ca in c.execute(sql, args):
+        for nm in _split(ca):
+            p = people.get(nm.lower())
+            if not p:
+                continue
+            name, bd = p
+            if not _adult_ok(bd, rd, y):
+                continue
+            rec = counts.get(name.lower())
+            if rec is None:
+                counts[name.lower()] = [name, 0, []]
+                rec = counts[name.lower()]
+            rec[1] += 1
+            rec[2].append(fid)
+    ranked = sorted(counts.values(), key=lambda r: (-r[1], r[0].lower()))[:10]
+    cols = ["performer", "titles", "film_ids"]
+    rows = [[n, cnt, ",".join(map(str, ids))] for n, cnt, ids in ranked]
+    return pack("performer", "titles", rows, sql, cols)
+
+
+
+def _example_titles(c, where, args, limit=5):
+    sql = f"SELECT f.title, f.year FROM films f WHERE {where} ORDER BY f.year DESC, f.title LIMIT ?"
+    rows = list(c.execute(sql, list(args) + [limit]))
+    return ", ".join((f"{t} ({y})" if y else str(t)) for t, y in rows), sql, rows
+
+
+def _lookup_trigger(q):
+    ql = q.lower()
+    return bool(re.search(
+        r"\b(do i have|have i (?:got|got any)|are there|is there|show(?: me)?|list(?: me)?|find(?: me)?|"
+        r"any|tagged|tag named|with the tag)\b", ql))
+
+
+def _extract_lookup_terms(q):
+    s = " " + q.strip() + " "
+    s = re.sub(r"(?i)\b(do i have|have i got|are there|is there|show me|show|list me|list|find me|find|how many|number of|count of|count)\b", " ", s)
+    s = re.sub(r"(?i)\b(any|some|the|a|an|me|all|of|in my library|in the library|that are|that is|which are|called|named|tagged(?: with)?|with the tag|tag)\b", " ", s)
+    s = re.sub(r"(?i)\b(films?|scenes?|titles?|movies?|items?|entries)\b", " ", s)
+    s = re.sub(r"[?!.,:;]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in re.split(r"(?i)\s+(?:and|with|&)\s+", s) if p.strip()]
+    return [p for p in parts if p.lower() not in _ASK_STOPWORDS and not _ask_period_name(p)]
+
+
+def _resolve_lookup_term(c, term, tags, genres, categories, studios):
+    """Match a term to a tag (exact, synonym, contains), genre, tag category, studio, or person name."""
+    tl = term.strip().lower()
+    if not tl or tl in _ASK_STOPWORDS or _ask_period_name(term):
+        return None
+
+    def exact(items):
+        for n in items:
+            if n and n.lower() == tl:
+                return n
+        return None
+
+    n = exact(tags)
+    if n:
+        return dict(kind="tag", name=n, names=tag_group(c, n))
+    for g in synonyms(c):
+        if tl in (x.lower() for x in g):
+            stored = exact(tags) or next((x for x in g if exact([x]) or x.lower() == tl), g[0])
+            # prefer a stored tag spelling
+            stored = next((x for x in g if x.lower() in {t.lower() for t in tags}), stored)
+            return dict(kind="tag", name=stored, names=list(dict.fromkeys(g)))
+    n = exact(genres)
+    if n:
+        return dict(kind="genre", name=n, names=[n])
+    n = exact(categories)
+    if n:
+        return dict(kind="category", name=n, names=[n])
+    n = exact(studios)
+    if n:
+        return dict(kind="studio", name=n, names=[n])
+    try:
+        row = c.execute("SELECT name FROM people WHERE merged_into IS NULL AND lower(name)=lower(?) LIMIT 1", (term,)).fetchone()
+        if not row:
+            row = c.execute("SELECT name FROM people WHERE merged_into IS NULL AND name_norm=? LIMIT 1",
+                            (re.sub(r"\s+", " ", tl),)).fetchone()
+        if row:
+            return dict(kind="person", name=row[0], names=[row[0]])
+    except sqlite3.OperationalError:
+        pass
+
+    # contains: tags first, then genres, unique if possible
+    def contains(items):
+        hits = [n for n in items if n and (tl in n.lower() or (len(n) >= 4 and n.lower() in tl))]
+        if not hits:
+            return None
+        hits.sort(key=lambda n: (0 if n.lower().startswith(tl) else 1, abs(len(n) - len(tl)), len(n), n.lower()))
+        return hits[0]
+
+    n = contains(tags)
+    if n:
+        return dict(kind="tag", name=n, names=tag_group(c, n))
+    n = contains(genres)
+    if n:
+        return dict(kind="genre", name=n, names=[n])
+    n = contains(categories)
+    if n:
+        return dict(kind="category", name=n, names=[n])
+    if len(tl) >= 4:
+        n = contains(studios)
+        if n:
+            return dict(kind="studio", name=n, names=[n])
+        try:
+            rows = list(c.execute("SELECT name FROM people WHERE merged_into IS NULL AND lower(name) LIKE ? LIMIT 3",
+                                  ("%" + tl + "%",)))
+            if len(rows) == 1:
+                return dict(kind="person", name=rows[0][0], names=[rows[0][0]])
+        except sqlite3.OperationalError:
+            pass
+    return None
+
+
+def _match_clause(hit, alias="f"):
+    kind, names = hit["kind"], hit["names"]
+    if kind == "tag":
+        ph = ",".join("?" * len(names))
+        sql = (f"EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id"
+               f" WHERE ft.film_id={alias}.id AND COALESCE(ft.status,'approved') IN ('approved','')"
+               f" AND lower(t.name) IN ({ph}))")
+        return sql, [n.lower() for n in names]
+    if kind == "genre":
+        return f"lower({alias}.primary_genre)=lower(?)", [hit["name"]]
+    if kind == "category":
+        sql = (f"EXISTS (SELECT 1 FROM film_tags ft JOIN tags t ON t.id=ft.tag_id"
+               f" WHERE ft.film_id={alias}.id AND COALESCE(ft.status,'approved') IN ('approved','')"
+               f" AND lower(t.category)=lower(?))")
+        return sql, [hit["name"]]
+    if kind == "studio":
+        return f"lower(TRIM({alias}.studio))=lower(?)", [hit["name"]]
+    # person: director or cast (comma-separated). Cheap LIKE; age rule still applied by the UI if they click through.
+    return (f"(lower({alias}.director)=lower(?) OR ','||lower(COALESCE({alias}.cast_,''))||',' LIKE '%,'||lower(?)||',%')",
+            [hit["name"], hit["name"]])
+
+
+def _q_lookup(c, question, scope_sql, plural):
+    """'Do I have any BGGG scenes?', 'films tagged X', 'show me X', 'how many X and Y scenes?'."""
+    if not _lookup_trigger(question) and not _extract_lookup_terms(question):
+        return None
+    terms = _extract_lookup_terms(question)
+    if not terms:
+        return None
+    genres, tags = _ask_vocab(c)
+    categories, studios = [], []
+    try:
+        categories = [r[0] for r in c.execute("SELECT DISTINCT category FROM tags WHERE COALESCE(TRIM(category),'')<>''")]
+    except sqlite3.OperationalError:
+        pass
+    try:
+        studios = [r[0] for r in c.execute("SELECT DISTINCT TRIM(studio) FROM films WHERE COALESCE(TRIM(studio),'')<>''")]
+    except sqlite3.OperationalError:
+        pass
+    hits = []
+    for term in terms:
+        hit = _resolve_lookup_term(c, term, tags, genres, categories, studios)
+        if not hit:
+            return None  # a term didn't match anything: leave it to the LLM
+        hits.append(hit)
+    bits, args = [scope_sql], []
+    for hit in hits:
+        sql, a = _match_clause(hit)
+        bits.append(sql); args.extend(a)
+    where = " AND ".join(bits)
+    count_sql = f"SELECT COUNT(*) AS n FROM films f WHERE {where}"
+    cols, rows = _ask_rows(c, count_sql, args)
+    n = rows[0][0] if rows else 0
+    labels = []
+    for hit in hits:
+        if hit["kind"] == "tag":
+            labels.append(hit["name"])
+        elif hit["kind"] == "genre":
+            labels.append(hit["name"])
+        elif hit["kind"] == "category":
+            labels.append("the " + hit["name"] + " category")
+        elif hit["kind"] == "studio":
+            labels.append("studio " + hit["name"])
+        else:
+            labels.append(hit["name"])
+    topic = " and ".join(labels)
+    # split films vs scenes when the question didn't already pick one
+    ql = question.lower()
+    scoped = bool(re.search(r"\b(films?|scenes?|titles?|movies?)\b", ql))
+    extra = ""
+    if n and not scoped:
+        nf = c.execute(f"SELECT COUNT(*) FROM films f WHERE {where} AND COALESCE(f.kind,'')<>'scene'", args).fetchone()[0]
+        ns = c.execute(f"SELECT COUNT(*) FROM films f WHERE {where} AND COALESCE(f.kind,'')='scene'", args).fetchone()[0]
+        if nf and ns:
+            extra = f" ({nf} film{'s' if nf != 1 else ''}, {ns} scene{'s' if ns != 1 else ''})"
+        elif ns and not nf:
+            plural = "scenes" if ns != 1 else "scene"
+    examples, ex_sql, ex_rows = _example_titles(c, where, args) if n else ("", count_sql, [])
+    if n == 0:
+        text = f"No, you don't have any {topic} {plural}."
+    elif n == 1:
+        text = f"Yes, you have 1 {topic} {plural[:-1] if plural.endswith('s') else plural}{extra}"
+        if examples:
+            text += f": {examples}."
+        else:
+            text += "."
+    else:
+        text = f"Yes, you have {n} {topic} {plural}{extra}"
+        if examples:
+            text += f", including {examples}."
+        else:
+            text += "."
+    return _ask_ok(question, "lookup", count_sql, cols, rows, text, chart_hint="stat")
+
+
+def ask_direct(c, question):
+    """Answer common library questions with a fixed read-only query. Returns None if this isn't one of them."""
+    q = (question or "").strip()
+    if not q or _SKIP_DIRECT_RE.search(q):
+        return None
+    # Person-specific questions ("How many films did X act in?") stay on the existing path.
+    # Don't call mentioned_people() here: it scans every credit and is too slow on a large library.
+    if re.search(r"(?i)\b(did|does)\s+[A-Za-z].{0,80}\b(act|acted|star|appear|direct|directed|make|made|credit)", q):
+        return None
+    # "How many films did Brigitte Test act in tagged X?" and similar stay on the person path
+    if re.search(r"\b[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+\b", q):
+        return None
+    # leave a few existing regression questions on the AI / synonym path
+    if re.search(r"(?i)classic porn", q):
+        return None
+    # "which director ... tagged X" stays on the synonym-aware report path
+    if re.search(r"(?i)\b(which|who|top|most)\b.{0,40}\b(directors?|actors?|performers?)\b.{0,80}\btagged\b", q):
+        return None
+    ql = q.lower()
+    _scope, scope_sql, _noun, plural = _ask_scope(q)
+    period = _ask_decade(q) or _ask_year(q)
+    genres, tags = _ask_vocab(c)
+    genre, tag = _ask_match_term(q, genres), _ask_match_term(q, tags)
+    about = _about_noun(plural, genre, tag, period)
+    where, wargs = _ask_where(scope_sql, period, genre, tag)
+
+    if re.search(r"\b(recently added|latest added|newest (?:films?|titles?|additions)|last added|just added)\b", ql):
+        return _q_recent(c, q, scope_sql, plural)
+    if re.search(r"\bunrated\b|\bnot rated\b|\bwithout a rating\b|\bno rating\b", ql):
+        return _q_unrated(c, q, where, wargs, plural, about)
+    if re.search(r"\b(average|mean|avg)\b(?:\s+\w+){0,4}\s+rating|\brating\b(?:\s+\w+){0,4}\s+\b(average|mean|avg)\b", ql):
+        return _q_avg_rating(c, q, where, wargs, plural, about)
+    if re.search(r"\b(highest|lowest|top|bottom|best|worst)[-\s]?rated\b", ql):
+        return _q_rated_titles(c, q, where, wargs, plural, about,
+                               lowest=bool(re.search(r"\b(lowest|bottom|worst)\b", ql)))
+    mrole = re.search(r"\b(directors?|actors?|actresses|performers?|cast|studios?)\b", ql)
+    if mrole and re.search(r"\b(which|who|what|top|most)\b", ql):
+        role = mrole.group(1).lower()
+        if role == "actresses":
+            role = "performer"
+        elif role == "cast":
+            role = "performer"
+        return _q_top(c, q, scope_sql, period, genre, tag, role, about, plural)
+    if re.search(r"\b(each decade|per decade|by decade|how common)\b", ql):
+        return _q_by_decade(c, q, scope_sql, genre, tag, plural, about)
+    if re.search(r"\b(how many|number of|count(?: of)?|how much)\b", ql) or re.search(r"\btotal\b.{0,20}\b(films?|scenes?|titles?)\b", ql):
+        # a "how many X scenes" with a resolved tag/genre already has the filter in `where`
+        if genre or tag or period or re.search(r"(?i)\b(how many|number of|count(?: of)?|how much)\s+(films?|scenes?|titles?|movies?)\b", q):
+            return _q_count(c, q, where, wargs, plural, about)
+        looked = _q_lookup(c, q, scope_sql, plural)
+        if looked:
+            return looked
+        return _q_count(c, q, where, wargs, plural, about)
+    looked = _q_lookup(c, q, scope_sql, plural)
+    if looked:
+        return looked
+    return None
+
 def ask(c, question, chat):
     import db as _db
-    people = mentioned_people(c, question); hint, pre = [], []
+    q = (question or "").strip()
+    if not q:
+        return _msg(question, "Type a question first.")
+    try:
+        direct = ask_direct(c, q)
+    except Exception:
+        direct = None
+    if direct:
+        return direct
+    if not chat:
+        return ask_fallback(q, no_ai=True)
+    # mentioned_people() scans every credit and is slow on a large library; only run it when a name is likely.
+    if re.search(r"\b[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]+)+\b", q):
+        people = mentioned_people(c, question)
+    else:
+        people = []
+    hint, pre = [], []
     for kind, name in people:
         if kind == "director":
             hint.append(("director", name, [x for x in _db.expand_person(c, name)]))
@@ -674,7 +1267,24 @@ def ask(c, question, chat):
                     notes=note, birthday_status="unknown")
     tg = mentioned_tags(c, question)
     if tg: hint.append(("tags", tg))
-    res = _ask_sql(c, question, chat, allow_fallback=not people, hint=hint)
+    try:
+        import time as _time
+        deadline = _time.time() + 12
+        orig_chat = chat
+        def bounded(prompt, *a, **k):
+            left = deadline - _time.time()
+            if left <= 0.5:
+                raise TimeoutError("The AI ran out of time")
+            # Prefer a timeout kw if the chat function accepts it; otherwise just call it.
+            try:
+                return orig_chat(prompt, *a, **dict(k, timeout=min(float(k.get("timeout") or left), left)))
+            except TypeError:
+                return orig_chat(prompt, *a, **k)
+        res = _ask_sql(c, question, bounded, allow_fallback=not people, hint=hint)
+    except Exception as e:
+        return ask_fallback(q, notes=[type(e).__name__])
+    if not res:
+        return ask_fallback(q)
     if pre: res.setdefault("notes", [])[:0] = pre
     if people and res.get("mode") == "sql" and not res["rows"] and not res.get("answer_from_error"):
         cast = [n for k, n in people if k == "cast"]

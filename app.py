@@ -5362,16 +5362,18 @@ def reports_ask():
     c = C(); q = ((request.json or {}).get("question") or "").strip()
     if not q: return jsonify(error="Type a question first."), 400
     url, model, key = db.get_setting(c, "ai_url", ""), db.get_setting(c, "ai_model", ""), db.get_setting(c, "ai_key", "")
-    if not (url and model):
-        return jsonify(error="No AI service is set up. Add one in Library & Settings \u2192 Tags & Categories \u2192 Smart tagging, or use the ready-made reports."), 400
+    chat = (lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0)) if (url and model) else None
     try:
-        res = repmod.ask(c, q, lambda p: ai_chat(url, key, model, p, timeout=90, temperature=0))  # AI writes a read-only SELECT; falls back to a report spec
-    except urllib.error.HTTPError as e: return jsonify(error=f"AI service error HTTP {e.code}"), 502
-    except Exception as e: return jsonify(error=f"Could not read the AI's answer: {e}"), 502
+        res = repmod.ask(c, q, chat)  # built-in answers first; AI only for leftovers, 12s cap
+    except Exception as e:
+        res = repmod.ask_fallback(q, notes=[type(e).__name__])
+    if not res:
+        res = repmod.ask_fallback(q, no_ai=not (url and model))
     if res.get("mode") == "sql":
         try: ask_charts(c, res)
         except Exception as e: res["chart_error"] = type(e).__name__
     return jsonify(res)
+
 
 def _ids_for(c, f):
     where, args = build_query(f)
