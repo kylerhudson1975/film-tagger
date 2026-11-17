@@ -378,13 +378,30 @@ def sql_schema(c):
         " kind ('scene' for scenes, NULL for films))\n"
         " film_directors(film_id, director)  -- one row per film per director (already split)\n"
         " film_cast(film_id, person)  -- one row per film per performer (already split); use this for anything about performers/cast\n"
-        " people(name, birth_year, gender)  -- gender is 'Female', 'Male', 'Non Binary',"
-        " 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty).\n"
+        " people(name, birth_year, gender, favorite)  -- gender is 'Female', 'Male', 'Non Binary',"
+        " 'Transgender Female', 'Transgender Male', or 'Unknown' (may be empty);"
+        " favorite is 0/1 (1 = starred in People → Favorites).\n"
         "  This people table only includes people with a known birth date; film_cast already lists"
         " only credits from when they were 18+.\n"
         " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'\n"
         "Notes:\n"
-        " - 'Classic Porn' / porn / adult films = films WHERE " + _ADULT_ON + ".\n"
+        " - 'Classic Porn' / adult / porn *films* (not scenes, not performers) = films WHERE " + _ADULT_ON + "."
+        " Only use that predicate when the question is about those films. 'Porn stars', 'scenes',"
+        " or a performer ranking is not a reason to filter primary_genre.\n"
+        " - Only filter on what the question asks. Do not add primary_genre, Hardcore, Softcore,"
+        " watched, rated, favorite, year, or any other WHERE/JOIN condition the user did not mention.\n"
+        " - Common flags (use these exact predicates):\n"
+        "   unwatched: COALESCE(f.watched,0)=0  (0 or NULL).  watched: f.watched=1\n"
+        "   unrated: f.rating IS NULL.  rated: f.rating IS NOT NULL.  a rating of N: f.rating=N\n"
+        "   favorite people: p.favorite=1.  There is no films.favorite column.\n"
+        " Q: How many unwatched films do I have? -> SELECT COUNT(*) AS films FROM films f"
+        " WHERE COALESCE(f.kind,'')<>'scene' AND COALESCE(f.watched,0)=0\n"
+        " Q: How many unrated titles do I have? -> SELECT COUNT(*) AS n FROM films f WHERE f.rating IS NULL\n"
+        " Q: How many films have I marked as watched? -> SELECT COUNT(*) AS films FROM films f"
+        " WHERE COALESCE(f.kind,'')<>'scene' AND f.watched=1\n"
+        " Q: Which favorite performers have the most scenes? -> SELECT p.name AS performer, COUNT(DISTINCT fc.film_id) AS scenes,"
+        " group_concat(DISTINCT fc.film_id) AS film_ids FROM film_cast fc JOIN films f ON f.id=fc.film_id AND COALESCE(f.kind,'')='scene'"
+        " JOIN people p ON lower(p.name)=lower(fc.person) WHERE p.favorite=1 GROUP BY lower(p.name) ORDER BY scenes DESC, p.name LIMIT 10\n"
         " - 'Exploitation', 'Giallo', etc. are usually TAGS (match tags.name case-insensitively), not genres. Common tags: " + json.dumps(tags) + "\n"
         " - Tag synonym groups (treat members as the same tag, use IN (...)): " + json.dumps(synonyms(c)) + "\n"
         " - 'Classic Porn' is NOT a tag: use the films condition above. Wrap OR conditions in parentheses: (a OR b) AND c.\n"
@@ -470,6 +487,56 @@ def _parse_sql_reply(text):
         v = {"sql": m.group(1), "reading": ""}
     PARSED["chart"] = str(v.get("chart") or "").strip()[:20]
     return str(v.get("reading") or "").strip(), str(v.get("sql") or "").strip()
+
+
+def sql_verify_prompt(question, sql):
+    """Short follow-up: does the SQL include every asked condition and no extras?"""
+    return (
+        "You are checking a SQLite query for a personal film library.\n"
+        "Question: " + (question or "").strip()[:500] + "\n"
+        "SQL:\n" + (sql or "") + "\n"
+        "Rules:\n"
+        " - Every condition in the question must appear in the SQL (watched/unwatched, rated/unrated, favorites, year, genre, film vs scene, person, tag, limit).\n"
+        " - Do not add filters the user did not ask for (no primary_genre, Hardcore, Softcore, or extra WHERE unless asked).\n"
+        " - unwatched = COALESCE(watched,0)=0; watched = watched=1; unrated = rating IS NULL; rated = rating IS NOT NULL; favorite people = people.favorite=1.\n"
+        " - 'films' means COALESCE(kind,'')<>'scene'; 'scenes' means kind='scene'.\n"
+        'Reply with JSON only: {"ok": true} if the SQL is already correct, or {"ok": false, "sql": "<corrected SELECT, no semicolon>", "reading": "<one short line>"} if you must fix it.'
+    )
+
+
+def _parse_verify_reply(text, sql):
+    """Return (ok, sql, reading). Unusable replies keep the original SQL."""
+    t = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S).strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t)
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return True, sql, ""
+    try:
+        v = json.loads(t[i:j + 1])
+    except ValueError:
+        return True, sql, ""
+    if not isinstance(v, dict) or v.get("ok") in (True, "true", "yes", 1):
+        return True, sql, ""
+    new = str(v.get("sql") or "").strip()
+    if not new:
+        return True, sql, ""
+    return False, new, str(v.get("reading") or "").strip()
+
+
+def _verify_sql(question, sql, chat):
+    """One short follow-up. If Groq finds a missing or extra filter, return the corrected SQL once."""
+    try:
+        text = chat(sql_verify_prompt(question, sql))
+    except Exception:
+        return sql, ""
+    ok, new, reading = _parse_verify_reply(text, sql)
+    if ok:
+        return sql, ""
+    try:
+        check_sql(fix_sql(new))
+    except ValueError:
+        return sql, ""
+    return fix_sql(new), reading
 
 
 def check_sql(sql):
@@ -1205,6 +1272,10 @@ def ask_direct(c, question):
     if re.search(r"(?i)\b(which|who|top|most)\b.{0,40}\b(directors?|actors?|performers?)\b.{0,80}\btagged\b", q):
         return None
     ql = q.lower()
+    # Built-ins don't apply watched/unwatched/favorite filters; leave those questions to the LLM.
+    if re.search(r"(?i)\b(unwatched|not watched|haven't watched|have not watched|marked as watched)\b", q) or \
+       re.search(r"(?i)\bwatched\b", q) or re.search(r"(?i)\b(favorites?|favourites?|starred)\b", q):
+        return None
     _scope, scope_sql, _noun, plural = _ask_scope(q)
     period = _ask_decade(q) or _ask_year(q)
     genres, tags = _ask_vocab(c)
@@ -1418,6 +1489,11 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
         if not r: break
         try:
             reading, sql = _parse_sql_reply(chat(prompt)); sql = fix_sql(sql)
+            if attempt == 0:
+                v_sql, v_reading = _verify_sql(question, sql, chat)
+                if v_sql != sql:
+                    sql = v_sql
+                    if v_reading: reading = v_reading
             cols, rows, more, dropped = run_sql(r, sql, everyone, safe)
             if attempt == 0 and not rows: raise ValueError("the query ran but returned no rows; check names, joins and filters")
             if attempt == 0:

@@ -5394,7 +5394,7 @@ def reports_ask():
     url, model, key = db.get_setting(c, "ai_url", ""), db.get_setting(c, "ai_model", ""), db.get_setting(c, "ai_key", "")
     if ask_key:
         chat = lambda p, timeout=20, **k: ai_chat(ASK_GROQ_URL, ask_key, ask_model, p, timeout=timeout, temperature=0)
-        llm_seconds, people_hint, has_ai = 20, False, True
+        llm_seconds, people_hint, has_ai = 28, False, True
     elif url and model:
         chat = lambda p, timeout=15, **k: ai_chat(url, key, model, p, timeout=timeout, temperature=0)
         llm_seconds, people_hint, has_ai = 12, True, True

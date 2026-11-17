@@ -55,6 +55,11 @@ assert R.ask_direct(c, Q) is None, R.ask_direct(c, Q)
 assert not R._likely_person_name(Q)
 assert R._likely_person_name("How many films did Brigitte Test act in?")
 assert "p.gender" in R.sql_schema(c) and "Female" in R.sql_schema(c) and "kind" in R.sql_schema(c)
+schema = R.sql_schema(c)
+assert "COALESCE(f.watched,0)=0" in schema and "f.watched=1" in schema
+assert "f.rating IS NULL" in schema and "p.favorite=1" in schema
+assert "Do not add primary_genre" in schema
+assert "How many unwatched films do I have?" in schema
 
 # 2) the documented SQL works on the age-safe read-only connection
 rconn, everyone, safe = R._ro_conn(c)
@@ -92,9 +97,13 @@ db.set_setting(c, "ask_ai_key", "gsk_fake"); db.set_setting(c, "ask_ai_model", "
 sent = []
 def fake(url, key, model, prompt, timeout=180, **kw):
     sent.append((url, model, prompt, timeout))
+    if "checking a SQLite query" in prompt:
+        return json.dumps({"ok": True})
     if "ONE SQLite SELECT" in prompt:
         assert "p.gender" in prompt and "Female" in prompt
         assert "List the Top 5 Female" in prompt
+        assert "Do not add primary_genre" in prompt
+        assert "COALESCE(f.watched,0)=0" in prompt
         return json.dumps({"reading": "top 5 female performers by scenes", "sql": SQL, "chart": "hbar"})
     return "Ann Alpha leads with 5 scenes, then Bea Beta (3), Cara Gamma (2), Dee Delta (1) and Eve Epsilon (1)."
 app.ai_chat = fake
@@ -104,5 +113,41 @@ assert "Ann Alpha" in r["answer"] and r["rows"][0][0] != "Frank Male"
 assert sent and sent[0][0] == app.ASK_GROQ_URL and sent[0][1] == "openai/gpt-oss-120b"
 # no file paths in what we send
 assert not any("path" in (p[2].lower()) and "C:\\\\" in p[2] for p in sent)
+
+assert any("checking a SQLite query" in (p[2] or "") for p in sent)
+
+# 5) verify follow-up: keep SQL when ok or unusable; accept a safe correction; reject a write
+ok, sql0, _ = R._parse_verify_reply('{"ok": true}', "SELECT 1")
+assert ok and sql0 == "SELECT 1"
+ok, sql0, _ = R._parse_verify_reply("not json", "SELECT 1")
+assert ok and sql0 == "SELECT 1"
+bad = "SELECT COUNT(*) AS films FROM films f WHERE COALESCE(f.kind,'')<>'scene'"
+good = "SELECT COUNT(*) AS films FROM films f WHERE COALESCE(f.kind,'')<>'scene' AND COALESCE(f.watched,0)=0"
+ok, sql0, reading = R._parse_verify_reply(json.dumps({"ok": False, "sql": good, "reading": "unwatched films"}), bad)
+assert not ok and "watched" in sql0 and reading == "unwatched films"
+kept, _ = R._verify_sql("How many unwatched films do I have?", bad, lambda p: json.dumps({"ok": False, "sql": "DELETE FROM films"}))
+assert kept == bad
+fixed, reading = R._verify_sql("How many unwatched films do I have?", bad, lambda p: json.dumps({"ok": False, "sql": good, "reading": "unwatched"}))
+assert "watched" in fixed and reading == "unwatched"
+
+# full ask(): first SQL drops unwatched; verify puts it back
+c.execute("UPDATE films SET watched=1 WHERE title='Feature'")
+c.execute("INSERT INTO films(title,year,cast_,kind,watched) VALUES('Unseen',2018,'Ann Alpha',NULL,0)")
+c.commit()
+UNWATCHED_Q = "How many unwatched films do I have?"
+assert R.ask_direct(c, UNWATCHED_Q) is None
+sent.clear()
+def fake_unwatched(url, key, model, prompt, timeout=180, **kw):
+    sent.append(prompt)
+    if "checking a SQLite query" in prompt:
+        return json.dumps({"ok": False, "sql": good, "reading": "count of unwatched films"})
+    if "ONE SQLite SELECT" in prompt:
+        return json.dumps({"reading": "all films", "sql": bad, "chart": "stat"})
+    return "You have 1 unwatched film."
+app.ai_chat = fake_unwatched
+r = cl.post("/api/reports/ask", json={"question": UNWATCHED_Q}).json
+assert r["mode"] == "sql" and "watched" in (r.get("sql") or ""), r
+assert r["rows"][0][0] == 1, r
+assert any("checking a SQLite query" in p for p in sent)
 
 print("OK test_ask_groq")

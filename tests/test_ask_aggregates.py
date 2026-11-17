@@ -47,7 +47,8 @@ app.ai_chat = fake
 r = ask(Q)
 assert r["mode"] == "sql" and r["retried"], r
 assert "Clifford Brown" in sent[0] and "'Jesús Franco'" in sent[0] and "100.0" in sent[0]       # alias hint + percentage rule
-assert "came back empty" in sent[1] or "single row of zeros" in sent[1] or "no rows" in sent[1], sent[1]
+retry = next((p for p in sent if "Your previous query" in p), "")
+assert "came back empty" in retry or "single row of zeros" in retry or "no rows" in retry, retry
 assert r["columns"] == ["matching", "total", "percent", "film_ids"] and r["rows"][0][:3] == [4, 7, 57.1], r["rows"]
 assert "top result" not in r["answer"].lower() and "57.1%" in r["answer"] and "4" in r["answer"] and "7" in r["answer"], r["answer"]
 assert any("You said 209 films; your library has 7 titles directed by Jesús Franco (counting their aliases)" in n for n in r["notes"]), r["notes"]

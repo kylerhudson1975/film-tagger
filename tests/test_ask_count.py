@@ -32,6 +32,7 @@ sent = []
 def ai(first, second, summary="Brigitte Test acted in 4 films tagged oral sex or fellatio."):
     def f(url, key, model, prompt, timeout=180, **kw):
         sent.append(prompt)
+        if "checking a SQLite query" in prompt: return json.dumps({"ok": True})
         if "ONE SQLite SELECT" in prompt: return json.dumps({"reading": "count", "sql": second if "Your previous query" in prompt else first})
         return summary
     return f
@@ -43,7 +44,8 @@ def check(r, n=4):
     assert cx["items"][1]["ids"] == f"{B},{C_}"
 # 1) per-film rows of 1 on both tries -> retried with feedback, then collapsed to one total, checked directly
 app.ai_chat = ai(PERFILM, PERFILM); r = ask(Q)
-assert r["retried"] and "ONE number" in sent[1] and "COUNT(DISTINCT f.id)" in sent[1], sent[1][-400:]
+retry = next(p for p in sent if "Your previous query" in p)
+assert r["retried"] and "ONE number" in retry and "COUNT(DISTINCT f.id)" in retry, retry[-400:]
 assert "COUNT(DISTINCT f.id) AS films ... with NO GROUP BY" in sent[0] and "'Oral Sex' means tags.name IN ('Oral Sex', 'Blowjob', 'Fellatio')" in sent[0]
 assert r["columns"] == ["films"] and any("added up: 4" in n for n in r["notes"]) and any("direct count of the library: 4" in n for n in r["notes"]), r["notes"]
 assert r["answer"] == "Brigitte Test acted in 4 films tagged oral sex or fellatio.", r["answer"]
