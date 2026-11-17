@@ -38,7 +38,7 @@ for _ in range(200):
 else:
     raise AssertionError("timeout", j.get("scenes_loading"), j.get("scenes_error"), calls)
 assert not j.get("scenes_error"), j.get("scenes_error")
-assert calls == [1, 2, 3], calls
+assert calls[:1] == [1] and sorted(calls) == [1, 2, 3], calls
 sc = [x for x in j["scenes"] if not x.get("film_id")]
 assert len(sc) == 248, len(sc)
 assert j["scenes_tpdb_total"] == N

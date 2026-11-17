@@ -27,7 +27,7 @@ for _ in range(200):
     j = cl.get(f"/api/person/{pid}").json
     if not j.get("scenes_loading") and j.get("scenes") is not None and len(j["scenes"]) > 2: break
     time.sleep(0.05)
-assert calls == [1, 2, 3, 4, 5], calls
+assert calls[:1] == [1] and sorted(calls) == [1, 2, 3, 4, 5], calls
 sc = j["scenes"]; owned = [x["title"] for x in sc if x["film_id"]]
 assert set(owned) == {"Old Owned", "Deep Owned", "Alias Owned", "Unlisted Owned"}, owned
 assert all(x["film_id"] for x in sc[:4]) and not any(x["film_id"] for x in sc[4:])  # owned first

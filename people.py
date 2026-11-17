@@ -634,23 +634,43 @@ def init(app, tmdb, posters_dir):
 
     SCN = {}  # pid -> background ThePornDB scene-list load progress
     SCN_LOCK = threading.Lock()
-    TPDB_GATE = threading.Lock()  # one ThePornDB scene-page request at a time; released during backoff
+    TPDB_WORKERS = 4  # in-flight ThePornDB scene-page requests; a stall no longer blocks the other pages
+    TPDB_SEM = threading.Semaphore(TPDB_WORKERS)
+    TPDB_VIEW = set()  # person ids of the profile currently being viewed: their loads take the slots first
+    TPDB_VIEW_LOCK = threading.Lock()
     STALE_BEAT_S = 150  # no heartbeat this long: the job is stuck, drop "running" so the UI can Retry
-    def _tpdb_scene_page(tok, perf_id, page, st, gen, pid):
-        """Fetch one /performers/{id}/scenes page. Holds TPDB_GATE only during the HTTP call so a stall
-        does not queue other people's pages behind the sleep/retry window."""
+    def _tpdb_acquire(pid, gen, priority, st):
+        """Wait for a request slot. Background (Credited with) loads yield while a viewed person is fetching."""
+        while True:
+            if (SCN.get(pid) or {}).get("gen") != gen:
+                return False
+            if not priority:
+                with TPDB_VIEW_LOCK:
+                    blocked = bool(TPDB_VIEW - {pid})
+                if blocked:
+                    st.update(beat=time.time())
+                    time.sleep(0.15)
+                    continue
+            if TPDB_SEM.acquire(timeout=3):
+                return True
+            st.update(beat=time.time())
+    def _tpdb_scene_page(tok, perf_id, page, st, gen, pid, per_page=100, priority=True):
+        """Fetch one /performers/{id}/scenes page. Up to TPDB_WORKERS calls run at once; backoff is off the slot."""
         import tpdb as tpdbmod
         last = None
+        got = False
         for i in range(4):
             if (SCN.get(pid) or {}).get("gen") != gen:
                 return None  # abandoned by the watchdog; a newer load owns this person
-            st.update(beat=time.time(), retry=i)
-            got = TPDB_GATE.acquire(timeout=40)
+            st.update(beat=time.time(), retry=i, page=page)
+            got = _tpdb_acquire(pid, gen, priority, st)
+            if not got:
+                return None
             try:
                 if (SCN.get(pid) or {}).get("gen") != gen:
                     return None
                 st["beat"] = time.time()
-                return tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, tries=1, per_page=100, page=page)
+                return tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, tries=1, per_page=per_page, page=page)
             except urllib.error.HTTPError as e:
                 last = e
                 ra = e.headers.get("Retry-After") if e.headers else None
@@ -665,7 +685,8 @@ def init(app, tmdb, posters_dir):
                 retryable, delay = (True, min(12, 2 * (i + 1))) if i < 3 else (False, 0)
             finally:
                 if got:
-                    TPDB_GATE.release()
+                    TPDB_SEM.release()
+                    got = False
             if not retryable:
                 raise last
             st.update(beat=time.time())
@@ -709,11 +730,11 @@ def init(app, tmdb, posters_dir):
                     label=site_label(site) if site else x.get("label"), slug=x.get("slug"),
                     thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"),
                     performers=_slim_tpdb_performers(x))
-    def start_scene_load(pid, tok, perf_id, force=False, resume=False):
-        """Fetch every page of /performers/{id}/scenes in a background thread. Pages go through TPDB_GATE one at a time
-        so one person's long load does not pile stalling requests on top of another's. Each page is saved as it arrives;
-        Insights is invalidated so figures update. A stuck job (no heartbeat) is abandoned. A failed page keeps the
-        partial list and an error; the load is not restarted until Retry or Refresh."""
+    def start_scene_load(pid, tok, perf_id, force=False, resume=False, priority=True):
+        """Fetch /performers/{id}/scenes in a background thread, several pages at a time. The person page being viewed
+        gets priority over background Credited-with loads. Each page is saved as it arrives; Insights is invalidated
+        so figures update. A stuck job (no heartbeat) is abandoned. A failed page keeps the partial list and an error;
+        the load is not restarted until Retry or Refresh."""
         now = time.time()
         with SCN_LOCK:
             load = SCN.get(pid) or {}
@@ -731,6 +752,9 @@ def init(app, tmdb, posters_dir):
         def run():
             st = SCN[pid]; c2 = C()
             allsc, page, seen = [], 1, set()
+            if priority:
+                with TPDB_VIEW_LOCK:
+                    TPDB_VIEW.add(pid)
             def save(final):
                 if (SCN.get(pid) or {}).get("gen") != gen:
                     return
@@ -763,54 +787,117 @@ def init(app, tmdb, posters_dir):
                             st.update(done=len(allsc), total=int(tot), page=have_pages, pages=expected, beat=time.time())
                             save(True); return
                         page = len(allsc) // 100 + 1
-                stalls = 0
-                while page <= TPDB_MAX_PAGES:
-                    if (SCN.get(pid) or {}).get("gen") != gen:
-                        return
-                    try:
-                        r = _tpdb_scene_page(tok, perf_id, page, st, gen, pid)
-                        if r is None:
-                            return
-                        stalls = 0
-                    except urllib.error.HTTPError as ex:
-                        # A page past last_page can return 401 Unauthenticated; stop cleanly if the list is already complete.
-                        if ex.code in (401, 403, 404) and (
-                            (st.get("total") is not None and len(allsc) >= int(st["total"])) or
-                            (st.get("pages") and page > int(st["pages"]))
-                        ):
-                            st.update(done=len(allsc)); save(True); break
-                        raise
-                    except (urllib.error.URLError, TimeoutError, http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ConnectionError):
-                        stalls += 1
-                        if stalls >= 5:
-                            raise
-                        st.update(beat=time.time())
-                        time.sleep(min(15, 2 * stalls))
-                        continue
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                merge_lock = threading.Lock()
+                per_page = 100
+                # ThePornDB timed out on per_page=200 in a live probe, so first loads stay at 100 and go wider instead.
+                first_r, first_page = None, page
+
+                def ingest(r, page_no, pp):
+                    if r is None:
+                        return False
                     d = r.get("data") or []
-                    new = [x for x in d if str(x.get("id") or "") not in seen]
-                    seen |= {str(x.get("id") or "") for x in d if x.get("id") is not None}
-                    allsc += new
                     meta = r.get("meta") if isinstance(r.get("meta"), dict) else {}
                     last, tot = meta.get("last_page") or meta.get("last"), meta.get("total")
-                    st.update(done=len(allsc), page=page, pages=int(last) if last else None,
-                              total=int(tot) if tot is not None else None, beat=time.time())
-                    have_all = st["total"] is not None and len(allsc) >= st["total"]
-                    known_last = bool(last) and page >= int(last)
-                    # An empty or repeated page is not the end if ThePornDB still reports more pages/items.
-                    more = (st["total"] is not None and len(allsc) < st["total"]) or (last and page < int(last))
-                    expected = (int(st["total"]) + 99) // 100 if st["total"] is not None else None
+                    with merge_lock:
+                        new = [x for x in d if str(x.get("id") or "") not in seen]
+                        seen.update(str(x.get("id") or "") for x in d if x.get("id") is not None)
+                        allsc.extend(new)
+                        if tot is not None:
+                            st["total"] = int(tot)
+                        if last:
+                            st["pages"] = int(last)
+                        if st.get("total") is not None and st.get("pages"):
+                            cap = (int(st["total"]) + pp - 1) // pp
+                            if cap and st["pages"] > cap:
+                                st["pages"] = cap
+                        st.update(done=len(allsc), page=page_no, beat=time.time())
+                        have_all = st["total"] is not None and len(allsc) >= st["total"]
+                        expected = (int(st["total"]) + pp - 1) // pp if st["total"] is not None else None
+                        close_enough = (
+                            st["total"] is not None and expected is not None
+                            and 0 < (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
+                            and page_no >= expected
+                        )
+                        # Do not treat a single high page as the end while other pages are still in flight.
+                        final = have_all or close_enough
+                        save(final)
+                        return final
+
+                # Apply later pages only after earlier ones, so a hole is never saved (resume stays at the first gap).
+                held = {}
+                next_need = page
+                if first_r is not None:
+                    held[first_page] = first_r
+                    next_need = first_page
+                def flush():
+                    nonlocal next_need
+                    while next_need in held:
+                        r = held.pop(next_need)
+                        done = ingest(r, next_need, per_page)
+                        next_need += 1
+                        if done:
+                            return True
+                    return False
+                if first_r is not None:
+                    if flush():
+                        return
+                    page = next_need
+
+                last_page = st.get("pages")
+                if last_page is None and st.get("total") is not None:
+                    last_page = (int(st["total"]) + per_page - 1) // per_page
+                if last_page is None:
+                    # Meta missing: walk sequentially until we learn last_page, then fan out.
+                    while page <= TPDB_MAX_PAGES:
+                        if (SCN.get(pid) or {}).get("gen") != gen:
+                            return
+                        r = _tpdb_scene_page(tok, perf_id, page, st, gen, pid, per_page=per_page, priority=priority)
+                        if r is None:
+                            return
+                        held[page] = r
+                        if flush():
+                            return
+                        last_page = st.get("pages")
+                        if last_page is None and st.get("total") is not None:
+                            last_page = (int(st["total"]) + per_page - 1) // per_page
+                        page = next_need
+                        if last_page:
+                            break
+                if last_page and next_need <= last_page:
+                    pages_left = [n for n in range(next_need, min(int(last_page), TPDB_MAX_PAGES) + 1)]
+                    first_err = []
+                    def fetch_one(n):
+                        try:
+                            return n, _tpdb_scene_page(tok, perf_id, n, st, gen, pid, per_page=per_page, priority=priority), None
+                        except Exception as ex:
+                            return n, None, ex
+                    with ThreadPoolExecutor(max_workers=TPDB_WORKERS) as ex:
+                        futs = [ex.submit(fetch_one, n) for n in pages_left]
+                        for fut in as_completed(futs):
+                            if (SCN.get(pid) or {}).get("gen") != gen:
+                                return
+                            n, r, err = fut.result()
+                            if err is not None:
+                                if isinstance(err, urllib.error.HTTPError) and err.code in (401, 403, 404) and (
+                                    (st.get("total") is not None and len(allsc) >= int(st["total"])) or
+                                    (st.get("pages") and n > int(st["pages"]))
+                                ):
+                                    continue
+                                first_err.append(err)
+                                continue
+                            held[n] = r
+                            if flush():
+                                first_err.clear()
+                                break
+                    if first_err and not (st.get("total") is not None and len(allsc) >= int(st["total"])):
+                        raise first_err[0]
+                    expected = (int(st["total"]) + per_page - 1) // per_page if st.get("total") is not None else None
                     close_enough = (
-                        st["total"] is not None and expected is not None
-                        and 0 < (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
-                        and page >= expected
+                        st.get("total") is not None and expected is not None
+                        and 0 <= (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
                     )
-                    final = have_all or known_last or close_enough or page >= TPDB_MAX_PAGES or (not more and (not d or not new or len(d) < 100))
-                    save(final)
-                    if final: break
-                    if not d or not new:
-                        page += 1; continue
-                    page += 1
+                    save(True if (st.get("total") is not None and (len(allsc) >= st["total"] or close_enough)) or not first_err else False)
             except Exception as ex:
                 st["error"] = f"ThePornDB HTTP {ex.code}" if isinstance(ex, urllib.error.HTTPError) else type(ex).__name__
                 try:
@@ -818,6 +905,9 @@ def init(app, tmdb, posters_dir):
                 except Exception:
                     pass
             finally:
+                if priority:
+                    with TPDB_VIEW_LOCK:
+                        TPDB_VIEW.discard(pid)
                 if (SCN.get(pid) or {}).get("gen") == gen:
                     st["running"] = False
                     st["beat"] = time.time()
@@ -1988,7 +2078,7 @@ def init(app, tmdb, posters_dir):
                 except Exception: _nsc = 0
                 incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
                 if incomplete or not row["tpdb_scenes_json"]:
-                    start_scene_load(row["id"], tok, tpid, force=True, resume=bool(incomplete))
+                    start_scene_load(row["id"], tok, tpid, force=True, resume=bool(incomplete), priority=False)
         d = cocredit_data(c, pids)
         if d is None: return jsonify(error="Unknown person"), 404
         P = d["people"]
