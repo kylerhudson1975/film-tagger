@@ -1746,13 +1746,14 @@ function renderPerson(){const d=S.ppData,p=d.person,c=$('content');$('count').te
   let l=d.library.filter(f=>yOk(f.year));if(S.ppDesc)l.reverse();
   h+=`<div class=ppbar><b>${l.length} film${l.length==1?'':'s'} in your library</b><span>Sort: <button onclick="ppSort()">Year ${S.ppDesc?'↓ newest first':'↑ oldest first'}</button></span></div><div class=pplist>${l.map(f=>{const img=f.custom_poster||f.poster;
    return `<div class="ppi own" data-id="${f.id}"><div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${f.year||'—'}</div><div class=ppn>${esc(f.title)}</div><div class=muted>${f.roles.map(r=>RLBL[r]).join(', ')}</div></div></div>`}).join('')}</div>`}
- if(d.scenes&&(d.scenes.length||d.scenes_loading)){let mine=d.scenes.filter(x=>x.film_id&&yOk(x.date)),rest=S.ppScOnly||PY?[]:d.scenes.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
+ if((d.scenes&&d.scenes.length)||d.scenes_loading||d.scenes_error){const sc=d.scenes||[];let mine=sc.filter(x=>x.film_id&&yOk(x.date)),rest=S.ppScOnly||PY?[]:sc.filter(x=>!x.film_id);if(S.ppDesc){mine=[...mine].reverse();rest=[...rest].reverse()}
   if(S.ppVisPid!==d.person.id){S.ppVis=0;S.ppVisPid=d.person.id}
   const shown=rest.slice(0,S.ppVis||0),ld=d.scenes_loading;
   const card=ppSceneCard;
-  h+=`<h3 class=ppdept id=ppScHead>Scenes <span class=muted id=ppScCounts>— you have ${d.scenes_owned} of ${d.scenes_total??d.scenes.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
+  const hasMov=sc.some(x=>x.kind==='movie');
+  h+=`<h3 class=ppdept id=ppScHead>${hasMov?'Scenes and movies':'Scenes'} <span class=muted id=ppScCounts>— you have ${d.scenes_owned} of ${d.scenes_total??sc.length}${d.scenes_tpdb_total?` (ThePornDB lists ${d.scenes_tpdb_total})`:''}</span><button onclick="S.ppScOnly=!S.ppScOnly;localStorage.ppScOnly=S.ppScOnly?'1':'0';renderPerson()">${S.ppScOnly?'Show all scenes':'Only scenes I have'}</button></h3>`
    +(S.ppScOnly&&!d.scenes_loading?`<p class=muted>Showing only your ${d.scenes_owned} scene(s); ${Math.max(0,(d.scenes_total||0)-d.scenes_owned)} more on ThePornDB.</p>`:'')
-   +(ld?`<p class=muted id=ppLoad>Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})${ld.retry?' — waiting on ThePornDB…':''}</p>`:'')
+   +(ld?`<p class=muted id=ppLoad>${ppLoadText(ld)}</p>`:'')
    +(d.scenes_error&&!ld?`<p class=muted id=ppLoadErr>⚠ Couldn't load all ThePornDB scenes (${esc(d.scenes_error)})${d.scenes_tpdb_total?`; showing ${(d.scenes||[]).length} of ${d.scenes_tpdb_total}`:''}. <a href="#" onclick="ppScenesRetry(${d.person.id});return false">Retry</a></p>`:'')
    +`<h4 class=muted id=ppMineHead>In library (${mine.length})</h4>`+(mine.length?`<div class=pplist id=ppMineList>${mine.map(card).join('')}</div>`:'<p class=muted id=ppMineNone>None in your library.</p>')
    +(rest.length?`<h4 class=muted id=ppRestHead>Not in library (${rest.length})</h4><div class=pplist id=ppRestList>${shown.map(card).join('')}</div>`+(rest.length>(S.ppVis||0)?`<div class=muted id=ppRestSent>Loading the rest of the list…</div>`:''):'');
@@ -1782,9 +1783,9 @@ async function ppGalHide(name,hidden,ev){if(ev)ev.stopPropagation();const g=S.pp
 /* While ThePornDB scenes load (server-side, all pages), re-read the person every 3 s; when loading ends, refresh Insights/graphs too */
 function ppSceneSid(x){return x.film_id?('f'+x.film_id):('s'+((x._ids&&x._ids[0])||x.url||((x.title||'')+'|'+(x.date||''))))}
 function ppSceneCard(x){const img=x.film_id&&x.poster?x.poster:x.thumb,sid=ppSceneSid(x),
- inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
+ inner=`<div class=ppt>${img?`<img loading=lazy src="${esc(img)}">`:''}</div><div class=ppx><div class=ppy>${esc(x.date||'—')}</div><div class=ppn>${esc(x.title||'')}</div>${x.studio?`<div class=muted>${esc(x.studio)}</div>`:''}${x.kind==='movie'?'<span class="badge">Movie</span>':''}${x.film_id?'<span class="badge pplib">In library</span>':''}</div>`;
  return x.film_id?`<div class="ppi own" data-id="${x.film_id}" data-sid="${esc(sid)}" title="Open ${esc(x.title||'')}">${inner}</div>`:`<a class="ppi not" data-sid="${esc(sid)}" href="${esc(x.url)}" target=_blank rel=noopener title="Not in your library — open on ThePornDB">${inner}</a>`}
-function ppLoadText(ld){return `Loading ThePornDB scenes… ${ld.done}${ld.total?' of '+ld.total:''} (page ${ld.page}${ld.pages?' of '+ld.pages:''})${ld.retry?' — waiting on ThePornDB…':''}`}
+function ppLoadText(ld){if(!ld)return '';if(ld.phase==='lookup')return 'Looking this person up on ThePornDB…';return `Loading ThePornDB titles… ${ld.done||0}${ld.total?' of '+ld.total:''}${ld.page?` (page ${ld.page}${ld.pages?' of '+ld.pages:''})`:''}${ld.retry?' — waiting on ThePornDB…':''}`}
 function ppPatchPerson(n){
   /* Poll/page-arrival update: counts and new cards only. Never rebuild the page (that flashed and jumped the scroll). */
   const pid=n.person&&n.person.id;if(S.page!=='person:'+pid)return;S.ppData=n;const d=n,ld=d.scenes_loading;

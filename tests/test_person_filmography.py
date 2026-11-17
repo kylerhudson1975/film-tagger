@@ -2,7 +2,10 @@
 import os, sys, io, json, tempfile, urllib.request
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
+people.TPDB_PAGE_TRIES = 2
+people.TPDB_PAGE_ROUNDS = 2
 c = db.connect()
 db.set_setting(c, "tmdb_key", "k" * 32); db.set_setting(c, "tpdb_key", "t"); db.set_setting(c, "scene_roots", ["D:\\S"])
 c.execute("INSERT INTO films(id,title,year,tmdb_id,cast_) VALUES(1,'Owned Movie',2000,100,'Main Actor, Star Perf')")

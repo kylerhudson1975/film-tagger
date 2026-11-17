@@ -2,7 +2,8 @@
 import os, sys, json, tempfile, time, http.client
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
 time.sleep = lambda s: None  # skip backoff so the retry loop is testable
 
 c = db.connect(); db.set_setting(c, "tpdb_key", "t"); db.set_setting(c, "scene_roots", ["D:\\S"])
@@ -17,6 +18,8 @@ left = {2: 2}
 def tp(path, tok, **k):
     if path == "/performers":
         return {"data": [{"id": "cs", "name": "Casey Star", "extras": {}, "aliases": []}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         if left.get(p, 0) > 0:
@@ -53,6 +56,8 @@ calls.clear()
 def boom(path, tok, **k):
     if path == "/performers":
         return {"data": [{"id": "cs", "name": "Casey Star", "extras": {}, "aliases": []}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         if p == 2:

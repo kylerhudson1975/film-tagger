@@ -3,7 +3,10 @@ the person page does not keep restarting the load (which left 'still loading' up
 import os, sys, json, tempfile, time, urllib.error
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
+people.TPDB_PAGE_TRIES = 2
+people.TPDB_PAGE_ROUNDS = 2
 
 c = db.connect(); db.set_setting(c, "tpdb_key", "t"); db.set_setting(c, "scene_roots", ["D:\\S"])
 c.execute("INSERT INTO films(id,title,kind,cast_,release_date) VALUES(1,'Owned','scene','Casey Star','2020-01-01')")
@@ -21,6 +24,8 @@ class Boom(urllib.error.HTTPError):
 def tp(path, tok, **k):
     if path == "/performers":
         return {"data": [{"id": "cs", "name": "Casey Star", "extras": {}, "aliases": []}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         if p in fail_page:
@@ -81,6 +86,8 @@ overshoot = []
 def tp2(path, tok, **k):
     if path == "/performers":
         return {"data": [{"id": "cs", "name": "Casey Star", "extras": {}, "aliases": []}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         if p >= 4:

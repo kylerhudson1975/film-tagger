@@ -142,9 +142,10 @@ def parse_id(v):
     raise ValueError(f"Not a ThePornDB scene id or URL: {s}")
 
 def call(path, token, **params):
+    timeout = params.pop("timeout", 25)
     url = API + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "User-Agent": "FilmTagger"})
-    with urllib.request.urlopen(req, timeout=25) as r: return json.loads(r.read())
+    with urllib.request.urlopen(req, timeout=timeout) as r: return json.loads(r.read())
 
 def get_scene(token, sid): return call(f"/scenes/{urllib.parse.quote(str(sid))}", token).get("data") or {}
 

@@ -2,7 +2,10 @@
 import os, sys, json, tempfile
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
+people.TPDB_PAGE_TRIES = 2
+people.TPDB_PAGE_ROUNDS = 2
 cl = app.app.test_client()
 c = db.connect()
 for t, cast in (("Scene A", "Ann Example, Bob Other"), ("Scene B", "Annie Sample"), ("Scene C", "Cara Third"), ("Scene D", "Dee Fourth")):

@@ -3,7 +3,8 @@ instead of hanging on a page past last_page."""
 import os, sys, tempfile, time
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
 
 c = db.connect(); db.set_setting(c, "tpdb_key", "t"); db.set_setting(c, "scene_roots", ["D:\\S"])
 c.execute("INSERT INTO films(id,title,kind,cast_,release_date) VALUES(1,'Owned','scene','Casey Star','2020-01-01')")
@@ -14,6 +15,8 @@ calls = []
 def tp(path, tok, **k):
     if path == "/performers":
         return {"data": [{"id": "cs", "name": "Casey Star", "extras": {}, "aliases": []}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         if p >= 4:

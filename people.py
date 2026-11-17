@@ -132,12 +132,20 @@ def _norm_combined_credit(x, typ="cast"):
     return rec
 TPDB_MAX_PAGES = 200  # 100 scenes per page (20,000 scenes)
 TPDB_NONE = "-"  # tpdb_performer_id value meaning "searched ThePornDB, nothing found"
+# Page-fetch policy: a single timeout never ends the catalogue load. Tests may tighten these.
+TPDB_PAGE_TRIES = 8
+TPDB_PAGE_ROUNDS = 5  # extra whole-page re-queues after the per-page tries are exhausted
+TPDB_PAGE_SLEEP = True
+# Movie pages at per_page=100 can be several megabytes; fetching several at once times out.
+TPDB_MOVIE_PER_PAGE = 40
+TPDB_MOVIE_TIMEOUT = 80
+TPDB_MOVIE_WORKERS = 1
 
 # ThePornDB profile columns (adult performers). edited_fields = profile fields changed by hand; never overwritten.
 TPDB_COLS = [("source", "TEXT"), ("tpdb_performer_id", "TEXT"), ("tpdb_manual", "INTEGER DEFAULT 0"), ("aliases", "TEXT"),
              ("nationality", "TEXT"), ("measurements", "TEXT"), ("height", "TEXT"), ("career", "TEXT"), ("links_json", "TEXT"),
              ("image_url", "TEXT"), ("gender", "TEXT"), ("edited_fields", "TEXT"), ("tpdb_fetched_at", "REAL"), ("photo_file", "TEXT"), ("tpdb_scenes_json", "TEXT"), ("tpdb_scenes_at", "REAL"),
-             ("tpdb_scenes_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT"),
+             ("tpdb_scenes_total", "INTEGER"), ("tpdb_movies_total", "INTEGER"), ("merged_into", "INTEGER"), ("photo_orig", "TEXT"), ("birth_date_source", "TEXT"),
              ("ethnicity", "TEXT"), ("ethnicity_source", "TEXT"), ("ethnicity_checked_at", "REAL"),
              ("eth_name_checked_at", "REAL"), ("eth_ext_checked_at", "REAL"), ("ethnicity_skipped_at", "REAL"),
              ("ethnicity_listings", "TEXT")]
@@ -315,6 +323,27 @@ def site_label(site):
         if isinstance(v, dict) and (v.get("name") or "").strip() and (v.get("name") or "").strip() != (site.get("name") or "").strip():
             return v["name"].strip()
     return None
+
+def _tpdb_kind_name(x):
+    """'movie' or 'scene' from a ThePornDB catalogue row (slim or raw)."""
+    k = (x.get("kind") or x.get("type") or "").strip().lower()
+    return "movie" if k in ("movie", "movies") else "scene"
+
+def _tpdb_item_url(x):
+    kind = _tpdb_kind_name(x)
+    return f"https://theporndb.net/{'movies' if kind == 'movie' else 'scenes'}/{x.get('slug') or x.get('id')}"
+
+def _tpdb_item_view(x):
+    """Person-page / Insights card fields from a slim cached ThePornDB row. No images are opened."""
+    kind = _tpdb_kind_name(x)
+    return dict(title=x.get("title"), date=x.get("date"), studio=x.get("studio"), url=_tpdb_item_url(x),
+                film_id=None, thumb=x.get("thumb"), poster=None, kind=kind,
+                cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")],
+                _ids=(str(x.get("id") or ""), str(x.get("_id") or "-")))
+
+def _tpdb_sleep(sec):
+    if TPDB_PAGE_SLEEP and sec:
+        time.sleep(sec)
 
 GROUP_MIN = 3  # Built profiles 'Group by': a performer is listed under a studio with at least this many of her scenes (her top studio always)
 
@@ -654,12 +683,15 @@ def init(app, tmdb, posters_dir):
             if TPDB_SEM.acquire(timeout=3):
                 return True
             st.update(beat=time.time())
-    def _tpdb_scene_page(tok, perf_id, page, st, gen, pid, per_page=100, priority=True):
-        """Fetch one /performers/{id}/scenes page. Up to TPDB_WORKERS calls run at once; backoff is off the slot."""
+    def _tpdb_catalogue_page(tok, perf_id, kind, page, st, gen, pid, per_page=100, priority=True, timeout=40):
+        """Fetch one /performers/{id}/scenes or /movies page. Timeouts and other transient errors are retried
+        with backoff; a single failed page is re-queued by the caller and does not end the load."""
         import tpdb as tpdbmod
         last = None
         got = False
-        for i in range(4):
+        path = f"/performers/{perf_id}/{kind}"
+        tries = max(1, int(TPDB_PAGE_TRIES))
+        for i in range(tries):
             if (SCN.get(pid) or {}).get("gen") != gen:
                 return None  # abandoned by the watchdog; a newer load owns this person
             st.update(beat=time.time(), retry=i, page=page)
@@ -670,19 +702,21 @@ def init(app, tmdb, posters_dir):
                 if (SCN.get(pid) or {}).get("gen") != gen:
                     return None
                 st["beat"] = time.time()
-                return tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, tries=1, per_page=per_page, page=page)
+                return tpdbmod.call_retry(path, tok, tries=1, timeout=timeout, per_page=per_page, page=page)
             except urllib.error.HTTPError as e:
                 last = e
                 ra = e.headers.get("Retry-After") if e.headers else None
-                if e.code == 429 and i < 3:
-                    retryable, delay = True, min(8, float(ra) if ra and str(ra).replace(".", "").isdigit() else 1 * (i + 1))
-                elif e.code in (500, 502, 503, 504) and i < 1:
-                    retryable, delay = True, 1
-                else:
+                if e.code == 429 and i < tries - 1:
+                    retryable, delay = True, min(15, float(ra) if ra and str(ra).replace(".", "").isdigit() else 2 * (i + 1))
+                elif e.code in (500, 502, 503, 504) and i < tries - 1:
+                    retryable, delay = True, min(12, 2 * (i + 1))
+                elif e.code in (401, 403, 404):
                     retryable, delay = False, 0
+                else:
+                    retryable, delay = (i < tries - 1), min(12, 2 * (i + 1))
             except (urllib.error.URLError, TimeoutError, http.client.IncompleteRead, http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError, ConnectionError) as e:
                 last = e
-                retryable, delay = (True, min(12, 2 * (i + 1))) if i < 3 else (False, 0)
+                retryable, delay = (True, min(20, 2 * (i + 1))) if i < tries - 1 else (False, 0)
             finally:
                 if got:
                     TPDB_SEM.release()
@@ -690,8 +724,11 @@ def init(app, tmdb, posters_dir):
             if not retryable:
                 raise last
             st.update(beat=time.time())
-            time.sleep(delay)
+            _tpdb_sleep(delay)
         raise last
+    def _tpdb_scene_page(tok, perf_id, page, st, gen, pid, per_page=100, priority=True):
+        """Back-compat wrapper used by tests that patch this name; fetches a scenes page."""
+        return _tpdb_catalogue_page(tok, perf_id, "scenes", page, st, gen, pid, per_page=per_page, priority=priority)
     def _abandon_stale_load(pid):
         """If a load is marked running but has not heartbeated, clear it so Insights is not stuck on 'still loading'."""
         with SCN_LOCK:
@@ -729,12 +766,78 @@ def init(app, tmdb, posters_dir):
                     date=(x.get("date") or "")[:10], studio=site.get("name") or x.get("studio"),
                     label=site_label(site) if site else x.get("label"), slug=x.get("slug"),
                     thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"),
-                    performers=_slim_tpdb_performers(x))
+                    performers=_slim_tpdb_performers(x), kind=_tpdb_kind_name(x))
+    PRF = {}  # pid -> background first-open ThePornDB lookup (never blocks the person GET)
+    PRF_LOCK = threading.Lock()
+    def profile_loading_now(pid):
+        return bool((PRF.get(pid) or {}).get("running"))
+    def start_profile_refresh(pid, tok, need_lookup=False, fill_only=False, allow_image=True, defer_update=False, refresh=False):
+        """Look the person up on ThePornDB in a background thread so the page can render immediately.
+        If we already have a performer id, the catalogue load starts on the GET itself; this thread
+        only runs tpdb_update after that load is no longer competing for ThePornDB (or if we still
+        need an id before the catalogue can start)."""
+        with PRF_LOCK:
+            if (PRF.get(pid) or {}).get("running"):
+                return
+            PRF[pid] = dict(running=True, error=None, phase="lookup" if need_lookup else "idle", beat=time.time())
+        def run():
+            c2 = C()
+            st = PRF.get(pid) or {}
+            try:
+                if defer_update and not need_lookup:
+                    # Wait until a catalogue load is not using ThePornDB slots.
+                    for _ in range(600):
+                        if not scenes_loading_now(pid):
+                            break
+                        st["beat"] = time.time()
+                        time.sleep(0.5)
+                    else:
+                        return
+                    row = c2.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+                    if not row or not tok:
+                        return
+                    st.update(phase="lookup", beat=time.time())
+                    import tpdb as tpdbmod
+                    try:
+                        tpdb_update(c2, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw),
+                                    allow_image=allow_image, fill_only=fill_only)
+                    except Exception as ex:
+                        st["error"] = type(ex).__name__
+                    return
+                if need_lookup and tok:
+                    st.update(phase="lookup", beat=time.time())
+                    row = c2.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+                    if not row:
+                        return
+                    import tpdb as tpdbmod
+                    try:
+                        tpdb_update(c2, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw),
+                                    allow_image=allow_image, fill_only=fill_only)
+                    except Exception as ex:
+                        st["error"] = type(ex).__name__
+                    row = c2.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone() or row
+                    tpid = row["tpdb_performer_id"] if row["tpdb_performer_id"] not in (None, TPDB_NONE) else None
+                    if tpid and tok:
+                        st.update(phase="scenes", beat=time.time())
+                        inc = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
+                        try: need_movies = row["tpdb_movies_total"] is None
+                        except Exception: need_movies = True
+                        start_scene_load(pid, tok, tpid, force=bool(refresh),
+                                         resume=(bool(inc) or (need_movies and bool(row["tpdb_scenes_json"]))) and not refresh,
+                                         priority=True)
+                    elif not st.get("error") and tok:
+                        st["error"] = "Not found on ThePornDB"
+            finally:
+                st["running"] = False
+                st["beat"] = time.time()
+                c2.close()
+        threading.Thread(target=run, daemon=True).start()
     def start_scene_load(pid, tok, perf_id, force=False, resume=False, priority=True):
-        """Fetch /performers/{id}/scenes in a background thread, several pages at a time. The person page being viewed
-        gets priority over background Credited-with loads. Each page is saved as it arrives; Insights is invalidated
-        so figures update. A stuck job (no heartbeat) is abandoned. A failed page keeps the partial list and an error;
-        the load is not restarted until Retry or Refresh."""
+        """Fetch /performers/{id}/scenes and /movies in a background thread, several pages at a time.
+        The person page being viewed gets priority over background Credited-with loads. Each contiguous
+        page is saved as it arrives; Insights is invalidated so figures update. A single page timeout is
+        retried with backoff and never ends the load. Only many consecutive failures stop it, keeping the
+        partial list so Retry resumes at the first hole. A stuck job (no heartbeat) is abandoned."""
         now = time.time()
         with SCN_LOCK:
             load = SCN.get(pid) or {}
@@ -751,153 +854,280 @@ def init(app, tmdb, posters_dir):
             gen = SCN[pid]["gen"]
         def run():
             st = SCN[pid]; c2 = C()
-            allsc, page, seen = [], 1, set()
+            allsc, seen = [], set()
+            kind_total = {"scenes": None, "movies": None}
+            last_page = {"scenes": None, "movies": None}
+            next_need = {"scenes": 1, "movies": 1}
+            movies_known = False
+            page_size = {"scenes": 100, "movies": int(TPDB_MOVIE_PER_PAGE)}
+            page_timeout = {"scenes": 40, "movies": int(TPDB_MOVIE_TIMEOUT)}
+            kind_workers = {"scenes": TPDB_WORKERS, "movies": max(1, int(TPDB_MOVIE_WORKERS))}
             if priority:
                 with TPDB_VIEW_LOCK:
                     TPDB_VIEW.add(pid)
+            def _combined_total():
+                sc, mv = kind_total["scenes"], kind_total["movies"]
+                if sc is not None and movies_known and mv is not None:
+                    return int(sc) + int(mv)
+                if sc is not None and not movies_known:
+                    return int(sc)
+                if sc is not None:
+                    return int(sc) + (int(mv) if mv is not None else 0)
+                return len(allsc) or None
+            def _combined_pages():
+                n = 0
+                for k in ("scenes", "movies"):
+                    lp = last_page[k]
+                    if lp is None and kind_total[k] is not None:
+                        lp = (int(kind_total[k]) + page_size[k] - 1) // page_size[k]
+                    if lp:
+                        n += int(lp)
+                return n or None
             def save(final):
                 if (SCN.get(pid) or {}).get("gen") != gen:
                     return
                 keep = [_slim_tpdb_scene(x) for x in allsc]
-                c2.execute("UPDATE people SET tpdb_scenes_json=?, tpdb_scenes_at=?, tpdb_scenes_total=? WHERE id=?",
-                           (json.dumps(keep), time.time() if final else 0, st["total"] or len(keep), pid)); c2.commit()
+                total = _combined_total()
+                st["total"] = total
+                st["pages"] = _combined_pages()
+                st["done"] = len(keep)
+                cols = "tpdb_scenes_json=?, tpdb_scenes_at=?, tpdb_scenes_total=?"
+                args = [json.dumps(keep), time.time() if final else 0, total or len(keep), pid]
+                if movies_known and final:
+                    cols += ", tpdb_movies_total=?"
+                    args = [json.dumps(keep), time.time() if final else 0, total or len(keep), int(kind_total["movies"] or 0), pid]
+                c2.execute(f"UPDATE people SET {cols} WHERE id=?", args); c2.commit()
                 for k in [k for k in list(INS) if k[0] == pid]: INS.pop(k, None)
             try:
                 if resume:
-                    row2 = c2.execute("SELECT tpdb_scenes_json, tpdb_scenes_total FROM people WHERE id=?", (pid,)).fetchone()
+                    row2 = c2.execute("SELECT tpdb_scenes_json, tpdb_scenes_total, tpdb_movies_total FROM people WHERE id=?", (pid,)).fetchone()
                     if row2 and row2["tpdb_scenes_json"]:
                         try: prev = json.loads(row2["tpdb_scenes_json"] or "[]")
                         except Exception: prev = []
+                        ns = nm = 0
                         for x in prev:
                             sid = str(x.get("id") or "")
                             if sid and sid not in seen:
                                 seen.add(sid); allsc.append(x)
+                                if _tpdb_kind_name(x) == "movie":
+                                    nm += 1
+                                else:
+                                    ns += 1
+                        next_need["scenes"] = ns // page_size["scenes"] + 1
+                        next_need["movies"] = nm // page_size["movies"] + 1
+                        mt = row2["tpdb_movies_total"] if "tpdb_movies_total" in row2.keys() else None
                         tot = row2["tpdb_scenes_total"]
-                        st.update(done=len(allsc), total=int(tot) if tot is not None else (len(allsc) or None),
-                                  page=max(1, (len(allsc) + 99) // 100))
-                        if tot is not None and len(allsc) >= int(tot):
+                        if mt is not None:
+                            movies_known = True
+                            kind_total["movies"] = int(mt)
+                            if int(mt) == 0 or nm >= int(mt):
+                                last_page["movies"] = (int(mt) + page_size["movies"] - 1) // page_size["movies"]
+                                next_need["movies"] = (last_page["movies"] or 0) + 1
+                            if tot is not None and int(mt) <= int(tot):
+                                kind_total["scenes"] = int(tot) - int(mt)
+                            elif tot is not None and ns and nm == 0:
+                                # older caches stored scenes-only in tpdb_scenes_total
+                                kind_total["scenes"] = int(tot)
+                        elif tot is not None and nm == 0:
+                            kind_total["scenes"] = int(tot)
+                        if kind_total["scenes"] is not None and ns >= int(kind_total["scenes"]):
+                            last_page["scenes"] = (int(kind_total["scenes"]) + page_size["scenes"] - 1) // page_size["scenes"]
+                            next_need["scenes"] = (last_page["scenes"] or 0) + 1
+                        st.update(done=len(allsc), total=_combined_total(),
+                                  page=max(next_need["scenes"], next_need["movies"]) - 1,
+                                  pages=_combined_pages())
+                        # Already have everything we know about
+                        if (kind_total["scenes"] is not None and ns >= int(kind_total["scenes"])
+                                and movies_known and kind_total["movies"] is not None and nm >= int(kind_total["movies"])):
                             save(True); return
-                        # A handful of missing ids after the last expected page are almost always
-                        # duplicates ThePornDB counted twice, not a missing page. Stop instead of
-                        # hanging on a page past last_page.
-                        gap = int(tot) - len(allsc) if tot is not None else None
-                        expected = (int(tot) + 99) // 100 if tot is not None else None
-                        have_pages = (len(allsc) + 99) // 100
-                        if tot is not None and gap is not None and 0 < gap <= max(10, int(tot * 0.005)) and have_pages >= expected:
-                            st.update(done=len(allsc), total=int(tot), page=have_pages, pages=expected, beat=time.time())
-                            save(True); return
-                        page = len(allsc) // 100 + 1
-                from concurrent.futures import ThreadPoolExecutor, as_completed
-                merge_lock = threading.Lock()
-                per_page = 100
-                # ThePornDB timed out on per_page=200 in a live probe, so first loads stay at 100 and go wider instead.
-                first_r, first_page = None, page
 
-                def ingest(r, page_no, pp):
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                def ingest(r, kind, page_no, pp):
                     if r is None:
                         return False
-                    d = r.get("data") or []
+                    d = r.get("data") if isinstance(r.get("data"), list) else []
+                    for x in d:
+                        if isinstance(x, dict) and not x.get("kind"):
+                            x["kind"] = "movie" if kind == "movies" else "scene"
                     meta = r.get("meta") if isinstance(r.get("meta"), dict) else {}
                     last, tot = meta.get("last_page") or meta.get("last"), meta.get("total")
-                    with merge_lock:
-                        new = [x for x in d if str(x.get("id") or "") not in seen]
-                        seen.update(str(x.get("id") or "") for x in d if x.get("id") is not None)
-                        allsc.extend(new)
-                        if tot is not None:
-                            st["total"] = int(tot)
-                        if last:
-                            st["pages"] = int(last)
-                        if st.get("total") is not None and st.get("pages"):
-                            cap = (int(st["total"]) + pp - 1) // pp
-                            if cap and st["pages"] > cap:
-                                st["pages"] = cap
-                        st.update(done=len(allsc), page=page_no, beat=time.time())
-                        have_all = st["total"] is not None and len(allsc) >= st["total"]
-                        expected = (int(st["total"]) + pp - 1) // pp if st["total"] is not None else None
-                        close_enough = (
-                            st["total"] is not None and expected is not None
-                            and 0 < (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
-                            and page_no >= expected
-                        )
-                        # Do not treat a single high page as the end while other pages are still in flight.
-                        final = have_all or close_enough
-                        save(final)
-                        return final
-
-                # Apply later pages only after earlier ones, so a hole is never saved (resume stays at the first gap).
-                held = {}
-                next_need = page
-                if first_r is not None:
-                    held[first_page] = first_r
-                    next_need = first_page
-                def flush():
-                    nonlocal next_need
-                    while next_need in held:
-                        r = held.pop(next_need)
-                        done = ingest(r, next_need, per_page)
-                        next_need += 1
-                        if done:
-                            return True
-                    return False
-                if first_r is not None:
-                    if flush():
-                        return
-                    page = next_need
-
-                last_page = st.get("pages")
-                if last_page is None and st.get("total") is not None:
-                    last_page = (int(st["total"]) + per_page - 1) // per_page
-                if last_page is None:
-                    # Meta missing: walk sequentially until we learn last_page, then fan out.
-                    while page <= TPDB_MAX_PAGES:
-                        if (SCN.get(pid) or {}).get("gen") != gen:
-                            return
-                        r = _tpdb_scene_page(tok, perf_id, page, st, gen, pid, per_page=per_page, priority=priority)
-                        if r is None:
-                            return
-                        held[page] = r
-                        if flush():
-                            return
-                        last_page = st.get("pages")
-                        if last_page is None and st.get("total") is not None:
-                            last_page = (int(st["total"]) + per_page - 1) // per_page
-                        page = next_need
-                        if last_page:
-                            break
-                if last_page and next_need <= last_page:
-                    pages_left = [n for n in range(next_need, min(int(last_page), TPDB_MAX_PAGES) + 1)]
-                    first_err = []
-                    def fetch_one(n):
-                        try:
-                            return n, _tpdb_scene_page(tok, perf_id, n, st, gen, pid, per_page=per_page, priority=priority), None
-                        except Exception as ex:
-                            return n, None, ex
-                    with ThreadPoolExecutor(max_workers=TPDB_WORKERS) as ex:
-                        futs = [ex.submit(fetch_one, n) for n in pages_left]
-                        for fut in as_completed(futs):
-                            if (SCN.get(pid) or {}).get("gen") != gen:
-                                return
-                            n, r, err = fut.result()
-                            if err is not None:
-                                if isinstance(err, urllib.error.HTTPError) and err.code in (401, 403, 404) and (
-                                    (st.get("total") is not None and len(allsc) >= int(st["total"])) or
-                                    (st.get("pages") and n > int(st["pages"]))
-                                ):
-                                    continue
-                                first_err.append(err)
-                                continue
-                            held[n] = r
-                            if flush():
-                                first_err.clear()
-                                break
-                    if first_err and not (st.get("total") is not None and len(allsc) >= int(st["total"])):
-                        raise first_err[0]
-                    expected = (int(st["total"]) + per_page - 1) // per_page if st.get("total") is not None else None
+                    new = [x for x in d if str(x.get("id") or "") not in seen]
+                    seen.update(str(x.get("id") or "") for x in d if x.get("id") is not None)
+                    allsc.extend(new)
+                    if tot is not None:
+                        kind_total[kind] = int(tot)
+                        if kind == "movies":
+                            nonlocal_movies()
+                    if last is not None:
+                        last_page[kind] = int(last)
+                    if kind_total[kind] is not None:
+                        cap = (int(kind_total[kind]) + pp - 1) // pp
+                        if last_page[kind] is None:
+                            last_page[kind] = cap
+                        elif cap and last_page[kind] > cap:
+                            last_page[kind] = cap
+                    st["total"] = _combined_total()
+                    st["pages"] = _combined_pages()
+                    st.update(done=len(allsc), page=page_no, beat=time.time())
+                    have_kind = kind_total[kind] is not None and sum(1 for x in allsc if (_tpdb_kind_name(x) == "movie") == (kind == "movies")) >= int(kind_total[kind])
+                    expected = (int(kind_total[kind]) + pp - 1) // pp if kind_total[kind] is not None else None
+                    n_kind = sum(1 for x in allsc if (_tpdb_kind_name(x) == "movie") == (kind == "movies"))
                     close_enough = (
-                        st.get("total") is not None and expected is not None
-                        and 0 <= (st["total"] - len(allsc)) <= max(10, int(st["total"] * 0.005))
+                        kind_total[kind] is not None and expected is not None
+                        and 0 < (int(kind_total[kind]) - n_kind) <= max(10, int(kind_total[kind] * 0.005))
+                        and page_no >= expected
                     )
-                    save(True if (st.get("total") is not None and (len(allsc) >= st["total"] or close_enough)) or not first_err else False)
+                    if have_kind or close_enough:
+                        last_page[kind] = max(last_page[kind] or 0, page_no)
+                    # Combined completion is decided by the caller after both kinds.
+                    save(False)
+                    return have_kind or close_enough
+
+                def nonlocal_movies():
+                    nonlocal movies_known
+                    movies_known = True
+
+                def fetch_kind(kind):
+                    """Load remaining pages of one catalogue kind. Returns (done_ok, error).
+                    A single page failure is retried; only many consecutive failures abort this kind."""
+                    held = {}
+                    pp = page_size[kind]
+                    to = page_timeout[kind]
+                    start = next_need[kind]
+                    # Discover last_page if needed
+                    if last_page[kind] is None and start == 1 or (last_page[kind] is None and next_need[kind] > 0):
+                        pass
+                    pages_left = None
+                    # Walk until we know last_page, then fan out
+                    page = next_need[kind]
+                    if last_page[kind] is None:
+                        while page <= TPDB_MAX_PAGES:
+                            if (SCN.get(pid) or {}).get("gen") != gen:
+                                return False, None
+                            try:
+                                r = _tpdb_catalogue_page(tok, perf_id, kind, page, st, gen, pid, per_page=pp, timeout=to, priority=priority)
+                            except urllib.error.HTTPError as e:
+                                if e.code == 404 and kind == "movies":
+                                    kind_total["movies"] = 0; last_page["movies"] = 0; movies_known = True
+                                    st.update(total=_combined_total(), pages=_combined_pages(), beat=time.time())
+                                    return True, None
+                                if e.code in (401, 403, 404) and kind_total[kind] is not None and page > (last_page[kind] or 0):
+                                    last_page[kind] = page - 1
+                                    break
+                                # retryable failures bubble; re-try this first page in a later round
+                                return False, e
+                            except Exception as e:
+                                return False, e
+                            if r is None:
+                                return False, None
+                            held[page] = r
+                            # flush in order
+                            while next_need[kind] in held:
+                                rr = held.pop(next_need[kind])
+                                done = ingest(rr, kind, next_need[kind], pp)
+                                next_need[kind] += 1
+                                if done:
+                                    return True, None
+                            last_page[kind] = last_page[kind] or kind_total[kind] and ((int(kind_total[kind]) + pp - 1) // pp)
+                            if last_page[kind] is None and kind_total[kind] is not None:
+                                last_page[kind] = (int(kind_total[kind]) + pp - 1) // pp
+                            page = next_need[kind]
+                            if last_page[kind] is not None:
+                                break
+                    if last_page[kind] is not None and next_need[kind] > int(last_page[kind] or 0):
+                        if kind == "movies":
+                            movies_known = True
+                            if kind_total["movies"] is None:
+                                kind_total["movies"] = 0
+                        return True, None
+                    pages_left = [n for n in range(next_need[kind], min(int(last_page[kind] or 0), TPDB_MAX_PAGES) + 1)]
+                    rounds = 0
+                    last_err = None
+                    while pages_left:
+                        if (SCN.get(pid) or {}).get("gen") != gen:
+                            return False, None
+                        failed = []
+                        def fetch_one(n):
+                            try:
+                                return n, _tpdb_catalogue_page(tok, perf_id, kind, n, st, gen, pid, per_page=pp, timeout=to, priority=priority), None
+                            except Exception as ex:
+                                return n, None, ex
+                        with ThreadPoolExecutor(max_workers=kind_workers[kind]) as ex:
+                            futs = [ex.submit(fetch_one, n) for n in pages_left]
+                            finished_early = False
+                            for fut in as_completed(futs):
+                                if (SCN.get(pid) or {}).get("gen") != gen:
+                                    return False, None
+                                n, r, err = fut.result()
+                                if err is not None:
+                                    if isinstance(err, urllib.error.HTTPError) and err.code in (401, 403, 404) and (
+                                        (kind_total[kind] is not None and sum(1 for x in allsc if (_tpdb_kind_name(x) == "movie") == (kind == "movies")) >= int(kind_total[kind])) or
+                                        (last_page[kind] and n > int(last_page[kind]))
+                                    ):
+                                        continue
+                                    if isinstance(err, urllib.error.HTTPError) and err.code == 404 and kind == "movies" and n == 1:
+                                        kind_total["movies"] = 0; last_page["movies"] = 0; movies_known = True
+                                        continue
+                                    failed.append(n)
+                                    last_err = err
+                                    continue
+                                if r is None:
+                                    failed.append(n)
+                                    continue
+                                held[n] = r
+                                while next_need[kind] in held:
+                                    rr = held.pop(next_need[kind])
+                                    done = ingest(rr, kind, next_need[kind], pp)
+                                    next_need[kind] += 1
+                                    if done:
+                                        failed.clear()
+                                        finished_early = True
+                                        break
+                                if finished_early:
+                                    break
+                        if finished_early or (last_page[kind] is not None and next_need[kind] > int(last_page[kind] or 0)):
+                            if kind == "movies":
+                                movies_known = True
+                            return True, None
+                        pages_left = sorted(set(failed))
+                        if not pages_left:
+                            if kind == "movies":
+                                movies_known = True
+                            return True, None
+                        rounds += 1
+                        if rounds > int(TPDB_PAGE_ROUNDS):
+                            return False, last_err
+                        st.update(beat=time.time(), retry=rounds)
+                        _tpdb_sleep(min(16, 2 * rounds))
+                    if kind == "movies":
+                        movies_known = True
+                        if kind_total["movies"] is None:
+                            kind_total["movies"] = 0
+                    return True, None
+
+                # Scenes first, then movies (classic catalogues live here). A timeout on one page
+                # is retried; only repeated failures stop, and Retry resumes at the first hole.
+                ok, err = fetch_kind("scenes")
+                if not ok:
+                    if err:
+                        raise err
+                    return
+                ok, err = fetch_kind("movies")
+                if not ok:
+                    if err:
+                        raise err
+                    return
+                movies_known = True
+                if kind_total["movies"] is None:
+                    kind_total["movies"] = 0
+                sc_n = sum(1 for x in allsc if _tpdb_kind_name(x) != "movie")
+                mv_n = sum(1 for x in allsc if _tpdb_kind_name(x) == "movie")
+                if kind_total["scenes"] is None:
+                    kind_total["scenes"] = sc_n
+                close_sc = kind_total["scenes"] is not None and 0 <= (int(kind_total["scenes"]) - sc_n) <= max(10, int(kind_total["scenes"] * 0.005))
+                close_mv = kind_total["movies"] is not None and 0 <= (int(kind_total["movies"]) - mv_n) <= max(10, int((kind_total["movies"] or 0) * 0.005) or 10)
+                save(True if (close_sc and close_mv) else False)
             except Exception as ex:
                 st["error"] = f"ThePornDB HTTP {ex.code}" if isinstance(ex, urllib.error.HTTPError) else type(ex).__name__
                 try:
@@ -1236,12 +1466,27 @@ def init(app, tmdb, posters_dir):
             if not tok: tp_note = "No ThePornDB token set."
             else:
                 stale = time.time() - (row["tpdb_fetched_at"] or 0) > STALE_S
-                if row["tpdb_performer_id"] is None or request.args.get("refresh") or (stale and row["tpdb_performer_id"] != TPDB_NONE):
-                    import tpdb as tpdbmod
-                    try: tpdb_update(c, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw), allow_image=not (set(lib_ids) & review_film_ids(c)),
-                                     fill_only=classic and row["source"] != "manual")
-                    except Exception as ex: tp_note = f"Could not reach ThePornDB ({type(ex).__name__})."
-                    row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+                need_tpdb = row["tpdb_performer_id"] is None or request.args.get("refresh") or (stale and row["tpdb_performer_id"] != TPDB_NONE)
+                if need_tpdb:
+                    # Never block this GET on ThePornDB (a stall used to leave the page on "Loading…").
+                    # If we already have a performer id, start the catalogue load below and defer the
+                    # profile refresh so it cannot compete with page fetches (that caused TimeoutError).
+                    start_profile_refresh(pid, tok, need_lookup=row["tpdb_performer_id"] in (None, TPDB_NONE) or bool(request.args.get("refresh")),
+                                          fill_only=classic and row["source"] != "manual",
+                                          allow_image=not (set(lib_ids) & review_film_ids(c)),
+                                          defer_update=row["tpdb_performer_id"] not in (None, TPDB_NONE) and not request.args.get("refresh"),
+                                          refresh=bool(request.args.get("refresh")))
+                    if profile_loading_now(pid):
+                        pr = PRF.get(pid) or {}
+                        if (pr.get("phase") or "lookup") == "lookup" and row["tpdb_performer_id"] in (None, TPDB_NONE):
+                            tp_note = "Looking this person up on ThePornDB…"
+                elif profile_loading_now(pid):
+                    pr = PRF.get(pid) or {}
+                    if pr.get("phase") == "lookup" and row["tpdb_performer_id"] in (None, TPDB_NONE):
+                        tp_note = "Looking this person up on ThePornDB…"
+                    if pr.get("error"):
+                        tp_note = f"Could not reach ThePornDB ({pr['error']})."
+                row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone() or row
         tpdb_linked = adult and row["tpdb_performer_id"] not in (None, TPDB_NONE)
         on_tpdb = tpdb_linked and row["source"] == "tpdb" and not classic  # ThePornDB-primary profile (scene performers)
         key = key_of(c)
@@ -1287,21 +1532,36 @@ def init(app, tmdb, posters_dir):
             try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
             except Exception: _nsc = 0
             incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
+            try: need_movies = row["tpdb_movies_total"] is None
+            except Exception: need_movies = True
             stale = time.time() - (row["tpdb_scenes_at"] or 0) > STALE_S
             _abandon_stale_load(pid)
-            if tok and (not row["tpdb_scenes_json"] or refresh or scenes_retry or incomplete or stale):
+            if tok and (not row["tpdb_scenes_json"] or refresh or scenes_retry or incomplete or stale or need_movies):
                 start_scene_load(pid, tok, row["tpdb_performer_id"], force=bool(refresh or scenes_retry),
-                                 resume=bool(incomplete) and not refresh)
+                                 resume=(bool(incomplete) or (need_movies and bool(row["tpdb_scenes_json"]) and not incomplete)) and not refresh)
             load = SCN.get(pid)
             if load and load.get("running"):
                 scenes_loading = dict(done=load["done"], total=load["total"], pages=load["pages"], page=load["page"],
-                                      retry=load.get("retry") or 0)
+                                      retry=load.get("retry") or 0, phase="scenes")
             elif load and load.get("error"):
                 scenes_error = load["error"]
                 msg = (msg + " " if msg else "") + f"Could not load all ThePornDB scenes ({load['error']}); showing the list so far."
+            if scenes_loading is None and profile_loading_now(pid):
+                pr = PRF.get(pid) or {}
+                scenes_loading = dict(done=0, total=None, page=0, pages=None, retry=0, phase=pr.get("phase") or "lookup")
+            elif scenes_error is None and not scenes_loading:
+                pr = PRF.get(pid) or {}
+                if pr.get("error") and not (row["tpdb_scenes_json"] or "").strip():
+                    scenes_error = pr["error"]
+                    msg = (msg + " " if msg else "") + f"Could not reach ThePornDB ({pr['error']})."
             if row["tpdb_scenes_json"]:
-                scenes = [dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
-                               film_id=None, thumb=x["thumb"], poster=None, cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")], _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
+                scenes = [_tpdb_item_view(x) for x in json.loads(row["tpdb_scenes_json"])]
+        elif profile_loading_now(pid):
+            pr = PRF.get(pid) or {}
+            scenes_loading = dict(done=0, total=None, page=0, pages=None, retry=0, phase=pr.get("phase") or "lookup")
+        elif (PRF.get(pid) or {}).get("error"):
+            scenes_error = PRF[pid]["error"]
+            msg = (msg + " " if msg else "") + f"Could not reach ThePornDB ({scenes_error})."
         if adult:  # ThePornDB scene lists cached on alias / merged people rows (another performer id for the same person)
             others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
             if others:
@@ -1311,28 +1571,52 @@ def init(app, tmdb, posters_dir):
                         ids = (str(x["id"]), str(x.get("_id") or "-"))
                         if ids[0] in seen_tp: continue
                         seen_tp.add(ids[0]); scenes = scenes or []
-                        scenes.append(dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
-                                           film_id=None, thumb=x["thumb"], poster=None, cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")], _ids=ids))
+                        v = _tpdb_item_view(x); v["_ids"] = ids
+                        scenes.append(v)
         if adult:  # ALL of the user's library scenes for this person (name/aliases or ThePornDB scene id), listed first
             img = not (set(lib_ids) & review_film_ids(c))
             tp_ids = sorted({i for z in (scenes or []) for i in z["_ids"] if i and i != "-"})
-            q = "SELECT id, title, release_date, year, studio, tpdb_id, poster, custom_poster FROM films WHERE kind='scene' AND (0"
+            q = "SELECT id, title, release_date, year, studio, tpdb_id, poster, custom_poster, kind FROM films WHERE kind='scene' AND (0"
             args = []
             for chunk in [lib_ids[i:i + 500] for i in range(0, len(lib_ids), 500)]: q += f" OR id IN ({','.join('?'*len(chunk))})"; args += chunk
             for chunk in [tp_ids[i:i + 500] for i in range(0, len(tp_ids), 500)]: q += f" OR tpdb_id IN ({','.join('?'*len(chunk))})"; args += chunk
             mine = {r["id"]: r for r in c.execute(q + ")", args)}
-            have_tp = {str(r["tpdb_id"]) for r in mine.values() if r["tpdb_id"]}
+            films = {}
+            if lib_ids:
+                for i in range(0, len(lib_ids), 500):
+                    ch = lib_ids[i:i + 500]
+                    for r in c.execute(f"SELECT id, title, release_date, year, studio, tpdb_id, poster, custom_poster, kind FROM films WHERE kind<>'scene' AND id IN ({','.join('?'*len(ch))})", ch):
+                        films[r["id"]] = r
+            have_tp = {str(r["tpdb_id"]) for r in list(mine.values()) + list(films.values()) if r["tpdb_id"]}
+            by_ty = {}
+            for r in films.values():
+                y = r["year"] or (int(str(r["release_date"])[:4]) if r["release_date"] and str(r["release_date"])[:4].isdigit() else None)
+                k = (fold(r["title"] or ""), y)
+                if k[0]: by_ty.setdefault(k, r)
             tp_count = len(scenes or []); tps = set(tp_ids)
-            extra_owned = sum(1 for r in mine.values() if not r["tpdb_id"] or str(r["tpdb_id"]) not in tps)  # owned but not in the ThePornDB list
-            tp_thumb = {i: z["thumb"] for z in (scenes or []) for i in z["_ids"] if i and i != "-"}
-            owned_list = [dict(title=r["title"], date=r["release_date"] or (str(r["year"]) if r["year"] else None), studio=r["studio"], url=None,
-                               film_id=r["id"], thumb=tp_thumb.get(str(r["tpdb_id"] or "-")) if img else None,
-                               poster=((r["custom_poster"] or r["poster"]) if img else None)) for r in mine.values()]
-            rest = []
+            used, owned_list, rest = set(), [], []
             for z in (scenes or []):
-                if any(i in have_tp for i in z.pop("_ids")): continue  # already listed from the library
+                ids = z.pop("_ids")
+                hit = next((r for r in list(mine.values()) + list(films.values()) if r["tpdb_id"] and str(r["tpdb_id"]) in set(ids)), None)
+                if not hit and z.get("kind") == "movie":
+                    y = int(z["date"][:4]) if (z.get("date") or "")[:4].isdigit() else None
+                    hit = by_ty.get((fold(z.get("title") or ""), y))
+                if hit:
+                    used.add(hit["id"])
+                    owned_list.append(dict(title=hit["title"] or z.get("title"), date=hit["release_date"] or z.get("date"),
+                                           studio=hit["studio"] or z.get("studio"), url=None, film_id=hit["id"],
+                                           thumb=(z.get("thumb") if img else None),
+                                           poster=((hit["custom_poster"] or hit["poster"]) if img else None),
+                                           kind=z.get("kind") or ("scene" if (hit["kind"] or "") == "scene" else "movie"),
+                                           cast=z.get("cast") or []))
+                    continue
                 if not img: z["thumb"] = None
                 rest.append(z)
+            extra = [r for r in mine.values() if r["id"] not in used]
+            extra_owned = len(extra)  # owned scenes not in the ThePornDB list
+            for r in extra:
+                owned_list.append(dict(title=r["title"], date=r["release_date"] or (str(r["year"]) if r["year"] else None), studio=r["studio"], url=None,
+                                       film_id=r["id"], thumb=None, poster=((r["custom_poster"] or r["poster"]) if img else None), kind="scene"))
             owned_list.sort(key=lambda z: z["date"] or ""); rest.sort(key=lambda z: z["date"] or "")
             if owned_list or scenes is not None: scenes = owned_list + rest
         elif scenes:
@@ -1406,7 +1690,7 @@ def init(app, tmdb, posters_dir):
         row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         if not row: return jsonify(error="Unknown person"), 404
         if not v:
-            c.execute("UPDATE people SET tpdb_performer_id=NULL, tpdb_manual=0, tpdb_fetched_at=NULL, tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
+            c.execute("UPDATE people SET tpdb_performer_id=NULL, tpdb_manual=0, tpdb_fetched_at=NULL, tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL, tpdb_movies_total=NULL WHERE id=?", (pid,)); c.commit(); return jsonify(ok=True)
         ident = parse_tpdb_performer(v)
         if not ident: return jsonify(error=f"Not a ThePornDB performer id or URL: {v}"), 400
         tok = db.get_setting(c, "tpdb_key", "") or ""
@@ -1417,7 +1701,7 @@ def init(app, tmdb, posters_dir):
         except Exception as ex: return jsonify(error=f"Could not reach ThePornDB ({type(ex).__name__})"), 502
         if not p: return jsonify(error="Performer not found on ThePornDB"), 404
         if str(p.get("id")) != str(row["tpdb_performer_id"] or ""):  # different performer: drop the cached scene list
-            c.execute("UPDATE people SET tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL WHERE id=?", (pid,))
+            c.execute("UPDATE people SET tpdb_scenes_json=NULL, tpdb_scenes_at=NULL, tpdb_scenes_total=NULL, tpdb_movies_total=NULL WHERE id=?", (pid,))
         c.execute("UPDATE people SET tpdb_manual=1 WHERE id=?", (pid,))
         e = person_entry(c, row)
         apply_tpdb(c, c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone(), p, allow_image=not (e["films"] & review_film_ids(c)),
@@ -1926,7 +2210,7 @@ def init(app, tmdb, posters_dir):
                 it = items.setdefault(k, dict(film_id=fid, roles=[], xroles=[]))
                 if not fid:
                     it.update(title=x.get("title"), date=(x.get("date") or "")[:10], studio=x.get("studio"),
-                              url=f"https://theporndb.net/scenes/{x.get('slug') or x.get('id')}")
+                              url=_tpdb_item_url(x), kind=_tpdb_kind_name(x))
                     it["year"] = int(it["date"][:4]) if it["date"][:4].isdigit() else None
                 if x.get("performers") and not it.get("performers"): it["performers"] = x["performers"]
                 if "Performer" not in it["xroles"]: it["xroles"].append("Performer")
@@ -2077,8 +2361,11 @@ def init(app, tmdb, posters_dir):
                 try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
                 except Exception: _nsc = 0
                 incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
-                if incomplete or not row["tpdb_scenes_json"]:
-                    start_scene_load(row["id"], tok, tpid, force=True, resume=bool(incomplete), priority=False)
+                try: need_movies = row["tpdb_movies_total"] is None
+                except Exception: need_movies = True
+                if incomplete or not row["tpdb_scenes_json"] or need_movies:
+                    start_scene_load(row["id"], tok, tpid, force=True,
+                                     resume=bool(incomplete) or (need_movies and bool(row["tpdb_scenes_json"])), priority=False)
         d = cocredit_data(c, pids)
         if d is None: return jsonify(error="Unknown person"), 404
         P = d["people"]
@@ -2274,7 +2561,7 @@ def init(app, tmdb, posters_dir):
         global data key unchanged, so caches built from a person's credits also key on these."""
         return (row["tpdb_scenes_at"], len(row["tpdb_scenes_json"] or ""), row["fetched_at"], len(row["credits_json"] or ""))
     def scenes_loading_now(pid):
-        st = SCN.get(pid)
+        st = _abandon_stale_load(pid)
         return bool(st and st.get("running"))
     def person_rows(c, row, dk=None):
         """One person's credits (library + cached TMDB/ThePornDB filmography) as rows. Adult titles where they performed

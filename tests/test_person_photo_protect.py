@@ -3,7 +3,10 @@ photo sources, a replaced hand photo goes to posters/people/backup/, merging kee
 import os, sys, io, json, tempfile, urllib.request, urllib.parse
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb, people as P
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
+people.TPDB_PAGE_TRIES = 2
+people.TPDB_PAGE_ROUNDS = 2, people as P
 cl = app.app.test_client()
 # ThePornDB performer with an image, then Kyle uploads his own photo
 c = db.connect(); c.execute("INSERT INTO films(title,kind,cast_) VALUES('S','scene','Pat Perf')"); db.set_setting(c, "tpdb_key", "t"); c.commit()

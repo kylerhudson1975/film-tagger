@@ -3,7 +3,8 @@ of the performer (by name, alias, or ThePornDB scene id) are listed first as own
 import os, sys, json, tempfile, time
 d = tempfile.mkdtemp(); os.environ["FILMTAGGER_DB"] = os.path.join(d, "films.db")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import app, db, tpdb
+import app, db, tpdb, people
+people.TPDB_PAGE_SLEEP = False
 c = db.connect(); db.set_setting(c, "tpdb_key", "t"); db.set_setting(c, "scene_roots", ["D:\\S"])
 c.execute("INSERT INTO films(id,title,kind,tpdb_id,cast_,release_date) VALUES(1,'Old Owned','scene','s0005','Penny Barber','2012-01-01')")   # page 1 (oldest-first? any page)
 c.execute("INSERT INTO films(id,title,kind,tpdb_id,cast_,release_date) VALUES(2,'Deep Owned','scene','s0420','Someone Else','2015-01-01')")  # page 5, linked by scene id only
@@ -13,6 +14,8 @@ c.commit()
 N, PER = 450, 100; calls = []
 def tp(path, tok, **k):
     if path == "/performers": return {"data": [{"id": "pb", "name": "Penny Barber", "extras": {"aliases": ["Penny Barbers"]}, "aliases": ["Penny Barbers"]}]}
+    if path.endswith("/movies"):
+        return {"data": [], "meta": {"total": 0, "last_page": 0, "current_page": 1}}
     if path.endswith("/scenes"):
         p = k.get("page", 1); calls.append(p)
         ids = range((p - 1) * PER, min(p * PER, N))
