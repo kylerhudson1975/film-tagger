@@ -5403,7 +5403,8 @@ def reports_ask():
     try:
         res = repmod.ask(c, q, chat, llm_seconds=llm_seconds, people_hint=people_hint)
     except Exception as e:
-        res = repmod.ask_fallback(q, notes=[type(e).__name__])
+        te = repmod._ai_transport_error(e)
+        res = repmod._msg(q, te, answer_from_error=True) if te else repmod.ask_fallback(q)
     if not res:
         res = repmod.ask_fallback(q, no_ai=not has_ai)
     if res.get("mode") == "sql":

@@ -62,6 +62,22 @@ assert "Do not add primary_genre" in schema
 assert "How many unwatched films do I have?" in schema
 assert "birthday" in schema and "by the time they were 20" in schema
 assert "strftime" in schema and "birth_year" in schema
+assert "height_cm" in schema and "152.4" in schema
+assert "Do NOT filter on a tag named 'porn stars'" in schema
+assert "Hardcore" in schema and "measurements" in schema
+# birthday is allowed in SQL (age-at-scene); writes and merged_into are not
+R.check_sql("SELECT p.birthday, height_cm(p.height) AS cm FROM people p WHERE height_cm(p.height) <= 152.4")
+try:
+    R.check_sql("INSERT INTO people(name) VALUES('x')")
+    raise AssertionError("insert should be rejected")
+except ValueError:
+    pass
+try:
+    R.check_sql("SELECT merged_into FROM people")
+    raise AssertionError("merged_into should be rejected")
+except ValueError:
+    pass
+
 
 # 2) the documented SQL works on the age-safe read-only connection
 rconn, everyone, safe = R._ro_conn(c)
@@ -151,5 +167,17 @@ r = cl.post("/api/reports/ask", json={"question": UNWATCHED_Q}).json
 assert r["mode"] == "sql" and "watched" in (r.get("sql") or ""), r
 assert r["rows"][0][0] == 1, r
 assert any("checking a SQLite query" in p for p in sent)
+
+
+# transport errors become a friendly message, never a raw exception name
+import io, urllib.error, email.message
+hdrs = email.message.Message()
+def boom(*a, **k):
+    raise urllib.error.HTTPError("https://api.groq.com/x", 403, "Forbidden", hdrs=hdrs, fp=io.BytesIO(b"{}"))
+app.ai_chat = boom
+r = cl.post("/api/reports/ask", json={"question": "Which porn stars in my library were in 80 or more scenes by the time they were 20 years old?"}).json
+assert r.get("answer_from_error") and "ValueError" not in json.dumps(r)
+assert "access denied" in r["answer"].lower() and "VPN" in r["answer"]
+assert r.get("notes") in (None, [],) or "ValueError" not in " ".join(r.get("notes") or [])
 
 print("OK test_ask_groq")

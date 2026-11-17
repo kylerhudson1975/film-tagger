@@ -306,7 +306,7 @@ import sqlite3, time
 SQL_MAX_ROWS, SQL_TIMEOUT = 200, 10.0
 _BAD = re.compile(r"\b(attach|detach|pragma|insert|update|delete|drop|create|alter|vacuum|reindex|analyze|"
                   r"load_extension|readfile|writefile|main|sqlite_master|sqlite_schema|sqlite_temp_master|cast_|"
-                  r"birthday|merged_into)\b", re.I)
+                  r"merged_into)\b", re.I)
 _ADULT_ON = "(kind IS NULL OR kind!='scene') AND primary_genre='Hardcore'"
 
 
@@ -329,6 +329,11 @@ def _ro_conn(c):
     path = _db_file(c)
     r = sqlite3.connect("file:" + path.replace("\\", "/").replace("?", "%3F") + "?mode=ro", uri=True, timeout=10)
     r.execute("PRAGMA busy_timeout=8000")
+    try:
+        import people as _people
+        r.create_function("height_cm", 1, _people.parse_height_cm, deterministic=True)
+    except Exception:
+        r.create_function("height_cm", 1, lambda v: None, deterministic=True)
     # Views, not copies: copying the whole films table was slow on a large library.
     cols = [x[1] for x in r.execute("PRAGMA table_info(films)") if x[1] != "cast_"]
     r.execute("CREATE TEMP VIEW films AS SELECT " + ",".join('"%s"' % x for x in cols) + " FROM main.films")
@@ -383,6 +388,18 @@ def sql_schema(c):
         " favorite is 0/1 (1 = starred in People → Favorites).\n"
         "  This people table only includes people with a known birth date; film_cast already lists"
         " only credits from when they were 18+.\n"
+        "  Other people columns: height TEXT (almost always like 170cm; may also be 162, 1.62 m,"
+        "  5 ft 4 in, or 64 in), measurements TEXT (for example 34B-24-34), ethnicity, nationality,"
+        "  gender, birthday, place, career. There is no weight column.\n"
+        "  Use height_cm(p.height) for centimetres (NULL if unreadable). Inches = height_cm(p.height)/2.54."
+        "  5 feet 0 inches = 60 in = 152.4 cm, so 5 ft 0 in or shorter is height_cm(p.height) <= 152.4.\n"
+        " - 'Porn stars' / 'porn performers' means people with a film_cast credit on an adult title"
+        " (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'') IN ('Hardcore','Softcore'))."
+        " Do NOT filter on a tag named 'porn stars' or any tag the user did not mention.\n"
+        " Q: How many porn stars are 5'0\" or shorter? -> SELECT COUNT(DISTINCT p.name) AS n FROM people p"
+        " WHERE height_cm(p.height) <= 152.4 AND EXISTS (SELECT 1 FROM film_cast fc JOIN films f ON f.id=fc.film_id"
+        " WHERE lower(fc.person)=lower(p.name) AND (COALESCE(f.kind,'')='scene' OR COALESCE(f.primary_genre,'')"
+        " IN ('Hardcore','Softcore')))\n"
         " tags(id, name, category); film_tags(film_id, tag_id, status) -- only count status='approved'\n"
         "Notes:\n"
         " - 'Classic Porn' / adult / porn *films* (not scenes, not performers) = films WHERE " + _ADULT_ON + "."
@@ -759,6 +776,25 @@ _ASK_STOPWORDS = frozenset({
     "unrated", "rated", "watched", "unwatched", "recently", "added", "newest",
     "item", "items", "entry", "entries", "name", "names", "person", "people",
 })
+
+
+def _ai_transport_error(e):
+    """Friendly message when the AI could not be reached; None if this is a normal SQL/parse error."""
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        if e.code in (401, 403):
+            return ("Couldn't reach the Ask a question AI (access denied). "
+                    "If a VPN is on, try turning it off and ask again.")
+        return f"Couldn't reach the Ask a question AI (HTTP {e.code}). Please try again."
+    name = type(e).__name__
+    msg = str(e) or ""
+    low = (name + " " + msg).lower()
+    if isinstance(e, (TimeoutError, urllib.error.URLError)) or "timed out" in low or "ran out of time" in low:
+        return "The Ask a question AI timed out. Please try again."
+    if "http error" in low or "access denied" in low:
+        return ("Couldn't reach the Ask a question AI (access denied). "
+                "If a VPN is on, try turning it off and ask again.")
+    return None
 
 
 def ask_fallback(question, notes=None, no_ai=False):
@@ -1434,7 +1470,8 @@ def ask(c, question, chat, llm_seconds=12, people_hint=True):
                 return orig_chat(prompt, *a, **k)
         res = _ask_sql(c, question, bounded, allow_fallback=not people, hint=hint)
     except Exception as e:
-        return ask_fallback(q, notes=[type(e).__name__])
+        te = _ai_transport_error(e)
+        return _msg(q, te, answer_from_error=True) if te else ask_fallback(q)
     if not res:
         return ask_fallback(q)
     if pre: res.setdefault("notes", [])[:0] = pre
@@ -1536,7 +1573,7 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
     except Exception as e:
         r, err = None, e
     prompt = sql_prompt(c, question, hint) if r else None
-    for attempt in range(2):
+    for attempt in range(3):
         if not r: break
         try:
             reading, sql = _parse_sql_reply(chat(prompt)); sql = fix_sql(sql)
@@ -1555,7 +1592,15 @@ def _ask_sql(c, question, chat, allow_fallback=True, hint=()):
                                      " (one row per film). Return a single row: SELECT COUNT(DISTINCT f.id) AS films ... with no GROUP BY")
             break
         except Exception as e:
-            err = e; tries.append(dict(sql=sql, error=str(e)))
+            err = e
+            te = _ai_transport_error(e)
+            if te:
+                try:
+                    r.close()
+                except Exception:
+                    pass
+                return _msg(question, te, answer_from_error=True)
+            tries.append(dict(sql=sql, error=str(e)))
             prompt = (sql_prompt(c, question, hint) + f"\n\nYour previous query was:\n{sql}\nIt failed with: {e}\nFix it. Reply with JSON only as before.")
     else:
         r = None

@@ -62,7 +62,7 @@ r = cl.post("/api/reports/ask", json={"question": "Which director has the most f
 assert r.status_code == 200 and r.json["direct"] and r.json["rows"][0][0] == "Dir One" and r.json["rows"][0][1] == 4, r.json
 r = cl.post("/api/reports/ask", json={"question": "hm?"})
 assert r.status_code == 200 and "couldn't answer that" in r.json["answer"].lower() and r.json.get("answer_from_error")
-# ask with AI (mocked). The AI first writes one read-only SELECT; a refused/failed query (here DROP TABLE, twice) falls
+# ask with AI (mocked). The AI first writes one read-only SELECT; a refused/failed query (here DROP TABLE, retried) falls
 # back to a whitelisted report spec. Only the question + schema/vocabulary is sent, never library rows.
 db.set_setting(c, "ai_url", "http://ai.invalid/v1"); db.set_setting(c, "ai_model", "m"); c.commit()
 sent = []
@@ -71,7 +71,7 @@ def fake(url, key, model, prompt, timeout=180, **kw):
     return '```json\n{"report":"directors","tag":"Blowjob","decade":"1970s","scope":"adult","sql":"DROP TABLE films"}\n```'
 app.ai_chat = fake
 r = cl.post("/api/reports/ask", json={"question": "Which 1970s porn director made the most films tagged Blowjob?"}).json
-assert r["mode"] == "spec" and len(r["sql_errors"]) == 2 and all("not allowed" in e["error"] or "Only SELECT" in e["error"] for e in r["sql_errors"]), r
+assert r["mode"] == "spec" and len(r["sql_errors"]) == 3 and all("not allowed" in e["error"] or "Only SELECT" in e["error"] for e in r["sql_errors"]), r
 assert r["rows"][0]["k"] == "Dir One" and "sql" not in r["spec"]
 assert "ONE SQLite SELECT" in sent[0] and "Question: Which 1970s porn director" in sent[-1] and '"Blowjob"' in sent[-1]
 assert not any("S1" in p for p in sent)  # no titles from the library are sent
