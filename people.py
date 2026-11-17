@@ -730,44 +730,6 @@ def init(app, tmdb, posters_dir):
                     label=site_label(site) if site else x.get("label"), slug=x.get("slug"),
                     thumb=posters.get("small") or x.get("poster") or x.get("image") or x.get("thumb"),
                     performers=_slim_tpdb_performers(x))
-    PRF = {}  # pid -> background first-open ThePornDB/TMDB profile lookup
-    PRF_LOCK = threading.Lock()
-    def profile_loading_now(pid):
-        return bool((PRF.get(pid) or {}).get("running"))
-    def start_profile_refresh(pid, tok, need_tpdb, fill_only, allow_image, refresh=False):
-        """Look up ThePornDB (and then start the scene list) in a background thread so the person page can render immediately."""
-        with PRF_LOCK:
-            if (PRF.get(pid) or {}).get("running"):
-                return
-            PRF[pid] = dict(running=True, error=None, phase="lookup", beat=time.time())
-        def run():
-            c2 = C()
-            st = PRF.get(pid) or {}
-            try:
-                row = c2.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
-                if not row:
-                    return
-                if need_tpdb and tok:
-                    st.update(phase="lookup", beat=time.time())
-                    import tpdb as tpdbmod
-                    try:
-                        tpdb_update(c2, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw),
-                                    allow_image=allow_image, fill_only=fill_only)
-                    except Exception as ex:
-                        st["error"] = type(ex).__name__
-                    row = c2.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone() or row
-                tpid = row["tpdb_performer_id"] if row["tpdb_performer_id"] not in (None, TPDB_NONE) else None
-                if tpid and tok:
-                    st.update(phase="scenes", beat=time.time())
-                    inc = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
-                    start_scene_load(pid, tok, tpid, force=bool(refresh), resume=bool(inc) and not refresh, priority=True)
-                elif not st.get("error") and tok and need_tpdb:
-                    st["error"] = "Not found on ThePornDB"
-            finally:
-                st["running"] = False
-                st["beat"] = time.time()
-                c2.close()
-        threading.Thread(target=run, daemon=True).start()
     def start_scene_load(pid, tok, perf_id, force=False, resume=False, priority=True):
         """Fetch /performers/{id}/scenes in a background thread, several pages at a time. The person page being viewed
         gets priority over background Credited-with loads. Each page is saved as it arrives; Insights is invalidated
@@ -1274,20 +1236,12 @@ def init(app, tmdb, posters_dir):
             if not tok: tp_note = "No ThePornDB token set."
             else:
                 stale = time.time() - (row["tpdb_fetched_at"] or 0) > STALE_S
-                need_tpdb = row["tpdb_performer_id"] is None or request.args.get("refresh") or (stale and row["tpdb_performer_id"] != TPDB_NONE)
-                if need_tpdb:
-                    # Do not block the page on ThePornDB: a stall left first-open on "Loading…" with no scenes.
-                    start_profile_refresh(pid, tok, True, fill_only=classic and row["source"] != "manual",
-                                          allow_image=not (set(lib_ids) & review_film_ids(c)),
-                                          refresh=bool(request.args.get("refresh")))
-                    if profile_loading_now(pid):
-                        tp_note = "Looking this person up on ThePornDB…"
-                elif profile_loading_now(pid):
-                    pr = PRF.get(pid) or {}
-                    tp_note = "Looking this person up on ThePornDB…" if pr.get("phase") == "lookup" else tp_note
-                    if pr.get("error"): tp_note = f"Could not reach ThePornDB ({pr['error']})."
-                # Pick up a lookup that finished between the last poll and this one
-                row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
+                if row["tpdb_performer_id"] is None or request.args.get("refresh") or (stale and row["tpdb_performer_id"] != TPDB_NONE):
+                    import tpdb as tpdbmod
+                    try: tpdb_update(c, tok, row, lambda path, **kw: tpdbmod.call_retry(path, tok, **kw), allow_image=not (set(lib_ids) & review_film_ids(c)),
+                                     fill_only=classic and row["source"] != "manual")
+                    except Exception as ex: tp_note = f"Could not reach ThePornDB ({type(ex).__name__})."
+                    row = c.execute("SELECT * FROM people WHERE id=?", (pid,)).fetchone()
         tpdb_linked = adult and row["tpdb_performer_id"] not in (None, TPDB_NONE)
         on_tpdb = tpdb_linked and row["source"] == "tpdb" and not classic  # ThePornDB-primary profile (scene performers)
         key = key_of(c)
@@ -1341,27 +1295,13 @@ def init(app, tmdb, posters_dir):
             load = SCN.get(pid)
             if load and load.get("running"):
                 scenes_loading = dict(done=load["done"], total=load["total"], pages=load["pages"], page=load["page"],
-                                      retry=load.get("retry") or 0, phase="scenes")
+                                      retry=load.get("retry") or 0)
             elif load and load.get("error"):
                 scenes_error = load["error"]
                 msg = (msg + " " if msg else "") + f"Could not load all ThePornDB scenes ({load['error']}); showing the list so far."
-            if scenes_loading is None and profile_loading_now(pid):
-                pr = PRF.get(pid) or {}
-                scenes_loading = dict(done=0, total=None, page=0, pages=None, retry=0, phase=pr.get("phase") or "lookup")
-            elif scenes_error is None and not scenes_loading:
-                pr = PRF.get(pid) or {}
-                if pr.get("error") and not (row["tpdb_scenes_json"] or "").strip():
-                    scenes_error = pr["error"]
-                    msg = (msg + " " if msg else "") + f"Could not reach ThePornDB ({pr['error']})."
             if row["tpdb_scenes_json"]:
                 scenes = [dict(title=x["title"], date=x["date"], studio=x["studio"], url=f"https://theporndb.net/scenes/{x.get('slug') or x['id']}",
                                film_id=None, thumb=x["thumb"], poster=None, cast=[p.get("name") for p in (x.get("performers") or []) if isinstance(p, dict) and p.get("name")], _ids=(str(x["id"]), str(x.get("_id") or "-"))) for x in json.loads(row["tpdb_scenes_json"])]
-        elif profile_loading_now(pid):
-            pr = PRF.get(pid) or {}
-            scenes_loading = dict(done=0, total=None, page=0, pages=None, retry=0, phase=pr.get("phase") or "lookup")
-        elif (PRF.get(pid) or {}).get("error"):
-            scenes_error = PRF[pid]["error"]
-            msg = (msg + " " if msg else "") + f"Could not reach ThePornDB ({scenes_error})."
         if adult:  # ThePornDB scene lists cached on alias / merged people rows (another performer id for the same person)
             others = [fold(n) for n in db.expand_person(c, row["name"])][1:]
             if others:
