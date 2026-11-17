@@ -2217,6 +2217,7 @@ function coChips(only){const l=coRecent().filter(x=>!only||x.ids.includes(only))
 /* person page field: 'Credited with…' + autocomplete (people sorted by titles shared with this person; aliases match) */
 function coField(p){return `<div class=co-pfield><div class=co-in><label>Credited with…</label><div class=co-box>${dIc('search',15)}<input id=coIn placeholder="type another person's name" autocomplete=off oninput="coSug(${p.id})" onfocus="coSug(${p.id})" onkeydown="coKey(event,${p.id})" onblur="setTimeout(()=>{const a=$('coAc');if(a)a.style.display='none'},180)"><kbd>Enter</kbd></div><div id=coAc class=co-ac style="display:none"></div></div>${coChips(p.id)}</div>`}
 async function coSug(pid){const el=$('coIn');if(!el)return;CO.base=pid;const q=el.value.trim(),t=++CO.st;
+ CO.sug=[];CO.si=0;const a=$('coAc');if(a&&q){a.innerHTML='<div class=nc><span class=muted>Searching…</span></div>';a.style.display=''}
  let r;try{r=await api('/api/people/cocredit/suggest?'+new URLSearchParams({pid,q,limit:8}))}catch(e){return}
  if(t!==CO.st||!$('coAc'))return;CO.sug=r.people;CO.sugLoad=!!r.loading;CO.si=0;coSugDraw(q)}
 function coSugDraw(q){const a=$('coAc');if(!a)return;const ws=(q||'').toLowerCase().split(/\s+/).filter(Boolean);
@@ -2238,7 +2239,8 @@ async function showCo(ids,opt={}){ids=[...new Set(ids.map(Number))].slice(0,3);c
  const need=d.people.filter(p=>!p.fetched);
  if(need.length&&!opt.fetched){$('content').innerHTML=`<div class=dsh><p class=muted>Loading ${need.map(p=>esc(p.name)).join(' and ')}'s filmography (same as opening their page)…</p></div>`;
   await Promise.all(need.map(p=>api('/api/person/'+p.id).catch(()=>null)));if(S.page!==pg)return;return showCo(ids,{...opt,nohist:true,fetched:true})}
- CO.d=d;if(d.people.length>1)coRecentAdd(d);const st=$('content').scrollTop;renderCo();if(opt.keep)$('content').scrollTop=st}
+ CO.d=d;if(d.people.length>1)coRecentAdd(d);const st=$('content').scrollTop;renderCo();if(opt.keep)$('content').scrollTop=st;
+ if(d.loading&&S.page===pg){clearTimeout(CO.loadT);CO.loadT=setTimeout(()=>{if(S.page===pg)showCo(ids,{...opt,nohist:true,keep:true,fetched:true})},3000)}}
 function coSwap(){const c=CO.ids;showCo(c.length==2?[c[1],c[0]]:[c[1],c[2],c[0]])}
 function coSet(k,v){CO[k]=v;const st=$('content').scrollTop;renderCo();$('content').scrollTop=st}
 function coList(add={}){dshGo({cocredit:CO.ids.join(','),...add})}

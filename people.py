@@ -691,9 +691,11 @@ def init(app, tmdb, posters_dir):
                         if tot is not None and len(allsc) >= int(tot):
                             save(True); return
                         page = len(allsc) // 100 + 1
+                stalls = 0
                 while page <= TPDB_MAX_PAGES:
                     try:
                         r = tpdbmod.call_retry(f"/performers/{perf_id}/scenes", tok, per_page=100, page=page)
+                        stalls = 0
                     except urllib.error.HTTPError as ex:
                         # A page past last_page can return 401 Unauthenticated; stop cleanly if the list is already complete.
                         if ex.code in (401, 403, 404) and (
@@ -702,6 +704,12 @@ def init(app, tmdb, posters_dir):
                         ):
                             st.update(done=len(allsc)); save(True); break
                         raise
+                    except (urllib.error.URLError, TimeoutError):
+                        stalls += 1
+                        if stalls >= 10:
+                            raise
+                        time.sleep(min(20, 2 * stalls))
+                        continue
                     d = r.get("data") or []
                     new = [x for x in d if str(x.get("id") or "") not in seen]
                     seen |= {str(x.get("id") or "") for x in d if x.get("id") is not None}
@@ -711,10 +719,14 @@ def init(app, tmdb, posters_dir):
                     st.update(done=len(allsc), page=page, pages=int(last) if last else None,
                               total=int(tot) if tot is not None else None)
                     have_all = st["total"] is not None and len(allsc) >= st["total"]
-                    final = (not d or not new or have_all or (last and page >= int(last))
-                             or (not last and len(d) < 100) or page >= TPDB_MAX_PAGES)
+                    known_last = bool(last) and page >= int(last)
+                    # An empty or repeated page is not the end if ThePornDB still reports more pages/items.
+                    more = (st["total"] is not None and len(allsc) < st["total"]) or (last and page < int(last))
+                    final = have_all or known_last or page >= TPDB_MAX_PAGES or (not more and (not d or not new or len(d) < 100))
                     save(final)
                     if final: break
+                    if not d or not new:
+                        page += 1; continue
                     page += 1
             except Exception as ex:
                 st["error"] = f"ThePornDB HTTP {ex.code}" if isinstance(ex, urllib.error.HTTPError) else type(ex).__name__
@@ -1096,7 +1108,10 @@ def init(app, tmdb, posters_dir):
         if tpdb_linked:
             tok = db.get_setting(c, "tpdb_key", "") or ""
             refresh, scenes_retry = request.args.get("refresh"), request.args.get("scenes_retry")
-            incomplete = bool(row["tpdb_scenes_json"]) and (row["tpdb_scenes_at"] or 0) == 0
+            try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
+            except Exception: _nsc = 0
+            incomplete = bool(row["tpdb_scenes_json"]) and (
+                (row["tpdb_scenes_at"] or 0) == 0 or ((row["tpdb_scenes_total"] or 0) > _nsc))
             stale = time.time() - (row["tpdb_scenes_at"] or 0) > STALE_S
             if tok and (not row["tpdb_scenes_json"] or refresh or scenes_retry or incomplete or stale):
                 start_scene_load(pid, tok, row["tpdb_performer_id"], force=bool(refresh or scenes_retry),
@@ -1771,6 +1786,27 @@ def init(app, tmdb, posters_dir):
         for p in P:
             for k, it in p["items"].items():
                 if k[0] == "P": allp.setdefault(k, it)
+        def _item_sids(k, it):
+            out = []
+            for v in (k[1:] if k and k[0] == "P" else None, it.get("id"), it.get("_id")):
+                s = str(v or "").strip()
+                if s and s not in out: out.append(s)
+            return out
+        # Index every cached ThePornDB scene by id, so two people share a scene even when
+        # ThePornDB's performer list on one of their pages is incomplete (often only the page owner).
+        by_sid = {}
+        for p in P:
+            for k, it in p["items"].items():
+                if k[0] != "P": continue
+                for sid in _item_sids(k, it):
+                    by_sid.setdefault(sid, []).append((p, k, it))
+        shared_ids = {sid for sid, hits in by_sid.items() if len({id(h[0]) for h in hits}) == len(P)}
+        for sid in shared_ids:
+            sample = next(it for _, _, it in by_sid[sid])
+            k0 = next((k for _, k, _ in by_sid[sid] if k[0] == "P"), "P" + sid)
+            for p in P:
+                if k0 not in p["items"] and not any(s in _item_sids(k, it) for k, it in p["items"].items() if k[0] == "P" for s in [sid]):
+                    p["items"][k0] = dict(sample, roles=[], xroles=list(sample.get("xroles") or ["Performer"]))
         for k, it in allp.items():
             if all((k in p["items"]) or (_perf_keys(it.get("performers")) & p["keys"]) for p in P):
                 for p in P:
@@ -1852,7 +1888,21 @@ def init(app, tmdb, posters_dir):
         with stats. Adult titles count only when every compared person has a known birth date and was 18+ at release."""
         pids = co_pids(request.args.get("ids"))
         if len(pids) < 2: return jsonify(error="Give two or three person ids, e.g. ids=12,34"), 400
-        c = C(); d = cocredit_data(c, pids)
+        c = C()
+        tok = db.get_setting(c, "tpdb_key", "") or ""
+        if tok:
+            for pid in pids:
+                row = co_canon(c, pid)
+                if not row: continue
+                tpid = row["tpdb_performer_id"] if row["tpdb_performer_id"] not in (None, TPDB_NONE) else None
+                if not tpid: continue
+                try: _nsc = len(json.loads(row["tpdb_scenes_json"] or "[]"))
+                except Exception: _nsc = 0
+                incomplete = bool(row["tpdb_scenes_json"]) and (
+                    (row["tpdb_scenes_at"] or 0) == 0 or ((row["tpdb_scenes_total"] or 0) > _nsc))
+                if incomplete or not row["tpdb_scenes_json"]:
+                    start_scene_load(row["id"], tok, tpid, force=True, resume=bool(incomplete))
+        d = cocredit_data(c, pids)
         if d is None: return jsonify(error="Unknown person"), 404
         P = d["people"]
         def prof(p):

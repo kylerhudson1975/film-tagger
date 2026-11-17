@@ -40,4 +40,16 @@ assert all(not r["in_library"] for r in d["rows"])
 # library pair still works
 d2 = cl.get(f"/api/people/cocredit?ids={pid['Lead Star']},{pid['Library Co']}").json
 assert {r["title"] for r in d2["rows"]} == {"Owned Together"} and d2["in_library"] == 1
+# Shared scene id is enough even when the other person is missing from a cached performer list
+c.execute("INSERT INTO people(name,name_norm,birthday,tpdb_scenes_json,tpdb_scenes_at) VALUES('Id Only','id only','1990-02-02',?,1)",
+          (json.dumps([dict(id="s-idonly", title="Id Only Scene", date="2021-01-01", studio="S", slug="id-only",
+                           performers=[dict(name="Id Only", aliases=[], birthday="1990-02-02")])]),))
+# Lead's cache already has no such scene; add it WITHOUT listing Id Only on the cast
+lead = json.loads(c.execute("SELECT tpdb_scenes_json FROM people WHERE name='Lead Star'").fetchone()[0])
+lead.append(dict(id="s-idonly", title="Id Only Scene", date="2021-01-01", studio="S", slug="id-only",
+                 performers=[dict(name="Lead Star", aliases=[], birthday="1990-01-01")]))
+c.execute("UPDATE people SET tpdb_scenes_json=? WHERE name='Lead Star'", (json.dumps(lead),)); c.commit()
+iid = cl.get("/api/person/lookup?name=Id Only").json["id"]
+d3 = cl.get(f"/api/people/cocredit?ids={pid['Lead Star']},{iid}").json
+assert "Id Only Scene" in [r["title"] for r in d3["rows"]], [r["title"] for r in d3["rows"]]
 print("ok")
