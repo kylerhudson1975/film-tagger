@@ -31,8 +31,11 @@ class ToClassic(unittest.TestCase):
         self.assertTrue(os.path.exists(self.old)); self.assertEqual(self.row()["kind"], "scene")
 
     def test_move_keeps_record_and_scan_adds_no_duplicate(self):
+        self.c.execute("UPDATE films SET added_at=1000 WHERE id=?", (self.fid,)); self.c.execute("INSERT INTO films(title,added_at) VALUES('Newer',?)", (time.time() - 5,)); self.c.commit(); t0 = time.time()
         r = self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(title="Behind the Green Door", year="1972"))
         self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertGreaterEqual(self.row()["added_at"], t0)  # date added = when it joined Classic Porn
+        self.assertEqual(self.cl.get("/api/films", query_string=dict(sort="added", order="desc", limit=1)).get_json()["films"][0]["id"], self.fid)
         new = os.path.join(self.cr, "Behind the Green Door (1972)", "Behind the Green Door (1972).mp4")
         self.assertTrue(os.path.isfile(new)); self.assertFalse(os.path.exists(self.old))
         self.assertTrue(os.path.isfile(new[:-4] + ".en.srt")); self.assertFalse(os.path.isdir(os.path.dirname(self.old)))  # empty studio folder dropped

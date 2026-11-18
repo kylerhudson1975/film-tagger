@@ -4064,9 +4064,9 @@ def move_scene_to_classic(c, fid, title, year):
     mkvtag.ensure_table(c); c.execute("UPDATE mkv_meta SET path=? WHERE file_id=?", (m["new"], m["file_id"]))
     ed = [k for k in json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0]) or "[]") if k not in ("title", "year", "release_date")]
     gal = m["gallery"][1] if m["gallery"] and (m["gallery"][0], m["gallery"][1]) in moved else None
-    c.execute(f"UPDATE films SET {SCENE_ONLY_CLEAR}, title=?, year=?, storage=?, edited_fields=?, updated_at=?"
+    c.execute(f"UPDATE films SET {SCENE_ONLY_CLEAR}, title=?, year=?, storage=?, edited_fields=?, updated_at=?, added_at=?"
               + (", gallery_path=?" if gal else "") + " WHERE id=?",
-              [m["title"], m["year"], os.path.splitdrive(m["new"])[0] or None, json.dumps(ed), time.time()] + ([gal] if gal else []) + [fid])
+              [m["title"], m["year"], os.path.splitdrive(m["new"])[0] or None, json.dumps(ed), time.time(), time.time()] + ([gal] if gal else []) + [fid])
     c.commit()
     try:
         with open(os.path.join(os.path.dirname(m["folder"]), "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh:
