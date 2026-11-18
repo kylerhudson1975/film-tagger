@@ -819,9 +819,9 @@ def posteredit_save(fid):
     if data is None: return jsonify(error=ext), 400
     if d.get("upscale"):  # edit the AI-upscaled preview instead (the previous poster is still backed up below)
         import upscale as upmod
-        up = upmod.result(d["upscale"], f"poster:{fid}:{cur}")
-        if not up: return jsonify(error="The upscaled preview is gone or the poster changed; run Upscale again"), 400
-        with open(up, "rb") as fh: data = fh.read()
+        up = upmod.result_image(d["upscale"], f"poster:{fid}:{cur}", d.get("detail"))
+        if up is None: return jsonify(error="The upscaled preview is gone or the poster changed; run Upscale again"), 400
+        buf = io.BytesIO(); up.save(buf, "PNG"); data = buf.getvalue()
     img = pe_decode(data)
     if img is None: return jsonify(error="Could not read the poster"), 400
     if img.shape[0] * img.shape[1] > POSTER_SRC_PIXELS: return jsonify(error="Image has too many pixels"), 413
@@ -5146,7 +5146,12 @@ def upscale_image(token):
     import upscale as upmod
     j = upmod.JOBS.get(token)
     if not j or j.get("state") != "done": return jsonify(error="not ready"), 404
-    return send_file(j["path"], mimetype="image/png", max_age=0)
+    im = upmod.result_image(token, j["key"], request.args.get("detail", 0))  # ?detail=0..100: texture blend preview
+    if im is None: return jsonify(error="not ready"), 404
+    buf = io.BytesIO()
+    if im.mode == "RGBA": im.save(buf, "PNG", compress_level=1); mt = "image/png"
+    else: im.convert("RGB").save(buf, "JPEG", quality=92); mt = "image/jpeg"
+    return Response(buf.getvalue(), mimetype=mt, headers={"Cache-Control": "no-store"})
 
 @app.post("/api/films/<int:fid>/gallery/adjust/revert")
 def film_gallery_adjust_revert(fid):

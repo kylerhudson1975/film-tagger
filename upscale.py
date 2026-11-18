@@ -77,6 +77,8 @@ def _work(token, src, scale):
         with Image.open(raw) as im4:
             out = im4.resize((max(1, round(w * target)), max(1, round(h * target))), Image.LANCZOS) if round(w * target) != im4.size[0] else im4.copy()
         dest = os.path.join(tmp_dir(), token + ".png"); out.save(dest)
+        with Image.open(inp) as im0:  # plain Lanczos upscale of the original: source of the 'Detail' texture blend
+            im0.resize(out.size, Image.LANCZOS).save(os.path.join(tmp_dir(), token + "-lz.png"))
         for p in (inp, raw):
             try: os.remove(p)
             except OSError: pass
@@ -85,6 +87,37 @@ def _work(token, src, scale):
         job.update(state="error", error=str(e))
     finally:
         job["secs"] = round(time.time() - job["started"], 1)
+
+DETAIL_DEFAULT = 50   # % of the original's fine texture (grain, skin) put back on top of the AI result
+DETAIL_CLIP = 24      # max per-pixel change from the texture layer: keeps grain, suppresses halos at strong edges
+
+def parse_detail(v):
+    try: return max(0.0, min(100.0, float(v)))
+    except (TypeError, ValueError): return float(DETAIL_DEFAULT)
+
+def blend(ai, lz, detail, scale):
+    """AI result + detail% x clipped high-pass of the Lanczos upscale (lanczos - blur(lanczos)). PIL images, same size."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    s = parse_detail(detail) / 100.0
+    if s <= 0: return ai
+    mode = ai.mode; alpha = ai.getchannel("A") if mode == "RGBA" else None
+    a = np.asarray(ai.convert("RGB"), dtype=np.float32); l = lz.convert("RGB")
+    hp = np.asarray(l, dtype=np.float32) - np.asarray(l.filter(ImageFilter.GaussianBlur(max(1.0, 0.6 * float(scale or 1)))), dtype=np.float32)
+    out = Image.fromarray(np.clip(a + s * np.clip(hp, -DETAIL_CLIP, DETAIL_CLIP), 0, 255).astype(np.uint8), "RGB")
+    if alpha is not None: out.putalpha(alpha)
+    return out
+
+def result_image(token, key, detail=DETAIL_DEFAULT):
+    """The finished upscale (made from `key`) with the Detail blend applied, as a PIL image; None if gone/mismatched."""
+    from PIL import Image
+    p = result(token, key)
+    if not p: return None
+    lzp = p[:-4] + "-lz.png"
+    with Image.open(p) as ai:
+        ai.load()
+        if not os.path.isfile(lzp): return ai.copy()
+        with Image.open(lzp) as lz: return blend(ai, lz, detail, JOBS[token].get("scale"))
 
 def cleanup():
     try:

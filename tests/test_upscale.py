@@ -16,7 +16,8 @@ def fake_run(fail_gpus=()):
     def run(exe, src, out, gpu, job):
         calls.append(gpu)
         if gpu in fail_gpus: return 1, LIST + "vkQueueSubmit failed\n"
-        with Image.open(src) as im: im.resize((im.size[0] * 4, im.size[1] * 4)).save(out)
+        from PIL import ImageFilter
+        with Image.open(src) as im: im.resize((im.size[0] * 4, im.size[1] * 4)).filter(ImageFilter.GaussianBlur(3)).save(out)  # 'waxy' AI
         return 0, LIST + "50.00%\n"
     return run, calls
 
@@ -68,5 +69,21 @@ class Upscale(unittest.TestCase):
         os.environ["FILMTAGGER_REALESRGAN"] = os.path.join(self.d, "nope.exe")
         j = self.wait(U.start(self.img, 2)); self.assertIn("not installed", j["error"])
         with self.assertRaises(ValueError): U.start(self.img, 3)
+
+    def test_detail_blend_puts_texture_back_without_halos(self):
+        import numpy as np
+        rng = np.random.default_rng(1); a = (128 + rng.normal(0, 30, (150, 100, 3))).clip(0, 255).astype("uint8")
+        Image.fromarray(a, "RGB").save(self.img)
+        with mock.patch.object(U, "_run", fake_run()[0]):
+            t = U.start(self.img, 4); self.wait(t)
+        key = os.path.normcase(os.path.abspath(self.img))
+        hp = lambda im: float(np.std(np.asarray(im, dtype=np.float32) - np.asarray(im.filter(__import__("PIL.ImageFilter").ImageFilter.GaussianBlur(2)), dtype=np.float32)))
+        i0, i50, i100 = (U.result_image(t, key, d) for d in (0, 50, 100))
+        self.assertLess(hp(i0), hp(i50)); self.assertLess(hp(i50), hp(i100))  # more detail = more fine texture
+        diff = np.abs(np.asarray(i100, dtype=np.int16) - np.asarray(i0, dtype=np.int16)).max()
+        self.assertLessEqual(diff, U.DETAIL_CLIP + 1)  # the texture layer is clipped (no edge halos)
+        self.assertEqual(U.parse_detail("x"), U.DETAIL_DEFAULT); self.assertEqual(U.parse_detail(500), 100)
+        r, st = G.handle(self.d, "a.jpg", "save", {"upscale": t, "detail": 0}); self.assertEqual(st, 200)
+        with Image.open(self.img) as im: self.assertEqual(im.size, (400, 600))
 
 if __name__ == "__main__": unittest.main()

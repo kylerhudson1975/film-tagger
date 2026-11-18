@@ -795,7 +795,7 @@ function peDraw(){const g=S.pe,cv=$('peCv');if(!g||!cv)return;const st=$('peStag
  if(peToneOn(p)){const sx=Math.max(0,Math.round(c.x*k)),sy=Math.max(0,Math.round(c.y*k)),sw=Math.max(1,Math.min(cw-sx,Math.round(c.w*k))),sh=Math.max(1,Math.min(ch-sy,Math.round(c.h*k)));
   try{const id=x.getImageData(sx,sy,sw,sh);x.putImageData(geApply(id,sw,sh,p),sx,sy)}catch(e){}}
  const s=g.max>0?Math.min(1,g.max/Math.max(c.w,c.h)):1,rw=Math.max(1,Math.round(c.w*s)),rh=Math.max(1,Math.round(c.h*s));
- const bits=[];if(g.rot)bits.push(`rotated ${g.rot*90}°`);if(g.flip)bits.push('flipped');if(g.up)bits.push(`AI upscaled ${g.upScale}×${g.upNote?' ('+esc(g.upNote)+')':''}`);if(peToneOn(p))bits.push('tone adjusted');
+ const bits=[];if(g.rot)bits.push(`rotated ${g.rot*90}°`);if(g.flip)bits.push('flipped');if(g.up)bits.push(`AI upscaled ${g.upScale}×, detail ${g.detail}%${g.upNote?' ('+esc(g.upNote)+')':''}`);if(peToneOn(p))bits.push('tone adjusted');
  $('peMsg').innerHTML=`Result: <b>${c.w}×${c.h}px</b>${s<1?` → saved as ${rw}×${rh}px (shrunk to ${g.max}px long side)`:''} · ${(g.ext||'').toLowerCase()=='png'?'PNG':'JPEG q95'}${bits.length?' · '+bits.join(' · '):''}`+
   (g.small&&c.w<g.small?` <span style="color:#fc6">⚠ Under ${g.small}px wide: this poster will look soft when shown large.</span>`:'')}
 function peDown(e){const g=S.pe;if(!g)return;e.preventDefault();const h=e.target.dataset.h||'',c0={...g.crop},sx=e.clientX,sy=e.clientY,W=peOW(),H=peOH();
@@ -808,7 +808,7 @@ function peDown(e){const g=S.pe;if(!g)return;e.preventDefault();const h=e.target
   w=Math.round(w);hh=Math.round(hh);g.crop={w,h:hh,x:h.includes('w')?ax-w:ax,y:h.includes('n')?ay-hh:ay};peDraw()};
  const up=()=>{removeEventListener('pointermove',mv);removeEventListener('pointerup',up)};addEventListener('pointermove',mv);addEventListener('pointerup',up)}
 async function peSave(){const g=S.pe;if(!g||g.busy||g.upBusy)return;g.busy=true;if($('peSave'))$('peSave').disabled=true;
- const body={rot:g.rot,flip:g.flip,crop:g.crop,...peToneParams(),...(g.up?{upscale:g.up}:{})};
+ const body={rot:g.rot,flip:g.flip,crop:g.crop,...peToneParams(),...(g.up?{upscale:g.up,detail:g.detail}:{})};
  try{if(g.mode=='gallery'){const gal=S.gal;const r=await api(`${gal.base}/adjust`,{method:'POST',body:{name:g.name,...body}});
    gal.bust=gal.bust||{};if(r.v)gal.bust[g.name]=r.v;
    if(S.ppGal&&S.ppGal.pid===gal.id){S.ppGal.bust=S.ppGal.bust||{};if(r.v)S.ppGal.bust[g.name]=r.v;const x=$('ppGal');if(x&&S.ppData)x.innerHTML=ppGalHtml(S.ppData.person)}
@@ -823,9 +823,14 @@ async function peUpscale(scale){const g=S.pe;if(!g||g.busy||g.upBusy)return;
  busy(true);const sp='◐◓◑◒';let i=0;
  while(S.pe===g){let j;try{j=await api('/api/upscale/'+t)}catch(e){busy(false);return}
   if(j.state=='done'){g.up=t;g.upScale=j.scale;g.upNote=j.note||'';g.W=j.width;g.H=j.height;
-   g.img.onload=()=>{busy(false);peReset();toast(`Upscaled to ${j.width}×${j.height} in ${j.secs}s on ${j.gpu||'GPU'}`)};g.img.src='/api/upscale/'+t+'/image';return}
+   g.detail=g.detail==null?50:g.detail;peDetailCtl();
+   g.img.onload=()=>{busy(false);peReset();toast(`Upscaled to ${j.width}×${j.height} in ${j.secs}s on ${j.gpu||'GPU'}`)};g.img.src='/api/upscale/'+t+'/image?detail='+g.detail;return}
   if(j.state=='error'){busy(false);$('peMsg').innerHTML=`<span style="color:#f88">Upscale failed: ${esc(j.error||'')}</span>`;return}
   $('peMsg').textContent=`${sp[i++%4]} AI upscaling ${scale}× on ${j.gpu||'GPU'}… ${j.progress||0}%`;await new Promise(r=>setTimeout(r,700))}}
+function peDetailCtl(){if($('pe_detail'))return;const c=$('peCtrls');if(!c)return;
+ c.insertAdjacentHTML('beforeend',`<label for=pe_detail title="Puts the original's fine texture (grain, skin pores) back on top of the AI upscale. 0% = pure AI (smoothest)">Detail</label><input id=pe_detail type=range min=0 max=100 step=5 value="${S.pe.detail}" oninput="peDetailInput()"><span class=ge-val id=pe_detailv>${S.pe.detail}%</span>`)}
+function peDetailInput(){const g=S.pe;if(!g||!g.up)return;g.detail=+$('pe_detail').value;$('pe_detailv').textContent=g.detail+'%';clearTimeout(g.detT);
+ g.detT=setTimeout(()=>{if(S.pe!==g)return;g.img.onload=()=>peDraw();g.img.src='/api/upscale/'+g.up+'/image?detail='+g.detail},250)}
 async function peRestore(){const g=S.pe;if(!g||!confirm('Put back the previous poster?'))return;
  try{const f=await api(`/api/films/${g.id}/findposters/restore`,{method:'POST',body:{}});peClose();if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Previous poster restored')}catch(e){}}
 async function peRevert(){const g=S.pe,gal=S.gal;if(!g||!gal||!confirm('Put back the original photo? Your saved adjustments to this photo will be undone.'))return;

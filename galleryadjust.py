@@ -326,11 +326,10 @@ def adjust(path, params):
     up = (params or {}).get("upscale")
     if up:  # AI-upscaled preview (upscale.py): edit those pixels instead; the original is still backed up first
         import upscale as upmod
-        src = upmod.result(up, path)
-        if not src:
-            return None, "The upscaled preview is gone or was made from another photo; run Upscale again"
         try:
-            im = open_image(src)
+            im = upmod.result_image(up, path, (params or {}).get("detail"))
+            if im is None:
+                return None, "The upscaled preview is gone or was made from another photo; run Upscale again"
             ensure_original(path)
             save_image(apply_edit(im, rot=g["rot"], flip=g["flip"], crop=g["crop"], **p), path)
         except Exception as e:
