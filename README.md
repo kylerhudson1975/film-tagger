@@ -7,7 +7,21 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.4.2](#whats-new-in-v142) · [What's new in v1.4.1](#whats-new-in-v141) · [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.4.3](#whats-new-in-v143) · [What's new in v1.4.2](#whats-new-in-v142) · [What's new in v1.4.1](#whats-new-in-v141) · [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.4.3
+AI upscaling in the image editor, scroll-wheel zoom, a one-click fix for videos filed as scenes by mistake, and an orange flag you can trust.
+
+### Image editor
+- **✨ Upscale 2× / 4×** (Edit poster and gallery Edit) uses [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) on your own graphics card, with no cloud service. You see a preview first, and nothing changes until you Save. The original is always kept.
+- A **Detail** slider (shown after an upscale) brings back the original's grain and skin texture if the AI result looks too smooth.
+- Real-ESRGAN isn't bundled. On Windows, the first click on Upscale offers to download the official release (about 45 MB). Its size and SHA-256 are checked before it's unpacked into the Film Tagger data folder.
+- **Scroll-wheel zoom** toward the mouse pointer in the image editor, on the poster in the Edit window, and on person page and Needs ethnicity photos. Drag to pan, and double-click to fit. In the image editor, when you're zoomed in, a plain drag pans, Shift+drag moves the crop box, and the corners still resize it.
+
+### Porn Scenes
+- **The orange flag now means one thing:** the file isn't at its standard name and studio folder yet. No flag means the file really was renamed. Hover over the flag to see why.
+- The Sort menu has **Soft Matches (Orange flag)** and **Hard Matches**.
+- **Not a scene: move to Classic Porn** (scene Edit window) moves a full film filed as a scene into `Classic Porn\Title (Year)\` in one step. The same entry keeps its rating, tags, cast and watched status, gets a TMDB match, and its Date added becomes the time of the move. You don't need to copy, delete or rescan anything.
 
 ## What's new in v1.4.2
 A Saturation slider in the shared image editor, Ask a question removed from Reports and Settings, and cleaner tags and ethnicity labels.
