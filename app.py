@@ -3968,6 +3968,135 @@ def rename_scene_file(c, fid):
         mkv = mkv_after_rename(c, fid)
     return n, note, mkv
 
+# ---------- Not a scene: move a mis-filed full film from Porn Scenes into Classic Porn (same record, no rescan) ----------
+SCENE_ONLY_CLEAR = "kind=NULL, tpdb_id=NULL, rename_pending=0, release_date=NULL, tmdb_id=NULL, tmdb_status=NULL"
+
+def classic_root(c):
+    """The Classic Porn library root (a movie root whose path names 'Classic Porn'), or None."""
+    return next((r for r in (db.get_setting(c, "roots", []) or []) if r and "classic porn" in str(r).replace("/", "\\").lower()), None)
+
+def to_classic_prefill(c, fid):
+    f = c.execute("SELECT title, year, release_date FROM films WHERE id=?", (fid,)).fetchone()
+    p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
+    gt, gy = db.guess_title_year(p[0]) if p and p[0] else (None, None)
+    title = (f["title"] or "").strip() or gt or ""
+    year = f["year"] or (int(f["release_date"][:4]) if (f["release_date"] or "")[:4].isdigit() else None) or gy
+    return title, year
+
+def plan_to_classic(c, fid, title, year):
+    """-> (plan dict, error). Checks everything first; nothing is touched here."""
+    f = c.execute("SELECT kind FROM films WHERE id=?", (fid,)).fetchone()
+    if not f: return None, "not found"
+    if f["kind"] != "scene": return None, "This item is not a porn scene"
+    root = classic_root(c)
+    if not root or not os.path.isdir(root): return None, "No reachable Classic Porn library folder in Settings"
+    try: year = int(year) if str(year or "").strip() else None
+    except ValueError: return None, "Year must be a number"
+    std = movie_std_name(title, year)
+    if not std: return None, "A title is needed"
+    rows = c.execute("SELECT id, path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall()
+    if len(rows) != 1: return None, "Only a scene with exactly one video file can be moved"
+    old = rows[0]["path"]
+    if not old or not os.path.isfile(old): return None, f"File missing or not reachable: {old}"
+    folder = os.path.join(root, std); new = os.path.join(folder, std + os.path.splitext(old)[1].lower())
+    if os.path.exists(folder): return None, f"Name collision: folder already exists: {folder}"
+    if c.execute("SELECT 1 FROM files WHERE path=?", (new,)).fetchone(): return None, f"Name collision: already in the library: {new}"
+    try:
+        with open(old, "r+b"): pass  # locked/in use (or read-only) -> refuse before anything moves
+    except OSError as e: return None, f"File is in use or locked: {e}"
+    st, dd = os.path.splitext(os.path.basename(old))[0], os.path.dirname(old)
+    side = [(os.path.join(dd, y), os.path.join(folder, std + y[len(st):])) for y in os.listdir(dd)
+            if y.lower().startswith(st.lower() + ".") and os.path.normcase(os.path.join(dd, y)) != os.path.normcase(old)
+            and os.path.isfile(os.path.join(dd, y))]
+    _, gd = gallerymod.find(old, db.VIDEO_EXT)
+    return dict(file_id=rows[0]["id"], old=old, new=new, folder=folder, sidecars=side, gallery=(gd, gallerymod.canonical_dir(new)) if gd else None,
+                title=title.strip(), year=year), None
+
+def _move(a, b):
+    """Atomic rename on the same drive; otherwise copy, check the size, then delete the source."""
+    import shutil
+    if db.same_drive(a, b): os.rename(a, b); return
+    if os.path.isdir(a): shutil.copytree(a, b)
+    else:
+        shutil.copy2(a, b)
+        if os.path.getsize(a) != os.path.getsize(b): os.remove(b); raise OSError(f"Copy size mismatch: {b}")
+    try: shutil.rmtree(a) if os.path.isdir(a) else os.remove(a)
+    except OSError:
+        shutil.rmtree(b, ignore_errors=True) if os.path.isdir(b) else os.remove(b); raise
+
+def move_scene_to_classic(c, fid, title, year):
+    """Move the video (+ same-name sidecars and its gallery) into '<Classic Porn>/<Title (Year)>/<Title (Year)>.ext' and turn
+    the SAME record into a Classic Porn film (rating, watched, tags, people, poster kept; ThePornDB scene fields cleared).
+    -> (plan, error). On any error before the video moves, nothing has changed."""
+    m, err = plan_to_classic(c, fid, title, year)
+    if err: return None, err
+    os.makedirs(m["folder"])
+    try: _move(m["old"], m["new"])
+    except OSError as e:
+        try: os.rmdir(m["folder"])
+        except OSError: pass
+        return None, f"Could not move the file (nothing changed): {e}"
+    moved = [(m["old"], m["new"])]
+    for a, b in m["sidecars"] + ([m["gallery"]] if m["gallery"] else []):
+        try:
+            if os.path.exists(a) and not os.path.exists(b): _move(a, b); moved.append((a, b))
+        except OSError: pass  # the video moved; a stuck sidecar stays where it was
+    c.execute("UPDATE files SET path=?, missing=0 WHERE id=?", (m["new"], m["file_id"]))
+    c.execute("UPDATE OR IGNORE sub_probe SET path=? WHERE path=?", (m["new"], m["old"]))
+    mkvtag.ensure_table(c); c.execute("UPDATE mkv_meta SET path=? WHERE file_id=?", (m["new"], m["file_id"]))
+    ed = [k for k in json.loads((c.execute("SELECT edited_fields FROM films WHERE id=?", (fid,)).fetchone()[0]) or "[]") if k not in ("title", "year", "release_date")]
+    gal = m["gallery"][1] if m["gallery"] and (m["gallery"][0], m["gallery"][1]) in moved else None
+    c.execute(f"UPDATE films SET {SCENE_ONLY_CLEAR}, title=?, year=?, storage=?, edited_fields=?, updated_at=?"
+              + (", gallery_path=?" if gal else "") + " WHERE id=?",
+              [m["title"], m["year"], os.path.splitdrive(m["new"])[0] or None, json.dumps(ed), time.time()] + ([gal] if gal else []) + [fid])
+    c.commit()
+    try:
+        with open(os.path.join(os.path.dirname(m["folder"]), "_filmtagger_renames.csv"), "a", newline="", encoding="utf-8-sig") as fh:
+            csv.writer(fh).writerows(moved)
+    except OSError: pass
+    dd = os.path.dirname(m["old"]); sroot = next((r for r in db.scene_roots(c) if db.under(m["old"], r)), None)
+    try:
+        if sroot and not os.listdir(dd) and os.path.normcase(dd) != os.path.normcase(sroot) and os.path.basename(dd).lower() not in KEEP_DIRS: os.rmdir(dd)
+    except OSError: pass
+    return m, None
+
+def classic_match_one(c, fid):
+    """The Save & scan TMDB lookup for one film (same as the poster job), then the Classic Porn primary-genre rule.
+    -> short status text."""
+    key = db.get_setting(c, "tmdb_key", ""); note = "No TMDB key set: not matched"
+    if key:
+        f = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
+        try:
+            r, kind = search_tmdb_movie_then_tv(key, f["title"], f["year"])
+            if r:
+                apply_movie(c, fid, tmdb_get(key, r["id"], kind), tmdb_kind=kind); c.commit(); after_movie_apply(c, fid); note = "Matched on TMDB"
+            else:
+                c.execute("UPDATE films SET tmdb_status='needs_match' WHERE id=?", (fid,)); note = "No confident TMDB match: marked Needs TMDB match"
+        except Exception as e: note = f"TMDB lookup failed: {e}"
+    pg = (c.execute("SELECT primary_genre FROM films WHERE id=?", (fid,)).fetchone()[0] or "").strip().lower()
+    if pg not in ("hardcore", "softcore") and not db.pg_user_edited(c, fid):
+        c.execute("UPDATE films SET primary_genre=NULL WHERE id=?", (fid,))
+    db.set_porn_primary_genre(c, fid); c.commit()
+    return note
+
+@app.get("/api/films/<int:fid>/to-classic")
+def to_classic_get(fid):
+    c = C(); t, y = to_classic_prefill(c, fid)
+    m, err = plan_to_classic(c, fid, t, y)
+    return jsonify(title=t, year=y, new=m["new"] if m else None, error=err)
+
+@app.post("/api/films/<int:fid>/to-classic")
+def to_classic_post(fid):
+    """{title, year, dry_run?} -> moves the scene into Classic Porn and matches it on TMDB."""
+    c = C(); d = request.json or {}
+    if d.get("dry_run"):
+        m, err = plan_to_classic(c, fid, d.get("title") or "", d.get("year"))
+        return (jsonify(error=err), 400) if err else jsonify(old=m["old"], new=m["new"], sidecars=len(m["sidecars"]), gallery=bool(m["gallery"]))
+    m, err = move_scene_to_classic(c, fid, d.get("title") or "", d.get("year"))
+    if err: return jsonify(error=err), 400
+    note = classic_match_one(c, fid)
+    j = get_film(fid).get_json(); j["moved_from"] = m["old"]; j["match_note"] = note; return jsonify(j)
+
 def movie_std_name(title, year):
     """Standard movie folder/file stem: 'Title (Year)'. Year is left out when missing."""
     t = _safe(title, 120)
