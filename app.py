@@ -11,7 +11,7 @@ import mkvtag
 import metacritic as mcmod
 import imdbyears as imdbmod
 
-APP_VERSION = "1.4.1"  # keep in sync with installer/FilmTagger.nsi APPVER
+APP_VERSION = "1.4.2"  # keep in sync with installer/FilmTagger.nsi APPVER
 REPO = "kylerhudson1975/film-tagger"
 
 app = Flask(__name__, static_folder="static")
@@ -3335,7 +3335,7 @@ def ai_chat(url, key, model, prompt, timeout=180, temperature=0.3, system=None):
     if str(model or "").startswith("openai/gpt-oss"):
         body["reasoning_effort"] = "low"
         body["max_completion_tokens"] = 1024
-    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "FilmTagger/1.4.1"}
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": f"FilmTagger/{APP_VERSION}"}
     if key: headers["Authorization"] = "Bearer " + key
     req = urllib.request.Request(ai_endpoint(url), data=json.dumps(body).encode(), headers=headers, method="POST")
     try:

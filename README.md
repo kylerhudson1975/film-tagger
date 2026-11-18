@@ -7,7 +7,20 @@ Point it at the folders where your video files live. It builds a searchable cata
 
 > **New to this? See [INSTALL.txt](INSTALL.txt)** for step-by-step Windows setup: download `FilmTaggerSetup.exe`, double-click, done. No Python install or admin rights needed.
 
-**Contents:** [What's new in v1.4.1](#whats-new-in-v141) · [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+**Contents:** [What's new in v1.4.2](#whats-new-in-v142) · [What's new in v1.4.1](#whats-new-in-v141) · [What's new in v1.4.0](#whats-new-in-v140) · [What's new in v1.3.5](#whats-new-in-v135) · [What's new in v1.3.4](#whats-new-in-v134) · [What's new in v1.3.3](#whats-new-in-v133) · [What's new in v1.3.2](#whats-new-in-v132) · [What's new in v1.3.1](#whats-new-in-v131) · [What's new in v1.3.0](#whats-new-in-v130) · [What's new in v1.2.16](#whats-new-in-v1216) · [What's new in v1.2.3](#whats-new-in-v123) · [What's new in v1.2.2](#whats-new-in-v122) · [What's new in v1.2.1](#whats-new-in-v121) · [What's new in v1.2.0](#whats-new-in-v120) · [What's new in v1.1.2](#whats-new-in-v112) · [What's new in v1.1.1](#whats-new-in-v111) · [Porn Scenes features](#porn-scenes-features) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Feature guide](#feature-guide) · [Screenshots](#screenshots) · [Install](#install) · [Privacy](#privacy) · [Release history](#release-history) · [License](#license)
+
+## What's new in v1.4.2
+A Saturation slider in the shared image editor, Ask a question removed from Reports and Settings, and cleaner tags and ethnicity labels.
+
+### Image editor
+- **Saturation** is now in both **Edit poster** and gallery **Edit**. All the way left is black and white, the middle is no change, and all the way right doubles the colour.
+
+### Tags and ethnicity
+- Cross-category duplicate tags (the same tag under two categories) are merged, and a category you set by hand now sticks: scans and smart tagging reuse the existing tag instead of creating a split in the old category.
+- More Wikidata ancestry labels fold into the main Ethnicity groups. People whose labels land in two different groups go to *Needs ethnicity review*.
+
+### Other
+- **Ask a question** has been removed from Reports and Settings.
 
 ## What's new in v1.4.1
 More reliable person pages, ThePornDB movies as well as scenes, a From Gallery poster button for Mainstream films, and one shared image editor for posters and gallery photos.
