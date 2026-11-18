@@ -186,10 +186,11 @@ _ETH_ALIAS = {"asian": "Asian", "asianpeople": "Asian", "asians": "Asian", "east
               "white": "White", "caucasian": "White", "caucasians": "White", "european": "White", "europeanpeople": "White", "europeans": "White", "whitepeople": "White",
               "whiteamericans": "White", "whitebritish": "White", "whitebritishpeople": "White", "europeanamericans": "White"}
 # Ancestry / heritage values from Wikidata P172 (and the same wording typed by hand) fold into the main groups.
-# Nationality-style labels (French people, Americans, Irish people, …) and a short list Kyle is still deciding
-# (Armenians, Spanish Americans, Brazilian Americans, Galicians, Russians, Bahamian Americans, Puerto Ricans,
-# Berbers, Métis, Louisiana Creole people, Scandinavians) are left as published. Horn of Africa / East African
-# ethnic groups fold to Black, never White.
+# Nationality-style labels (French, Americans, British, Spaniards, United States, …) and a short list still left
+# as published (Armenians, Spanish Americans, Brazilian Americans, Bahamian Americans, Métis, Louisiana Creole
+# people, Crimean Tatars, Mediterranean, and similar). Horn of Africa / East African ethnic groups fold to Black,
+# never White. On 18 Nov 2026 Kyle approved folding Galicians, English/Irish/Scottish people, Germans, Russians,
+# Puerto Ricans, Berbers, Scandinavians, and the other 27 review labels into the main groups below.
 _ETH_ALIAS.update({
     "japaneseamericans": "Asian", "chineseamericans": "Asian", "filipinoamericans": "Asian",
     "britishchinese": "Asian", "koreanamericans": "Asian", "minangkabau": "Asian",
@@ -236,6 +237,34 @@ _ETH_ALIAS.update({
     "irishcanadians": "White", "ladins": "White", "lemkos": "White",
     "luxembourgishcanadians": "White", "portuguesecanadians": "White", "russianamericans": "White",
     "sudetengermans": "White", "ukrainianamericans": "White", "welshamericans": "White",
+    # 18 Nov 2026: approved folds of leftover Wikidata heritage labels (and obvious singulars of the same groups)
+    "galicians": "White", "galician": "White",
+    "englishpeople": "White", "english": "White",
+    "irishpeople": "White", "irish": "White",
+    "germans": "White", "german": "White",
+    "scottishpeople": "White", "scottish": "White",
+    "czechs": "White", "czech": "White",
+    "russians": "White", "russian": "White",
+    "danes": "White", "dane": "White",
+    "ukrainians": "White", "ukrainian": "White",
+    "croats": "White", "croat": "White",
+    "flemishpeople": "White", "flemish": "White",
+    "greeksinfrance": "White", "greeks": "White", "greek": "White", "greekpeople": "White",
+    "italians": "White", "italian": "White",
+    "lithuanians": "White", "lithuanian": "White",
+    "montenegrins": "White", "montenegrin": "White",
+    "norwegians": "White", "norwegian": "White",
+    "poles": "White", "pole": "White",
+    "portuguese": "White",
+    "scandinavians": "White", "scandinavian": "White",
+    "slovenes": "White", "slovene": "White",
+    "puertoricans": "Latina/Latino", "puertorican": "Latina/Latino",
+    "berbers": "Middle Eastern", "berber": "Middle Eastern",
+    "cebuanopeople": "Asian", "cebuano": "Asian",
+    "filipinos": "Asian", "filipino": "Asian",
+    "hanchinesepeople": "Asian", "hanchinese": "Asian", "chinesepeople": "Asian",
+    "japanesepeople": "Asian", "japanese": "Asian",
+    "koreans": "Asian", "korean": "Asian",
 })
 # Groups that count when deciding a single auto-assignment (Mixed can be saved when it is the only mapped
 # value, but it does not compete with these nine).

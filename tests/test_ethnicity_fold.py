@@ -20,22 +20,35 @@ assert N("Lebanese Americans") == N("Palestinians") == "Middle Eastern"
 assert N("African Brazilians") == N("Somali") == N("Ethiopian Americans") == N("Eritrean") == N("Nubian") == "Black"
 assert N("Amhara") == N("Oromo") == N("Habesha") == "Black"
 assert N("Eurasian") == "Mixed"
+# 18 Nov 2026 approved heritage mappings
+assert N("Galicians") == N("English people") == N("Irish people") == N("Germans") == N("Scottish people") == "White"
+assert N("Czechs") == N("Russians") == N("Danes") == N("Ukrainians") == N("Croats") == N("Flemish people") == "White"
+assert N("Greeks in France") == N("Italians") == N("Lithuanians") == N("Montenegrins") == N("Norwegians") == "White"
+assert N("Poles") == N("Portuguese") == N("Scandinavians") == N("Slovenes") == "White"
+assert N("Puerto Ricans") == "Latina/Latino"
+assert N("Berbers") == "Middle Eastern"
+assert N("Cebuano people") == N("Filipinos") == N("Han Chinese people") == N("Japanese people") == N("Koreans") == "Asian"
 # left as published (nationality-style or still undecided)
-for raw in ("Armenians", "Spanish Americans", "Brazilian Americans", "Galicians", "Russians",
-            "Bahamian Americans", "Puerto Ricans", "Berbers", "Métis", "Metis", "Louisiana Creole people",
-            "Scandinavians", "French people", "Americans", "Irish people", "English people", "British Americans",
-            "Kenyan"):
+for raw in ("Armenians", "Spanish Americans", "Brazilian Americans",
+            "Bahamian Americans", "Métis", "Metis", "Louisiana Creole people",
+            "French", "French people", "Americans", "British", "British Americans",
+            "Spaniards", "United States", "Brazilian Americans", "Crimean Tatars",
+            "Mediterranean", "New Zealanders", "Saint Lucians", "Surinamese Dutch",
+            "Venezuelans", "Australian Americans", "Brazilians in the United Kingdom",
+            "Canadian Americans", "Canadians in the United Kingdom", "Kenyan"):
     assert N(raw) == raw, (raw, N(raw))
 # resolve: one main group wins, even with leftover unmapped labels
 assert R(["Irish Americans", "English people"]) == ("White", False, ["Irish Americans", "English people"])
-assert R(["Jewish people", "Russians"]) == ("Jewish", False, ["Jewish people", "Russians"])
+assert R(["English people", "Irish people"]) == ("White", False, ["English people", "Irish people"])
+assert R(["Jewish people", "Armenians"]) == ("Jewish", False, ["Jewish people", "Armenians"])
+assert R(["Germans", "Japanese people"]) == (None, True, ["Germans", "Japanese people"])
+assert R(["Berbers", "Italians"]) == (None, True, ["Berbers", "Italians"])
 assert R(["African Brazilians"]) == ("Black", False, ["African Brazilians"])
 assert R(["Eurasian"]) == ("Mixed", False, ["Eurasian"])
 assert R(["Caucasian", "Eurasian"]) == ("White", False, ["Caucasian", "Eurasian"])  # Mixed does not compete
 # two or more decisive groups: conflict, no auto-assignment
 assert R(["Ashkenazi Jews", "Irish Americans"])[1] is True
 assert R(["African Americans", "Māori"]) == (None, True, ["African Americans", "Māori"])
-assert R(["English people", "Irish people"]) == ("English people, Irish people", False, ["English people", "Irish people"])
 
 c = db.connect(); db.set_setting(c, "scene_roots", [r"D:\S"]); db.set_setting(c, "tpdb_key", "t"); c.commit()
 # One mainstream film (several credits) and one adult scene, so Needs ethnicity can be checked on both sides
