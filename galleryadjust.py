@@ -323,6 +323,19 @@ def adjust(path, params):
         g = parse_geometry(params)
     except ValueError as e:
         return None, str(e)
+    up = (params or {}).get("upscale")
+    if up:  # AI-upscaled preview (upscale.py): edit those pixels instead; the original is still backed up first
+        import upscale as upmod
+        src = upmod.result(up, path)
+        if not src:
+            return None, "The upscaled preview is gone or was made from another photo; run Upscale again"
+        try:
+            im = open_image(src)
+            ensure_original(path)
+            save_image(apply_edit(im, rot=g["rot"], flip=g["flip"], crop=g["crop"], **p), path)
+        except Exception as e:
+            return None, f"Could not save the photo ({type(e).__name__})"
+        return dict(ok=True, unchanged=False, upscaled=True, has_original=True, v=_mtime(path)), None
     # Fast path: no need to open the file when every control is at its default
     if is_identity(p) and (g["rot"] % 4) == 0 and not g["flip"] and not g["crop"]:
         return dict(ok=True, unchanged=True, has_original=has_original(path), v=_mtime(path)), None
@@ -383,6 +396,12 @@ def handle(folder, name, action, body=None):
     if action == "save":
         data, err = adjust(path, body or {})
         return (dict(error=err), 400) if err else (data, 200)
+    if action == "upscale":
+        import upscale as upmod
+        try:
+            return dict(token=upmod.start(path, (body or {}).get("scale", 4))), 200
+        except ValueError as e:
+            return dict(error=str(e)), 400
     if action == "revert":
         data, err = revert(path)
         status = 400 if err else 200

@@ -760,7 +760,7 @@ function peOpen(opt){const o=ieOverlay();
   ?`<button id=peRevert ${opt.can_restore?'':'disabled style="display:none"'} title="Put back the original photo (kept when you first saved an edit)" onclick="peRevert()">Revert to original</button>`
   :(opt.can_restore?`<button onclick="peRestore()" title="Put back the poster this film had before the last edit or Find Posters pick">↶ Restore previous</button>`:'');
  o.innerHTML=`<div class=gh><b>${esc(opt.title)}</b><span class=muted>${opt.label||''}</span><span style="flex:1"></span>
-  <button onclick="peRot(-1)" title="Rotate 90° left">⟲ Left</button><button onclick="peRot(1)" title="Rotate 90° right">⟳ Right</button><button onclick="peFlip()" title="Mirror left-right">⇋ Flip</button>
+  <button onclick="peRot(-1)" title="Rotate 90° left">⟲ Left</button><button onclick="peRot(1)" title="Rotate 90° right">⟳ Right</button><button onclick="peFlip()" title="Mirror left-right">⇋ Flip</button><button class=peUp onclick="peUpscale(2)" title="AI upscale 2× on this PC (Real-ESRGAN, GPU). Preview first; nothing changes until Save, and the original is kept">✨ Upscale 2×</button><button class=peUp onclick="peUpscale(4)" title="AI upscale 4× on this PC (Real-ESRGAN, GPU). Preview first; nothing changes until Save, and the original is kept">✨ 4×</button>
   <label style="display:inline-flex;gap:4px;align-items:center;margin:0"><input type=checkbox id=peLock ${opt.lock?'checked':''} onchange="peLockSet(this.checked)" style="width:auto">Lock 2:3</label><button onclick="peFull()" title="Select the whole image">Whole image</button>
   <button onclick="peResetAll()" title="Undo crop, rotate, flip and sliders in this window (does not revert a saved edit)">Reset</button>
   ${restore}<button onclick="peClose()">Cancel</button><button class=pri id=peSave onclick="peSave()">Save</button></div>
@@ -795,7 +795,7 @@ function peDraw(){const g=S.pe,cv=$('peCv');if(!g||!cv)return;const st=$('peStag
  if(peToneOn(p)){const sx=Math.max(0,Math.round(c.x*k)),sy=Math.max(0,Math.round(c.y*k)),sw=Math.max(1,Math.min(cw-sx,Math.round(c.w*k))),sh=Math.max(1,Math.min(ch-sy,Math.round(c.h*k)));
   try{const id=x.getImageData(sx,sy,sw,sh);x.putImageData(geApply(id,sw,sh,p),sx,sy)}catch(e){}}
  const s=g.max>0?Math.min(1,g.max/Math.max(c.w,c.h)):1,rw=Math.max(1,Math.round(c.w*s)),rh=Math.max(1,Math.round(c.h*s));
- const bits=[];if(g.rot)bits.push(`rotated ${g.rot*90}°`);if(g.flip)bits.push('flipped');if(peToneOn(p))bits.push('tone adjusted');
+ const bits=[];if(g.rot)bits.push(`rotated ${g.rot*90}°`);if(g.flip)bits.push('flipped');if(g.up)bits.push(`AI upscaled ${g.upScale}×${g.upNote?' ('+esc(g.upNote)+')':''}`);if(peToneOn(p))bits.push('tone adjusted');
  $('peMsg').innerHTML=`Result: <b>${c.w}×${c.h}px</b>${s<1?` → saved as ${rw}×${rh}px (shrunk to ${g.max}px long side)`:''} · ${(g.ext||'').toLowerCase()=='png'?'PNG':'JPEG q95'}${bits.length?' · '+bits.join(' · '):''}`+
   (g.small&&c.w<g.small?` <span style="color:#fc6">⚠ Under ${g.small}px wide: this poster will look soft when shown large.</span>`:'')}
 function peDown(e){const g=S.pe;if(!g)return;e.preventDefault();const h=e.target.dataset.h||'',c0={...g.crop},sx=e.clientX,sy=e.clientY,W=peOW(),H=peOH();
@@ -807,8 +807,8 @@ function peDown(e){const g=S.pe;if(!g)return;e.preventDefault();const h=e.target
   if(g.lock){hh=w*1.5;if(hh>mh){hh=mh;w=hh/1.5}}
   w=Math.round(w);hh=Math.round(hh);g.crop={w,h:hh,x:h.includes('w')?ax-w:ax,y:h.includes('n')?ay-hh:ay};peDraw()};
  const up=()=>{removeEventListener('pointermove',mv);removeEventListener('pointerup',up)};addEventListener('pointermove',mv);addEventListener('pointerup',up)}
-async function peSave(){const g=S.pe;if(!g||g.busy)return;g.busy=true;if($('peSave'))$('peSave').disabled=true;
- const body={rot:g.rot,flip:g.flip,crop:g.crop,...peToneParams()};
+async function peSave(){const g=S.pe;if(!g||g.busy||g.upBusy)return;g.busy=true;if($('peSave'))$('peSave').disabled=true;
+ const body={rot:g.rot,flip:g.flip,crop:g.crop,...peToneParams(),...(g.up?{upscale:g.up}:{})};
  try{if(g.mode=='gallery'){const gal=S.gal;const r=await api(`${gal.base}/adjust`,{method:'POST',body:{name:g.name,...body}});
    gal.bust=gal.bust||{};if(r.v)gal.bust[g.name]=r.v;
    if(S.ppGal&&S.ppGal.pid===gal.id){S.ppGal.bust=S.ppGal.bust||{};if(r.v)S.ppGal.bust[g.name]=r.v;const x=$('ppGal');if(x&&S.ppData)x.innerHTML=ppGalHtml(S.ppData.person)}
@@ -816,6 +816,16 @@ async function peSave(){const g=S.pe;if(!g||g.busy)return;g.busy=true;if($('peSa
   else{const f=await api(`/api/films/${g.id}/posteredit`,{method:'POST',body});peClose();
    if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Poster '+f.poster_note)}}
  catch(e){g.busy=false;if($('peSave'))$('peSave').disabled=false;if(g.mode=='gallery')toast(e.message||String(e))}}
+async function peUpscale(scale){const g=S.pe;if(!g||g.busy||g.upBusy)return;
+ const url=g.mode=='gallery'?`${S.gal.base}/adjust/upscale`:`/api/films/${g.id}/posteredit/upscale`,body=g.mode=='gallery'?{name:g.name,scale}:{scale};
+ const btns=[...document.querySelectorAll('.peUp'),$('peSave')].filter(Boolean),busy=on=>{g.upBusy=on;btns.forEach(b=>b.disabled=on)};
+ let t;try{t=(await api(url,{method:'POST',body})).token}catch(e){return}
+ busy(true);const sp='◐◓◑◒';let i=0;
+ while(S.pe===g){let j;try{j=await api('/api/upscale/'+t)}catch(e){busy(false);return}
+  if(j.state=='done'){g.up=t;g.upScale=j.scale;g.upNote=j.note||'';g.W=j.width;g.H=j.height;
+   g.img.onload=()=>{busy(false);peReset();toast(`Upscaled to ${j.width}×${j.height} in ${j.secs}s on ${j.gpu||'GPU'}`)};g.img.src='/api/upscale/'+t+'/image';return}
+  if(j.state=='error'){busy(false);$('peMsg').innerHTML=`<span style="color:#f88">Upscale failed: ${esc(j.error||'')}</span>`;return}
+  $('peMsg').textContent=`${sp[i++%4]} AI upscaling ${scale}× on ${j.gpu||'GPU'}… ${j.progress||0}%`;await new Promise(r=>setTimeout(r,700))}}
 async function peRestore(){const g=S.pe;if(!g||!confirm('Put back the previous poster?'))return;
  try{const f=await api(`/api/films/${g.id}/findposters/restore`,{method:'POST',body:{}});peClose();if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Previous poster restored')}catch(e){}}
 async function peRevert(){const g=S.pe,gal=S.gal;if(!g||!gal||!confirm('Put back the original photo? Your saved adjustments to this photo will be undone.'))return;

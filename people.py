@@ -2072,6 +2072,11 @@ def init(app, tmdb, posters_dir):
         The original is copied to `_originals` once (never deleted) before the first overwrite."""
         return _pg_adjust(pid, "save")
 
+    @app.post("/api/person/<int:pid>/gallery/adjust/upscale")
+    def person_gallery_adjust_upscale(pid):
+        """{name, scale: 2|4}: start an AI upscale preview of that photo (nothing is changed until Save)."""
+        return _pg_adjust(pid, "upscale")
+
     @app.post("/api/person/<int:pid>/gallery/adjust/revert")
     def person_gallery_adjust_revert(pid):
         """{name}: put the kept original back. The backup in `_originals` is not deleted."""

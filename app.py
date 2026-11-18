@@ -789,6 +789,19 @@ def posteredit_image(fid):
     if data is None: return jsonify(error=ext), 400
     return Response(data, mimetype={"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[ext], headers={"Cache-Control": "no-store"})
 
+@app.post("/api/films/<int:fid>/posteredit/upscale")
+def posteredit_upscale(fid):
+    """{scale: 2|4}: start an AI upscale preview of the current poster (nothing is changed until Save)."""
+    c = C(); bad = _pe_film(c, fid)
+    if bad: return bad
+    import upscale as upmod
+    cur = _pe_current(c, fid); data, ext = _pe_load(cur)
+    if data is None: return jsonify(error=ext), 400
+    src = os.path.join(upmod.tmp_dir(), f"poster-{fid}-{int(time.time() * 1000)}.{ext}")
+    with open(src, "wb") as fh: fh.write(data)
+    try: return jsonify(token=upmod.start(src, (request.json or {}).get("scale", 4), key=f"poster:{fid}:{cur}"))
+    except ValueError as e: return jsonify(error=str(e)), 400
+
 @app.post("/api/films/<int:fid>/posteredit")
 def posteredit_save(fid):
     """{rot, flip, crop, contrast, brightness, gamma, sharpen, saturation}: edit the current poster.
@@ -802,8 +815,13 @@ def posteredit_save(fid):
         if d.get("crop") is not None and not isinstance(d.get("crop"), dict): raise ValueError
         tone = gamod.parse_params(d)
     except Exception: return jsonify(error="Bad edit parameters"), 400
-    data, ext = _pe_load(_pe_current(c, fid))
+    cur = _pe_current(c, fid); data, ext = _pe_load(cur)
     if data is None: return jsonify(error=ext), 400
+    if d.get("upscale"):  # edit the AI-upscaled preview instead (the previous poster is still backed up below)
+        import upscale as upmod
+        up = upmod.result(d["upscale"], f"poster:{fid}:{cur}")
+        if not up: return jsonify(error="The upscaled preview is gone or the poster changed; run Upscale again"), 400
+        with open(up, "rb") as fh: data = fh.read()
     img = pe_decode(data)
     if img is None: return jsonify(error="Could not read the poster"), 400
     if img.shape[0] * img.shape[1] > POSTER_SRC_PIXELS: return jsonify(error="Image has too many pixels"), 413
@@ -5111,6 +5129,24 @@ def film_gallery_adjust_info(fid):
 def film_gallery_adjust_save(fid):
     """{name, rot, flip, crop, contrast, brightness, gamma, sharpen, saturation}: adjust a gallery photo. Original kept in `_originals` once."""
     return _film_gallery_adjust(fid, "save")
+
+@app.post("/api/films/<int:fid>/gallery/adjust/upscale")
+def film_gallery_adjust_upscale(fid):
+    """{name, scale: 2|4}: start an AI upscale preview of a gallery photo (nothing is changed until Save)."""
+    return _film_gallery_adjust(fid, "upscale")
+
+@app.get("/api/upscale/<token>")
+def upscale_status(token):
+    import upscale as upmod
+    j = upmod.status(token)
+    return (jsonify(j), 200) if j else (jsonify(error="Unknown upscale job"), 404)
+
+@app.get("/api/upscale/<token>/image")
+def upscale_image(token):
+    import upscale as upmod
+    j = upmod.JOBS.get(token)
+    if not j or j.get("state") != "done": return jsonify(error="not ready"), 404
+    return send_file(j["path"], mimetype="image/png", max_age=0)
 
 @app.post("/api/films/<int:fid>/gallery/adjust/revert")
 def film_gallery_adjust_revert(fid):
