@@ -337,11 +337,11 @@ a.cast-tip[data-tip]:hover::before,a.cast-tip[data-tip]:focus::before{content:""
 <div id="ctx"></div><div id="toast"></div>
 <script>
 async function toClassic(id){let p;try{p=await api('/api/films/'+id+'/to-classic')}catch(e){return alert(e.error||e.message||e)}
- const t=prompt('Not a scene: move to Classic Porn\n\nTitle (correct it if needed):',p.title||'');if(t===null||!t.trim())return;
+ const t=prompt('Not a scene: move to Classic Porn\n\nTitle (correct it if needed; no year here):',p.title||'');if(t===null||!t.trim())return;
  const y=prompt('Year for "'+t.trim()+'" (blank if unknown):',p.year||'');if(y===null)return;
  let d;try{d=await api('/api/films/'+id+'/to-classic',{method:'POST',body:{title:t,year:y,dry_run:true}})}catch(e){return alert('Not moved: '+(e.error||e.message||e))}
  if(!confirm('Move this file into Classic Porn?\n\nFrom: '+d.old+'\nTo: '+d.new+(d.sidecars?'\n(+ '+d.sidecars+' subtitle/sidecar file(s))':'')+(d.gallery?'\n(+ its gallery)':'')+'\n\nRating, watched, tags, people and poster are kept. Unsaved edits in this window are not saved.'))return;
- try{const r=await api('/api/films/'+id+'/to-classic',{method:'POST',body:{title:t,year:y}});closeM();reload();refreshMeta();openFilm(id);alert('Moved to Classic Porn. '+(r.match_note||''))}catch(e){alert('Not moved: '+(e.error||e.message||e))}}
+ try{const r=await api('/api/films/'+id+'/to-classic',{method:'POST',body:{title:t,year:y}});closeM();alert('Moved to Classic Porn.\n\n'+(r.match_note||''));reload();refreshMeta();openFilm(id)}catch(e){alert('Not moved: '+(e.error||e.message||e))}}
 function softTip(f){return {unmatched:'Not matched to ThePornDB: file not renamed',missing:'Matched, but studio/date/title missing: file not renamed',held:'[Hold rename]: file not renamed',review:'Review by hand: file not renamed'}[f.soft_why]||'Soft match: file not renamed yet'}
 const S={view:localStorage.view||'grid',order:'asc',films:[],total:0,sel:new Set(),tags:[],cats:[],busy:false,lastClick:null};
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

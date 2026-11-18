@@ -3975,13 +3975,30 @@ def classic_root(c):
     """The Classic Porn library root (a movie root whose path names 'Classic Porn'), or None."""
     return next((r for r in (db.get_setting(c, "roots", []) or []) if r and "classic porn" in str(r).replace("/", "\\").lower()), None)
 
+_TRAIL_YEAR = _re.compile(r"\s*[\(\[]((?:19|20)\d\d)[\)\]]\s*$")
+
+def split_title_year(title, year=None):
+    """'Foo (2021)' -> ('Foo', 2021): a year left in the title would double it in 'Title (Year)' and spoil the TMDB search."""
+    t = (title or "").strip()
+    while True:
+        m = _TRAIL_YEAR.search(t)
+        if not m or not t[:m.start()].strip(): break
+        year = year or int(m.group(1)); t = t[:m.start()].strip()
+    return t, year
+
+def to_classic_log(fid, text):
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(db.DB_PATH)), "to_classic.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}\tfilm {fid}\t{text}\n")
+    except OSError: pass
+
 def to_classic_prefill(c, fid):
     f = c.execute("SELECT title, year, release_date FROM films WHERE id=?", (fid,)).fetchone()
     p = c.execute("SELECT path FROM files WHERE film_id=? ORDER BY id LIMIT 1", (fid,)).fetchone()
     gt, gy = db.guess_title_year(p[0]) if p and p[0] else (None, None)
     title = (f["title"] or "").strip() or gt or ""
     year = f["year"] or (int(f["release_date"][:4]) if (f["release_date"] or "")[:4].isdigit() else None) or gy
-    return title, year
+    return split_title_year(title, year)
 
 def plan_to_classic(c, fid, title, year):
     """-> (plan dict, error). Checks everything first; nothing is touched here."""
@@ -3992,6 +4009,7 @@ def plan_to_classic(c, fid, title, year):
     if not root or not os.path.isdir(root): return None, "No reachable Classic Porn library folder in Settings"
     try: year = int(year) if str(year or "").strip() else None
     except ValueError: return None, "Year must be a number"
+    title, year = split_title_year(title, year)
     std = movie_std_name(title, year)
     if not std: return None, "A title is needed"
     rows = c.execute("SELECT id, path FROM files WHERE film_id=? ORDER BY id", (fid,)).fetchall()
@@ -4062,21 +4080,34 @@ def move_scene_to_classic(c, fid, title, year):
 
 def classic_match_one(c, fid):
     """The Save & scan TMDB lookup for one film (same as the poster job), then the Classic Porn primary-genre rule.
-    -> short status text."""
-    key = db.get_setting(c, "tmdb_key", ""); note = "No TMDB key set: not matched"
-    if key:
-        f = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
+    Every attempt is logged to to_classic.log. -> message for the user ('Matched to X (Y)' / 'No confident TMDB match; ...')."""
+    f = c.execute("SELECT title, year, edited_fields FROM films WHERE id=?", (fid,)).fetchone()
+    if "title" not in json.loads(f["edited_fields"] or "[]"):
+        t, y = split_title_year(f["title"], f["year"])
+        if (t, y) != (f["title"], f["year"]): c.execute("UPDATE films SET title=?, year=? WHERE id=?", (t, y, fid)); c.commit()
+    f = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
+    q = f'"{f["title"]}"' + (f' ({f["year"]})' if f["year"] else "")
+    key = db.get_setting(c, "tmdb_key", ""); matched = False
+    if not key: note = "TMDB not searched: no TMDB API key in Settings"
+    else:
         try:
             r, kind = search_tmdb_movie_then_tv(key, f["title"], f["year"])
             if r:
-                apply_movie(c, fid, tmdb_get(key, r["id"], kind), tmdb_kind=kind); c.commit(); after_movie_apply(c, fid); note = "Matched on TMDB"
+                apply_movie(c, fid, tmdb_get(key, r["id"], kind), tmdb_kind=kind)
+                c.execute("UPDATE films SET tmdb_status=NULL WHERE id=?", (fid,)); c.commit(); after_movie_apply(c, fid); matched = True
+                g = c.execute("SELECT title, year FROM films WHERE id=?", (fid,)).fetchone()
+                note = f"Searched TMDB for {q}: matched to {g['title']}" + (f" ({g['year']})" if g["year"] else "")
             else:
-                c.execute("UPDATE films SET tmdb_status='needs_match' WHERE id=?", (fid,)); note = "No confident TMDB match: marked Needs TMDB match"
-        except Exception as e: note = f"TMDB lookup failed: {e}"
+                c.execute("UPDATE films SET tmdb_status='needs_match' WHERE id=?", (fid,)); c.commit()
+                note = f"Searched TMDB for {q}: no confident TMDB match; marked Needs TMDB match (use Fetch from TMDB to pick one)"
+        except Exception as e: note = f"TMDB search for {q} failed: {e}"
+    if not matched:
+        try: rename_movie_file(c, fid)  # keeps the folder/file at 'Title (Year)' after a title clean-up
+        except OSError: pass
     pg = (c.execute("SELECT primary_genre FROM films WHERE id=?", (fid,)).fetchone()[0] or "").strip().lower()
     if pg not in ("hardcore", "softcore") and not db.pg_user_edited(c, fid):
         c.execute("UPDATE films SET primary_genre=NULL WHERE id=?", (fid,))
-    db.set_porn_primary_genre(c, fid); c.commit()
+    db.set_porn_primary_genre(c, fid); c.commit(); to_classic_log(fid, note)
     return note
 
 @app.get("/api/films/<int:fid>/to-classic")
@@ -4089,6 +4120,9 @@ def to_classic_get(fid):
 def to_classic_post(fid):
     """{title, year, dry_run?} -> moves the scene into Classic Porn and matches it on TMDB."""
     c = C(); d = request.json or {}
+    if d.get("match_only"):  # re-run the button's TMDB step for a film it already moved
+        if is_scene(c, fid) or not db.is_classic_porn(c, fid): return jsonify(error="Not a Classic Porn film"), 400
+        return jsonify(match_note=classic_match_one(c, fid))
     if d.get("dry_run"):
         m, err = plan_to_classic(c, fid, d.get("title") or "", d.get("year"))
         return (jsonify(error=err), 400) if err else jsonify(old=m["old"], new=m["new"], sidecars=len(m["sidecars"]), gallery=bool(m["gallery"]))

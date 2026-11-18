@@ -51,7 +51,7 @@ class ToClassic(unittest.TestCase):
         m = {"id": 5, "title": "Behind the Green Door", "release_date": "1972-12-17", "genres": [{"name": "Comedy"}], "credits": {"cast": [], "crew": []}}
         with mock.patch.object(A, "search_tmdb_movie_then_tv", return_value=({"id": 5}, "movie")), mock.patch.object(A, "tmdb_get", return_value=m):
             j = self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(title="Behind the Green Door", year=1972)).get_json()
-        self.assertEqual(j["match_note"], "Matched on TMDB"); f = self.row()
+        self.assertEqual(j["match_note"], 'Searched TMDB for "Behind the Green Door" (1972): matched to Behind the Green Door (1972)'); f = self.row()
         self.assertEqual(f["tmdb_id"], 5); self.assertIn(f["primary_genre"], ("Hardcore", "Softcore"))
 
     def test_collision_and_missing_change_nothing(self):
@@ -68,5 +68,29 @@ class ToClassic(unittest.TestCase):
             r = self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(title="Behind the Green Door", year=1972))
         self.assertEqual(r.status_code, 200); self.assertFalse(os.path.exists(self.old))
         self.assertEqual(os.path.getsize(os.path.join(self.cr, "Behind the Green Door (1972)", "Behind the Green Door (1972).mp4")), 1000)
+
+    def test_year_in_title_not_doubled_and_no_match_is_marked(self):
+        # Kyle's real case: the scene title already ended in '(2021)'
+        self.c.execute("UPDATE films SET title='Behind the Green Door (1972)' WHERE id=?", (self.fid,)); db.set_setting(self.c, "tmdb_key", "k"); self.c.commit()
+        p = self.cl.get(f"/api/films/{self.fid}/to-classic").get_json(); self.assertEqual((p["title"], p["year"]), ("Behind the Green Door", 1972))
+        with mock.patch.object(A, "search_tmdb_movie_then_tv", return_value=(None, None)) as s:
+            j = self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(title="Behind the Green Door (1972)", year=1972)).get_json()
+        s.assert_called_once(); self.assertEqual(s.call_args[0][1:], ("Behind the Green Door", 1972))
+        self.assertIn("no confident TMDB match; marked Needs TMDB match", j["match_note"])
+        self.assertTrue(os.path.isfile(os.path.join(self.cr, "Behind the Green Door (1972)", "Behind the Green Door (1972).mp4")))
+        self.assertEqual(self.row()["tmdb_status"], "needs_match")
+
+    def test_match_only_cleans_an_already_doubled_title(self):
+        self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(title="Behind the Green Door", year=1972))
+        d = os.path.join(self.cr, "Behind the Green Door (1972) (1972)"); os.rename(os.path.join(self.cr, "Behind the Green Door (1972)"), d)
+        os.rename(os.path.join(d, "Behind the Green Door (1972).mp4"), os.path.join(d, "Behind the Green Door (1972) (1972).mp4"))
+        self.c.execute("UPDATE films SET title='Behind the Green Door (1972)' WHERE id=?", (self.fid,))
+        self.c.execute("UPDATE files SET path=? WHERE film_id=?", (os.path.join(d, "Behind the Green Door (1972) (1972).mp4"), self.fid)); self.c.commit()
+        db.set_setting(self.c, "tmdb_key", "k"); self.c.commit()
+        with mock.patch.object(A, "search_tmdb_movie_then_tv", return_value=(None, None)):
+            j = self.cl.post(f"/api/films/{self.fid}/to-classic", json=dict(match_only=True)).get_json()
+        self.assertIn("marked Needs TMDB match", j["match_note"]); self.assertEqual(self.row()["title"], "Behind the Green Door")
+        self.assertEqual(self.c.execute("SELECT path FROM files WHERE film_id=?", (self.fid,)).fetchone()[0],
+                         os.path.join(self.cr, "Behind the Green Door (1972)", "Behind the Green Door (1972).mp4"))
 
 if __name__ == "__main__": unittest.main()
