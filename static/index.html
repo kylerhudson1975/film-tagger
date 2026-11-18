@@ -294,7 +294,7 @@ a.cast-tip[data-tip]:hover::before,a.cast-tip[data-tip]:focus::before{content:""
  <label>Resolution</label><input type=hidden id="f_res"><div id="resChips"></div>
  <label>Subtitles</label><input type=hidden id="f_subs"><div id="subsChips"></div>
  <label>Watched</label><select id="f_watched"><option value="">Any</option><option value="1">Watched</option><option value="0">Unwatched</option></select>
- <label>Show only</label><select id="f_special"><option value="">All films</option><option value="pending">Pending AI tags</option><option value="queued">In smart-tag queue</option><option value="aznude_queued">In AZNude queue</option><option value="scenes">Scenes only</option><option value="films_only">Films only (no scenes)</option><option value="untagged">Untagged</option><option value="missing">Missing files</option><option value="noposter">Missing poster</option><option value="needs_tmdb">Needs TMDB match</option><option value="nompaa">Matched, no MPAA rating</option><option value="soft_match">Soft matches (file not renamed yet)</option></select>
+ <label>Show only</label><select id="f_special"><option value="">All films</option><option value="pending">Pending AI tags</option><option value="queued">In smart-tag queue</option><option value="aznude_queued">In AZNude queue</option><option value="scenes">Scenes only</option><option value="films_only">Films only (no scenes)</option><option value="untagged">Untagged</option><option value="missing">Missing files</option><option value="noposter">Missing poster</option><option value="needs_tmdb">Needs TMDB match</option><option value="nompaa">Matched, no MPAA rating</option><option value="soft_match">Orange flag (file not renamed yet)</option></select>
  <div class="row" style="margin-top:8px"><button onclick="clearF()">Clear</button><button onclick="saveSearch()">Save search</button></div>
  <h3>Saved searches</h3><div id="saved" class="muted"></div>
  <h3>Tags <span class="muted">(click: AND · shift: NOT)</span></h3><div id="tagcloud" class="tagcloud"></div>
@@ -336,6 +336,7 @@ a.cast-tip[data-tip]:hover::before,a.cast-tip[data-tip]:focus::before{content:""
 <div id="modal" onclick="if(event.target==this)closeM()"><div id="mbox"></div></div>
 <div id="ctx"></div><div id="toast"></div>
 <script>
+function softTip(f){return {unmatched:'Not matched to ThePornDB: file not renamed',missing:'Matched, but studio/date/title missing: file not renamed',held:'[Hold rename]: file not renamed',review:'Review by hand: file not renamed'}[f.soft_why]||'Soft match: file not renamed yet'}
 const S={view:localStorage.view||'grid',order:'asc',films:[],total:0,sel:new Set(),tags:[],cats:[],busy:false,lastClick:null};
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(u,o={}){if(o.body&&!(o.body instanceof FormData)){o.body=JSON.stringify(o.body);o.headers={'Content-Type':'application/json'}}
@@ -428,7 +429,7 @@ function render(){
  $('count').textContent=`${S.total.toLocaleString()} films`;
  const n=S.sel.size;$('bulk').style.display=n?'flex':'none';$('selN').textContent=n+' selected';$('selAllBtn').textContent=$('selAllBar').textContent='Select all ('+S.total+')';$('selAllBtn').style.display=S.total?'':'none';if(!$('bulkMpaa').options.length)$('bulkMpaa').innerHTML=mpaaOpts('');if(!$('bulkRes').options.length)$('bulkRes').innerHTML=resOpts('');
  const c=$('content');if(S.page)return;if($('f_in').value=='studios'){$('bulk').style.display='none';if(SL.d)slRender();return}
- if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}${f.soft_match?' soft':''}" data-id="${f.id}"><input type=checkbox class=cb title="Select" ${S.sel.has(f.id)?'checked':''}>${f.soft_match?'<span class="badge b-soft" title="Soft match: file not renamed yet">⚑</span>':''}
+ if(S.view=='grid'){c.innerHTML='<div class="grid">'+S.films.map(f=>`<div class="card ${S.sel.has(f.id)?'sel':''}${f.soft_match?' soft':''}" data-id="${f.id}"><input type=checkbox class=cb title="Select" ${S.sel.has(f.id)?'checked':''}>${f.soft_match?`<span class="badge b-soft" title="${softTip(f)}">⚑</span>`:''}
   <div class="po">${posterOf(f)?`<img loading="lazy" src="${esc(posterOf(f))}"${focusStyle(f)}>`:esc(f.title)}</div>
   ${f.pending.length?`<span class="badge b-ai">AI ${f.pending.length}</span>`:''}${f.queued?'<span class="badge b-q">queued</span>':''}
   ${f.missing?'<span class="badge b-miss">missing</span>':''}${f.gallery_count&&!/review by hand/i.test(f.notes||'')?`<span class="badge b-g" title="Photo gallery: ${f.gallery_count} photos">📷 ${f.gallery_count}</span>`:''}${f.watched&&!f.pending.length?'<span class="badge b-w">✓</span>':''}

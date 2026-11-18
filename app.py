@@ -243,8 +243,8 @@ def attach(c, films, full=False):
     for f in films: f["queued"] = f["id"] in qs
     aq = {r[0] for r in c.execute(f"SELECT film_id FROM aznude_queue WHERE film_id IN ({ph})", ids)}
     for f in films: f["aznude_queued"] = f["id"] in aq
-    sm = soft_match_ids(c, [f["id"] for f in films if f.get("kind") == "scene"])
-    for f in films: f["soft_match"] = f["id"] in sm
+    sm = soft_match_info(c, [f["id"] for f in films if f.get("kind") == "scene"])
+    for f in films: f["soft_match"] = f["id"] in sm; f["soft_why"] = sm.get(f["id"])
     for f in films:  # cast character names: JSON {actor: character} -> object for the Edit hover tip
         raw = f.get("cast_roles")
         if isinstance(raw, str) and raw.strip():
@@ -259,23 +259,34 @@ def attach(c, films, full=False):
         f["mc_eligible"] = (f.get("kind") or "") != "scene"  # Classic Porn is refined in get_film (needs file paths)
     return films
 
-def soft_match_ids(c, ids=None):
-    """Scenes that are a 'soft match': flagged rename_pending, or matched (tpdb_id) with a stored file path that is not the
-    standard '<root>/<Studio>/<standard name>[ (n)].ext'. Same set as the Rename waiting view, but from stored paths only (no
-    filesystem access). Never Review-by-hand or [Hold rename] scenes, nor ones missing studio/date/title."""
-    if ids is not None and not ids: return set()
-    w = "kind='scene' AND (COALESCE(rename_pending,0)=1 OR tpdb_id IS NOT NULL)"
-    if ids is not None: w += f" AND id IN ({','.join(str(int(i)) for i in ids)})"
-    films = {r["id"]: r for r in c.execute(f"SELECT id, studio, release_date, cast_, title, notes FROM films WHERE {w}")
-             if r["studio"] and r["release_date"] and r["title"] and "review by hand" not in (r["notes"] or "").lower()
-             and HOLD_RENAME.lower() not in (r["notes"] or "").lower()}
-    if not films: return set()
-    out = set()
+def soft_match_info(c, ids=None):
+    """The ONE rule behind the orange flag: {scene id: reason} for every scene whose file is NOT at its standard name
+    '<scenes root>/<Studio>/<Studio> - YYYY-MM-DD - <Performers> - <Title>[ (n)].ext'. No flag == renamed, always.
+    Reasons: 'unmatched' (no ThePornDB match), 'missing' (studio/date/title not set), 'held' ([Hold rename]),
+    'review' (Review by hand), 'not renamed' (matched, file still under its old name). From stored paths only (no disk access)."""
+    if ids is not None and not ids: return {}
+    w = "kind='scene'" + (f" AND id IN ({','.join(str(int(i)) for i in ids)})" if ids is not None else "")
+    films = {r["id"]: r for r in c.execute(f"SELECT id, studio, release_date, cast_, title, notes, tpdb_id FROM films WHERE {w}")}
+    if not films: return {}
+    roots = [os.path.normcase(os.path.abspath(r)) for r in (db.scene_roots(c) or []) if r]
+    out = {}
     for fid, p in c.execute(f"SELECT film_id, path FROM files WHERE film_id IN ({','.join(map(str, films))})"):
-        f = films[fid]; folder, base = os.path.split(p or ""); stem = os.path.splitext(base)[0]
-        ok = os.path.basename(folder) == _safe(f["studio"], 60) and _re.fullmatch(_re.escape(scene_file_name(f)) + r"( \(\d+\))?", stem)
-        if not ok: out.add(fid)
+        f = films[fid]
+        if fid in out: continue
+        if not (f["studio"] and f["release_date"] and f["title"]): out[fid] = "unmatched" if not f["tpdb_id"] else "missing"; continue
+        folder, base = os.path.split(p or ""); stem = os.path.splitext(base)[0]
+        ok = (os.path.basename(folder) == _safe(f["studio"], 60) and _re.fullmatch(_re.escape(scene_file_name(f)) + r"( \(\d+\))?", stem)
+              and (not roots or os.path.normcase(os.path.dirname(os.path.abspath(folder))) in roots))
+        if ok: continue
+        notes = (f["notes"] or "").lower()
+        out[fid] = ("unmatched" if not f["tpdb_id"] else "review" if "review by hand" in notes
+                    else "held" if HOLD_RENAME.lower() in notes else "not renamed")
     return out
+
+def soft_match_ids(c, ids=None, matched_only=False):
+    """Orange-flag scenes (see soft_match_info). matched_only: just matched scenes that Rename can fix (Rename waiting count)."""
+    info = soft_match_info(c, ids)
+    return {k for k, v in info.items() if v == "not renamed"} if matched_only else set(info)
 
 @app.get("/api/films")
 def list_films():
@@ -5675,7 +5686,7 @@ def dashboard():
             c.execute(f"INSERT INTO temp.dash_scope SELECT f.id FROM films f {where}", args)
             S = "id IN (SELECT id FROM temp.dash_scope)"
         d = repmod.dashboard(c, today, S)
-        d["health"]["rename_waiting"] = len(soft_match_ids(c))  # same set as the Rename waiting view (whole library), from stored paths
+        d["health"]["rename_waiting"] = len(soft_match_ids(c, matched_only=True))  # same set as the Rename waiting view (whole library), from stored paths
         d["stats"]["movies"], d["stats"]["movies_lib"] = dash_movies(c)
         d["scope"], d["scopes"], d["scope_filter"] = scope, scopes, scopes.get(scope, {})
     finally: c.close()

@@ -94,16 +94,17 @@ class SoftMatch(AutoRename):
     def test_soft_flag_and_filter(self):
         fid, p = self.scene("old name.mp4")
         self.c.execute("UPDATE films SET tpdb_id='s9', studio='Girls Only Porn', release_date='2020-01-01', title='Old', poster='/p.jpg' WHERE id=?", (fid,)); self.c.commit()
-        std, q = self.scene("plain.mp4"); self.assertFalse(self.soft(std))  # unmatched: no flag
-        self.assertTrue(self.soft(fid)); self.assertTrue(self.soft(fid, soft_match=1)); self.assertIsNone(self.soft(std, soft_match=1))
+        std, q = self.scene("plain.mp4"); self.assertTrue(self.soft(std))  # unmatched, not renamed: flagged too (no flag == renamed)
+        self.assertTrue(self.soft(fid)); self.assertTrue(self.soft(fid, soft_match=1)); self.assertTrue(self.soft(std, soft_match=1))
+        self.assertEqual(A.soft_match_ids(self.c, matched_only=True), {fid})
         it = self.cl.get("/api/scenes/rename-waiting").get_json()["items"][0]
         self.assertEqual((it["title"], it["studio"], it["date"], it["thumb"]), ("Old", "Girls Only Porn", "2020-01-01", "/p.jpg"))
         self.cl.post("/api/scenes/rename-apply", json={"ids": [fid]}); self.assertFalse(self.soft(fid))  # cleared once renamed
-    def test_soft_not_for_review_or_held(self):
+    def test_soft_for_review_or_held(self):  # not renamed -> flagged, but never in the Rename waiting count
         for n in ("Review by hand", "[Hold rename]"):
             fid, p = self.scene(f"x{len(n)}.mp4", notes=n)
             self.c.execute("UPDATE films SET tpdb_id='s9', rename_pending=1, studio='S', release_date='2020-01-01', title='T' WHERE id=?", (fid,)); self.c.commit()
-            self.assertFalse(self.soft(fid))
+            self.assertTrue(self.soft(fid)); self.assertNotIn(fid, A.soft_match_ids(self.c, matched_only=True))
     def test_auto_renamed_not_soft(self):
         fid, p = self.scene("GirlsOnlyPorn 2022-12-04 Alexis Crystal Agatha Vega Perfect Moment.mp4")
         self.run_job(fid, [SC]); self.assertFalse(self.soft(fid))
