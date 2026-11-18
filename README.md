@@ -657,6 +657,8 @@ Most library apps squeeze a wide cover into a poster slot with a blind centre cr
 ## License
 [MIT](LICENSE) © 2026 Kyle R. Hudson & Grok Bot
 
+AI upscaling (✨ Upscale in the image editor) uses [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (realesrgan-ncnn-vulkan v0.2.5.0, © Xintao Wang, [BSD-3-Clause](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)). It is not bundled: on Windows, the first click on Upscale offers to download the official release (~45 MB, size and SHA256 checked) into the Film Tagger data folder (`tools\realesrgan`); it runs as a separate program on your GPU.
+
 Third-party software: [gallery-dl](https://github.com/mikf/gallery-dl) © Mike Fährmann, [GPL-2.0](https://github.com/mikf/gallery-dl/blob/master/LICENSE), installed alongside the app and run as a separate program (never imported or linked). Details in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 ## AZNude Status

@@ -6,3 +6,5 @@ dist/
 films.db*
 posters/
 smart_queue.json
+tools/
+upscale_tmp/

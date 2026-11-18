@@ -19,8 +19,91 @@ def data_dir():
     return os.path.dirname(os.path.abspath(db.DB_PATH))
 
 def exe_path():
-    p = os.environ.get("FILMTAGGER_REALESRGAN") or os.path.join(data_dir(), "tools", "realesrgan", "realesrgan-ncnn-vulkan.exe")
+    p = os.environ.get("FILMTAGGER_REALESRGAN") or os.path.join(tool_dir(), "realesrgan-ncnn-vulkan.exe")
     return p if os.path.isfile(p) else None
+
+# ---------- first-use download of the official Windows build (pinned asset, size and SHA256) ----------
+ASSET_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
+ASSET_SIZE = 45474481
+ASSET_SHA256 = "abc02804e17982a3be33675e4d471e91ea374e65b70167abc09e31acb412802d"
+ASSET_FILES = {"realesrgan-ncnn-vulkan.exe", "vcomp140.dll", "vcomp140d.dll", "README_windows.md",
+               "models/realesrgan-x4plus.bin", "models/realesrgan-x4plus.param"}  # only these are extracted
+INSTALL = {"state": "idle"}
+IS_WINDOWS = os.name == "nt"
+MANUAL_HINT = ("Manual install: download realesrgan-ncnn-vulkan-20220424-windows.zip from "
+               "github.com/xinntao/Real-ESRGAN/releases (v0.2.5.0) and unzip it into ")
+
+def tool_dir():
+    return os.path.join(data_dir(), "tools", "realesrgan")
+
+def safe_members(names):
+    """Zip entry names -> {entry: relative path} for the expected files only; any absolute or '..' entry is refused."""
+    out = {}
+    for n in names:
+        rel = n.replace("\\", "/")
+        parts = [x for x in rel.split("/") if x not in ("", ".")]
+        if rel.startswith("/") or re.match(r"^[A-Za-z]:", rel) or ".." in parts: raise ValueError(f"Unsafe path in zip: {n}")
+        rel = "/".join(parts)
+        if rel in ASSET_FILES: out[n] = rel
+    if set(out.values()) != ASSET_FILES: raise ValueError("The download does not contain the expected files")
+    return out
+
+def _download(url, dest, job, opener=None):
+    import urllib.request, hashlib
+    h = hashlib.sha256(); n = 0
+    req = urllib.request.Request(url, headers={"User-Agent": "FilmTagger"})
+    with (opener or urllib.request.urlopen)(req, timeout=60) as r, open(dest, "wb") as fh:
+        while True:
+            b = r.read(1 << 16)
+            if not b: break
+            fh.write(b); h.update(b); n += len(b); job["progress"] = min(99, n * 100 // ASSET_SIZE)
+            if n > ASSET_SIZE: raise ValueError("Download is larger than expected")
+    return n, h.hexdigest()
+
+def install(job=None, opener=None):
+    """Download, verify (size + SHA256), extract only the expected files, check the exe runs. Raises RuntimeError."""
+    import zipfile, tempfile
+    job = job if job is not None else {}
+    if not IS_WINDOWS: raise RuntimeError("Automatic download is for Windows only. " + MANUAL_HINT.replace("windows.zip", "<your OS>.zip") + tool_dir())
+    dest = tool_dir(); os.makedirs(os.path.dirname(dest), exist_ok=True)
+    work = tempfile.mkdtemp(prefix="realesrgan-", dir=os.path.dirname(dest)); z = os.path.join(work, "dl.zip")
+    try:
+        try: n, sha = _download(ASSET_URL, z, job, opener)
+        except ValueError: raise
+        except Exception as e: raise RuntimeError(f"Download failed ({e}). " + MANUAL_HINT + dest)
+        if n != ASSET_SIZE or sha != ASSET_SHA256:
+            raise RuntimeError("The download did not match the official Real-ESRGAN file (size/SHA256), so it was rejected. " + MANUAL_HINT + dest)
+        job["state"] = "extracting"; out = os.path.join(work, "x")
+        with zipfile.ZipFile(z) as zf:
+            for entry, rel in safe_members(zf.namelist()).items():
+                target = os.path.join(out, *rel.split("/")); os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(entry) as src, open(target, "wb") as fh: shutil.copyfileobj(src, fh)
+        exe = os.path.join(out, "realesrgan-ncnn-vulkan.exe")
+        kw = dict(capture_output=True, text=True, errors="replace", timeout=30, cwd=out)
+        if os.name == "nt": kw["creationflags"] = 0x08000000
+        r = subprocess.run([exe, "-h"], **kw)
+        if "realesrgan-x4plus" not in (r.stdout + r.stderr) and "input-path" not in (r.stdout + r.stderr):
+            raise RuntimeError("The downloaded upscaler did not start on this PC. " + MANUAL_HINT + dest)
+        if os.path.isdir(dest): shutil.rmtree(dest)
+        shutil.move(out, dest)
+    except ValueError as e:
+        raise RuntimeError(f"{e}. " + MANUAL_HINT + dest)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return os.path.join(dest, "realesrgan-ncnn-vulkan.exe")
+
+def install_start():
+    with LOCK:
+        if INSTALL.get("state") in ("downloading", "extracting"): return INSTALL
+        INSTALL.clear(); INSTALL.update(state="downloading", progress=0)
+    def run():
+        try: install(INSTALL); INSTALL.update(state="done", progress=100)
+        except Exception as e: INSTALL.update(state="error", error=str(e))
+    threading.Thread(target=run, daemon=True).start()
+    return INSTALL
+
+def tool_status():
+    return dict(installed=bool(exe_path()), windows=IS_WINDOWS, size_mb=round(ASSET_SIZE / 1048576), **INSTALL)
 
 def tmp_dir():
     d = os.path.join(data_dir(), "upscale_tmp"); os.makedirs(d, exist_ok=True); return d

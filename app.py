@@ -5135,6 +5135,19 @@ def film_gallery_adjust_upscale(fid):
     """{name, scale: 2|4}: start an AI upscale preview of a gallery photo (nothing is changed until Save)."""
     return _film_gallery_adjust(fid, "upscale")
 
+@app.get("/api/upscale/tool")
+def upscale_tool():
+    """Is Real-ESRGAN installed, and the state of a first-use download."""
+    import upscale as upmod
+    return jsonify(upmod.tool_status())
+
+@app.post("/api/upscale/tool/install")
+def upscale_tool_install():
+    """Download the pinned official Real-ESRGAN Windows build (size + SHA256 checked) into <data>/tools/realesrgan."""
+    import upscale as upmod
+    if upmod.exe_path(): return jsonify(upmod.tool_status())
+    upmod.install_start(); return jsonify(upmod.tool_status())
+
 @app.get("/api/upscale/<token>")
 def upscale_status(token):
     import upscale as upmod

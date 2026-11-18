@@ -816,7 +816,18 @@ async function peSave(){const g=S.pe;if(!g||g.busy||g.upBusy)return;g.busy=true;
   else{const f=await api(`/api/films/${g.id}/posteredit`,{method:'POST',body});peClose();
    if(S.editOrig&&S.editOrig.id==f.id)posterShow(f);else reload();toast('Poster '+f.poster_note)}}
  catch(e){g.busy=false;if($('peSave'))$('peSave').disabled=false;if(g.mode=='gallery')toast(e.message||String(e))}}
+async function peToolReady(g){let t;try{t=await api('/api/upscale/tool')}catch(e){return false}if(t.installed)return true;
+ if(!t.windows){alert('Automatic download is for Windows only. Install realesrgan-ncnn-vulkan for your system from github.com/xinntao/Real-ESRGAN/releases into Film Tagger Data/tools/realesrgan.');return false}
+ if(t.state!='downloading'&&t.state!='extracting'){if(!confirm(`Upscaling needs Real-ESRGAN (free, ~${t.size_mb||45} MB, from github.com/xinntao/Real-ESRGAN). Download now?`))return false;
+  try{t=await api('/api/upscale/tool/install',{method:'POST',body:{}})}catch(e){return false}}
+ const btns=[...document.querySelectorAll('.peUp'),$('peSave')].filter(Boolean);btns.forEach(b=>b.disabled=true);g.upBusy=true;
+ try{while(S.pe===g&&!t.installed){if(t.state=='error'){$('peMsg').innerHTML=`<span style="color:#f88">${esc(t.error||'Download failed')}</span>`;return false}
+   $('peMsg').textContent=t.state=='extracting'?'Checking and unpacking Real-ESRGAN…':`Downloading Real-ESRGAN… ${t.progress||0}%`;
+   await new Promise(r=>setTimeout(r,700));t=await api('/api/upscale/tool')}
+  if(t.installed)toast('Real-ESRGAN installed');return !!t.installed&&S.pe===g}
+ catch(e){return false}finally{g.upBusy=false;btns.forEach(b=>b.disabled=false)}}
 async function peUpscale(scale){const g=S.pe;if(!g||g.busy||g.upBusy)return;
+ if(!await peToolReady(g))return;
  const url=g.mode=='gallery'?`${S.gal.base}/adjust/upscale`:`/api/films/${g.id}/posteredit/upscale`,body=g.mode=='gallery'?{name:g.name,scale}:{scale};
  const btns=[...document.querySelectorAll('.peUp'),$('peSave')].filter(Boolean),busy=on=>{g.upBusy=on;btns.forEach(b=>b.disabled=on)};
  let t;try{t=(await api(url,{method:'POST',body})).token}catch(e){return}

@@ -86,4 +86,48 @@ class Upscale(unittest.TestCase):
         r, st = G.handle(self.d, "a.jpg", "save", {"upscale": t, "detail": 0}); self.assertEqual(st, 200)
         with Image.open(self.img) as im: self.assertEqual(im.size, (400, 600))
 
+class Install(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp(); self.p = [mock.patch.object(U, "data_dir", return_value=self.d), mock.patch.object(U, "IS_WINDOWS", True),
+            mock.patch.object(U.subprocess, "run", return_value=mock.Mock(stdout="Usage: realesrgan-ncnn-vulkan -i input-path", stderr=""))]
+        for x in self.p: x.start()
+    def tearDown(self):
+        for x in self.p: x.stop()
+    def zipbytes(self, extra=()):
+        import io, zipfile
+        b = io.BytesIO()
+        with zipfile.ZipFile(b, "w") as z:
+            for n in sorted(U.ASSET_FILES) + ["input.jpg"] + list(extra): z.writestr(n, b"x" + n.encode())
+        return b.getvalue()
+    def run_install(self, data, sha=None):
+        import hashlib, io
+        opener = lambda req, timeout: io.BytesIO(data)
+        with mock.patch.object(U, "ASSET_SIZE", len(data)), mock.patch.object(U, "ASSET_SHA256", sha or hashlib.sha256(data).hexdigest()):
+            return U.install({}, opener=opener)
+
+    def test_good_hash_installs_only_expected_files(self):
+        exe = self.run_install(self.zipbytes())
+        self.assertTrue(os.path.isfile(exe)); self.assertEqual(os.path.dirname(exe), U.tool_dir())
+        self.assertTrue(os.path.isfile(os.path.join(U.tool_dir(), "models", "realesrgan-x4plus.bin")))
+        self.assertFalse(os.path.exists(os.path.join(U.tool_dir(), "input.jpg")))  # not on the list
+        self.assertEqual(sorted(os.listdir(os.path.dirname(U.tool_dir()))), ["realesrgan"])  # temp work dir cleaned
+
+    def test_bad_hash_rejected_nothing_installed(self):
+        with self.assertRaises(RuntimeError) as e: self.run_install(self.zipbytes(), sha="0" * 64)
+        self.assertIn("rejected", str(e.exception)); self.assertIn("Manual install", str(e.exception)); self.assertFalse(os.path.exists(U.tool_dir()))
+
+    def test_zip_slip_rejected(self):
+        with self.assertRaises(RuntimeError) as e: self.run_install(self.zipbytes(extra=["../../evil.exe"]))
+        self.assertIn("Unsafe path", str(e.exception)); self.assertFalse(os.path.exists(U.tool_dir()))
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(self.d), "evil.exe")))
+        with self.assertRaises(ValueError): U.safe_members(sorted(U.ASSET_FILES) + ["C:/Windows/x.dll"])
+        with self.assertRaises(ValueError): U.safe_members(sorted(U.ASSET_FILES) + ["./../x"])
+
+    def test_offline_and_non_windows_messages(self):
+        def boom(req, timeout): raise OSError("no network")
+        with self.assertRaises(RuntimeError) as e: U.install({}, opener=boom)
+        self.assertIn("Download failed", str(e.exception))
+        with mock.patch.object(U, "IS_WINDOWS", False), self.assertRaises(RuntimeError) as e: U.install({})
+        self.assertIn("Windows only", str(e.exception))
+
 if __name__ == "__main__": unittest.main()
