@@ -293,9 +293,12 @@ def list_films():
     c = C(); q = request.args
     where, args = build_query(q)
     sort = SORTS.get(q.get("sort"), SORTS["title"]); order = "DESC" if q.get("order") == "desc" else "ASC"
+    if q.get("sort") in ("soft", "hard"):  # orange-flag groups (soft_match_info rule); non-scenes always last (NULL)
+        soft = ",".join(map(str, sorted(soft_match_ids(c)))) or "NULL"; a_, b_ = (0, 1) if q.get("sort") == "soft" else (1, 0)
+        sort = f"(CASE WHEN COALESCE(f.kind,'')<>'scene' THEN NULL WHEN f.id IN ({soft}) THEN {a_} ELSE {b_} END)"
     limit = min(int(q.get("limit", 200)), 20000); offset = int(q.get("offset", 0))
     total = c.execute(f"SELECT COUNT(*) FROM films f {where}", args).fetchone()[0]
-    tie = STUDIO_TIE if q.get("sort") == "studio" else ""
+    tie = STUDIO_TIE if q.get("sort") == "studio" else "f.title COLLATE FOLD, " if q.get("sort") in ("soft", "hard") else ""
     rows = [dict(r) for r in c.execute(f"SELECT f.* FROM films f {where} ORDER BY {sort} IS NULL, {sort} {order}, {tie}f.id LIMIT ? OFFSET ?", args + [limit, offset])]
     if q.get("ids_only"):
         return jsonify(ids=[r[0] for r in c.execute(f"SELECT f.id FROM films f {where}", args)], total=total)
