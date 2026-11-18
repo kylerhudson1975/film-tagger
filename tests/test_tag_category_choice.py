@@ -31,4 +31,30 @@ class TagCategoryChoice(unittest.TestCase):
         db.add_tag(self.c, self.b, "Rape revenge", "Genre", source="ai"); self.assertEqual(self.cat(), "Kink")
         db.add_tag(self.c, self.b, "Rape revenge", "Genre", source="import"); self.assertEqual(self.cat(), "Kink")
 
+    def test_variant_reuses_existing_and_keeps_category(self):
+        """'Outlaw' / 'out-laws' must join existing 'Outlaws' and must not move it out of Kink."""
+        db.add_tag(self.c, self.a, "Outlaws", "Kink")
+        db.add_tag(self.c, self.b, "Outlaw", "Themes", source="ai")
+        db.add_tag(self.c, self.b, "out-laws", "Themes", source="user")
+        db.add_tag_if_absent(self.c, self.b, "Outlaw", "Content", source="tmdb")
+        rows = [tuple(r) for r in self.c.execute("SELECT name, category FROM tags WHERE tag_norm(name)=tag_norm('Outlaws')")]
+        self.assertEqual(rows, [("Outlaws", "Kink")])
+        self.assertEqual(self.c.execute("SELECT COUNT(*) FROM film_tags ft JOIN tags t ON t.id=ft.tag_id WHERE t.name='Outlaws' AND ft.film_id IN (?,?)", (self.a, self.b)).fetchone()[0], 2)
+
+    def test_manual_category_edit_survives_later_adds(self):
+        db.add_tag(self.c, self.a, "Outlaws", "Kink"); self.c.commit()
+        tid = self.c.execute("SELECT id FROM tags WHERE name='Outlaws'").fetchone()[0]
+        resp = self.cl.put(f"/api/tags/{tid}", json={"category": "Themes"})
+        self.assertLess(resp.status_code, 400)
+        db.add_tag(self.c, self.b, "Outlaw", "Kink", source="ai")
+        db.add_tag_if_absent(self.c, self.b, "Outlaws", "Kink", source="tmdb")
+        rows = [tuple(r) for r in self.c.execute("SELECT name, category FROM tags WHERE tag_norm(name)=tag_norm('Outlaws')")]
+        self.assertEqual(rows, [("Outlaws", "Themes")])
+
+    def test_decade_not_merged_with_year(self):
+        db.add_tag(self.c, self.a, "1970s", "Era")
+        db.add_tag(self.c, self.b, "1970", "Era")
+        names = sorted(r[0] for r in self.c.execute("SELECT name FROM tags WHERE name IN ('1970','1970s')"))
+        self.assertEqual(names, ["1970", "1970s"])
+
 if __name__ == "__main__": unittest.main()

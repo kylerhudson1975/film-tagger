@@ -821,14 +821,24 @@ def scan(c, roots, progress=None):
             "roots_found": [{"path": k, "videos": found_in.get(k, 0), "folders": dirs_in.get(k, 0)} for k in list(dict.fromkeys(list(found_in) + list(dirs_in)))]}
 
 # ---------- tags ----------
+# Decade vs year share a tag_norm ("1970s" == "1970") but mean different things; never auto-reuse them.
+TAG_NORM_SKIP = frozenset({"1970", "1980", "2000"})
+
 def get_tag_id(c, name, category=None, set_category=False):
     """Tag id by name (names are unique, case-insensitive). A missing category is filled in; with set_category=True
-    (a category the user explicitly chose) an existing tag is moved to that category, for every film that has it."""
+    (a category the user explicitly chose) an existing exact-name tag is moved to that category, for every film that has it.
+    Spelling, plural, accent, hyphen or space variants (same tag_norm) reuse the existing tag and keep its category, so
+    scans, smart tagging and later adds cannot recreate an old variant or overwrite a manual category edit."""
     name = re.sub(r"\s+", " ", (name or "")).strip()
     if not name: return None
     r = c.execute("SELECT id, category FROM tags WHERE name=?", (name,)).fetchone()
+    exact = bool(r)
+    if not r:
+        kn = tag_norm(name)
+        if kn and kn not in TAG_NORM_SKIP:
+            r = c.execute("SELECT id, category FROM tags WHERE tag_norm(name)=? ORDER BY id", (kn,)).fetchone()
     if r:
-        if category and (not r["category"] or (set_category and r["category"] != category)):
+        if category and (not r["category"] or (exact and set_category and r["category"] != category)):
             c.execute("INSERT OR IGNORE INTO categories(name,sort) VALUES(?,99)", (category,))
             c.execute("UPDATE tags SET category=? WHERE id=?", (category, r["id"]))
         return r["id"]
